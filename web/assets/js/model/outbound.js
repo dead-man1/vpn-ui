@@ -579,6 +579,8 @@ class UdpMask extends CommonClass {
             case 'header-dns':
             case 'xdns':
                 return { domain: settings.domain || '' };
+            case 'xicmp':
+                return { ip: settings.ip || '', id: settings.id ?? 0 };
             case 'mkcp-original':
             case 'header-dtls':
             case 'header-srtp':
@@ -586,6 +588,12 @@ class UdpMask extends CommonClass {
             case 'header-wechat':
             case 'header-wireguard':
                 return {}; // No settings needed
+            case 'header-custom':
+                return { client: [], server: [] };
+            case 'noise':
+                return { reset: 0, noise: [] };
+            case 'sudoku':
+                return { ascii: '', customTable: '', customTables: [], paddingMin: 0, paddingMax: 0 };
             default:
                 return settings;
         }

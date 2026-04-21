@@ -324,7 +324,7 @@ class KcpStreamSettings extends XrayCommonClass {
         uplinkCapacity = 5,
         downlinkCapacity = 20,
         cwndMultiplier = 1,
-        maxSendingWindow = 0,
+        maxSendingWindow = 1350,
     ) {
         super();
         this.mtu = mtu;

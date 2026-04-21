@@ -323,7 +323,7 @@ class KcpStreamSettings extends XrayCommonClass {
         tti = 20,
         uplinkCapacity = 5,
         downlinkCapacity = 20,
-        cwndMultiplier = 0,
+        cwndMultiplier = 1,
         maxSendingWindow = 0,
     ) {
         super();

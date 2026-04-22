@@ -1396,6 +1396,8 @@ class Inbound extends XrayCommonClass {
         if (protocol === Protocols.HYSTERIA) {
             this.stream.network = 'hysteria';
             this.stream.security = 'tls';
+            // Hysteria runs over QUIC and must not inherit TCP TLS ALPN defaults.
+            this.stream.tls.alpn = [ALPN_OPTION.H3];
         }
     }
 

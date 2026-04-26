@@ -1370,6 +1370,50 @@ class Inbound extends XrayCommonClass {
         }
     }
 
+    static hasShareableFinalMaskValue(value) {
+        if (value == null) {
+            return false;
+        }
+        if (Array.isArray(value)) {
+            return value.some(item => Inbound.hasShareableFinalMaskValue(item));
+        }
+        if (typeof value === 'object') {
+            return Object.values(value).some(item => Inbound.hasShareableFinalMaskValue(item));
+        }
+        if (typeof value === 'string') {
+            return value.length > 0;
+        }
+        return true;
+    }
+
+    static serializeFinalMask(finalmask) {
+        if (!finalmask) {
+            return '';
+        }
+        const value = typeof finalmask.toJson === 'function' ? finalmask.toJson() : finalmask;
+        return Inbound.hasShareableFinalMaskValue(value) ? JSON.stringify(value) : '';
+    }
+
+    // Export finalmask with the same compact JSON payload shape that
+    // v2rayN-compatible share links use: fm=<json>.
+    static applyFinalMaskToParams(finalmask, params) {
+        if (!params) return;
+        const payload = Inbound.serializeFinalMask(finalmask);
+        if (payload.length > 0) {
+            params.set("fm", payload);
+        }
+    }
+
+    // VMess links are a base64 JSON object, so keep the same fm payload
+    // under a flat property instead of a URL query string.
+    static applyFinalMaskToObj(finalmask, obj) {
+        if (!obj) return;
+        const payload = Inbound.serializeFinalMask(finalmask);
+        if (payload.length > 0) {
+            obj.fm = payload;
+        }
+    }
+
     get clients() {
         switch (this.protocol) {
             case Protocols.VMESS: return this.settings.vmesses;
@@ -1590,6 +1634,8 @@ class Inbound extends XrayCommonClass {
             Inbound.applyXhttpPaddingToObj(xhttp, obj);
         }
 
+        Inbound.applyFinalMaskToObj(this.stream.finalmask, obj);
+
         if (tls === 'tls') {
             if (!ObjectUtil.isEmpty(this.stream.tls.sni)) {
                 obj.sni = this.stream.tls.sni;
@@ -1657,6 +1703,8 @@ class Inbound extends XrayCommonClass {
                 Inbound.applyXhttpPaddingToParams(xhttp, params);
                 break;
         }
+
+        Inbound.applyFinalMaskToParams(this.stream.finalmask, params);
 
         if (security === 'tls') {
             params.set("security", "tls");
@@ -1761,6 +1809,8 @@ class Inbound extends XrayCommonClass {
                 break;
         }
 
+        Inbound.applyFinalMaskToParams(this.stream.finalmask, params);
+
         if (security === 'tls') {
             params.set("security", "tls");
             if (this.stream.isTls) {
@@ -1840,6 +1890,8 @@ class Inbound extends XrayCommonClass {
                 break;
         }
 
+        Inbound.applyFinalMaskToParams(this.stream.finalmask, params);
+
         if (security === 'tls') {
             params.set("security", "tls");
             if (this.stream.isTls) {
@@ -1906,6 +1958,8 @@ class Inbound extends XrayCommonClass {
                 params.set("obfs-password", obfsPassword);
             }
         }
+
+        Inbound.applyFinalMaskToParams(this.stream.finalmask, params);
 
         const url = new URL(link);
         for (const [key, value] of params) {

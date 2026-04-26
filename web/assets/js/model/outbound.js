@@ -992,6 +992,10 @@ class Outbound extends CommonClass {
             stream.kcp = new KcpStreamSettings();
             stream.type = json.type;
             stream.seed = json.path;
+            const mtu = Number(json.mtu);
+            if (Number.isFinite(mtu) && mtu > 0) stream.kcp.mtu = mtu;
+            const tti = Number(json.tti);
+            if (Number.isFinite(tti) && tti > 0) stream.kcp.tti = tti;
         } else if (network === 'ws') {
             stream.ws = new WsStreamSettings(json.path, json.host);
         } else if (network === 'grpc') {
@@ -1029,6 +1033,7 @@ class Outbound extends CommonClass {
         let headerType = url.searchParams.get('headerType') ?? undefined;
         let host = url.searchParams.get('host') ?? undefined;
         let path = url.searchParams.get('path') ?? undefined;
+        let seed = url.searchParams.get('seed') ?? path ?? undefined;
         let mode = url.searchParams.get('mode') ?? undefined;
 
         if (type === 'tcp' || type === 'none') {
@@ -1036,7 +1041,11 @@ class Outbound extends CommonClass {
         } else if (type === 'kcp') {
             stream.kcp = new KcpStreamSettings();
             stream.kcp.type = headerType ?? 'none';
-            stream.kcp.seed = path;
+            stream.kcp.seed = seed;
+            const mtu = Number(url.searchParams.get('mtu'));
+            if (Number.isFinite(mtu) && mtu > 0) stream.kcp.mtu = mtu;
+            const tti = Number(url.searchParams.get('tti'));
+            if (Number.isFinite(tti) && tti > 0) stream.kcp.tti = tti;
         } else if (type === 'ws') {
             stream.ws = new WsStreamSettings(path, host);
         } else if (type === 'grpc') {

@@ -1595,25 +1595,13 @@
         return sec + 's';
       },
       async runBulkOps() {
+        const b = this.bulkOps;
+        // Delete removes whatever is checked: a selected INBOUND is deleted wholesale
+        // (its accounts go with it — no per-client filtering), a selected ACCOUNT is
+        // removed on its own. Separate flow from the in-place client update ops.
+        if (b.op === 'delete') return this.runBulkDelete();
         const targets = this.resolveSelectedTargets();
         if (!targets.length) return;
-        const b = this.bulkOps;
-        // Delete is destructive + irreversible — require an explicit danger confirm.
-        if (b.op === 'delete') {
-          const okDel = await new Promise((resolve) => {
-            this.$confirm({
-              title: '{{ i18n "pages.inbounds.opDelete" }}',
-              content: '{{ i18n "pages.inbounds.bulkDeleteConfirm" }}'.replace('%COUNT%', targets.length),
-              okText: '{{ i18n "delete" }}',
-              okType: 'danger',
-              class: themeSwitcher.currentTheme,
-              cancelText: '{{ i18n "cancel" }}',
-              onOk: () => resolve(true),
-              onCancel: () => resolve(false),
-            });
-          });
-          if (!okDel) return;
-        }
         const amount = Math.max(0, Number(b.amount) || 0);
         const bytes = b.unit === 'MB' ? 1024 * 1024 : 1024 * 1024 * 1024;
         const base = {
@@ -1646,6 +1634,78 @@
           const rate = elapsed > 0 ? b.progress.done / elapsed : 0;
           const remaining = b.progress.total - b.progress.done;
           b.progress.etaText = (rate > 0 && remaining > 0) ? this.bulkFormatEta(remaining / rate) : '';
+        }
+        b.progress.running = false;
+        b.confirmLoading = false;
+        if (ok) {
+          b.visible = false;
+          this.$message.success('{{ i18n "pages.inbounds.bulkDone" }}: ' + b.progress.applied + ' / ' + b.progress.skipped);
+          this.clearSelection();
+          await this.getDBInbounds();
+        }
+      },
+      bulkTickEta(start) {
+        const p = this.bulkOps.progress;
+        const elapsed = (Date.now() - start) / 1000;
+        const rate = elapsed > 0 ? p.done / elapsed : 0;
+        const remaining = p.total - p.done;
+        p.etaText = (rate > 0 && remaining > 0) ? this.bulkFormatEta(remaining / rate) : '';
+      },
+      async runBulkDelete() {
+        const b = this.bulkOps;
+        // Whole inbounds selected -> delete the inbound (its accounts go with it, no
+        // per-client filtering). Accounts selected on their own (inbound NOT wholesale-
+        // selected) -> delete just those.
+        const inboundIds = this.selInbounds.slice();
+        const clientTargets = this.selClients
+          .filter(k => !inboundIds.includes(Number(k.slice(0, k.indexOf(':')))))
+          .map(k => { const i = k.indexOf(':'); return { inboundId: Number(k.slice(0, i)), email: k.slice(i + 1) }; });
+        const totalUnits = inboundIds.length + clientTargets.length;
+        if (!totalUnits) return;
+        const okDel = await new Promise((resolve) => {
+          this.$confirm({
+            title: '{{ i18n "pages.inbounds.opDelete" }}',
+            content: '{{ i18n "pages.inbounds.bulkDeleteConfirm" }}'
+              .replace('%INBOUNDS%', inboundIds.length).replace('%CLIENTS%', clientTargets.length),
+            okText: '{{ i18n "delete" }}',
+            okType: 'danger',
+            class: themeSwitcher.currentTheme,
+            cancelText: '{{ i18n "cancel" }}',
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false),
+          });
+        });
+        if (!okDel) return;
+        b.confirmLoading = true;
+        b.progress = { running: true, done: 0, total: totalUnits, applied: 0, skipped: 0, etaText: '' };
+        const start = Date.now();
+        let ok = true;
+        // 1) whole inbounds (one request each; each triggers its own config regen).
+        for (const id of inboundIds) {
+          const msg = await HttpUtil.post('/panel/api/inbounds/del/' + id);
+          if (!msg.success) { ok = false; break; }
+          b.progress.applied++;
+          b.progress.done++;
+          this.bulkTickEta(start);
+        }
+        // 2) standalone accounts (batched, reuses the bulk 'delete' op).
+        if (ok && clientTargets.length) {
+          const base = {
+            op: 'delete', days: 0, amountBytes: 0,
+            skipFirstUse: b.skipFirstUse, skipUnlimited: b.skipUnlimited, skipDisabled: b.skipDisabled,
+          };
+          const BATCH = 20;
+          for (let i = 0; i < clientTargets.length; i += BATCH) {
+            const batch = clientTargets.slice(i, i + BATCH);
+            const msg = await HttpUtil.post('/panel/api/inbounds/bulkUpdateClients',
+              { data: JSON.stringify(Object.assign({}, base, { targets: batch })) });
+            if (!msg.success) { ok = false; break; }
+            const r = msg.obj || {};
+            b.progress.applied += (r.applied || 0);
+            b.progress.skipped += (r.skipped || 0);
+            b.progress.done += batch.length;
+            this.bulkTickEta(start);
+          }
         }
         b.progress.running = false;
         b.confirmLoading = false;

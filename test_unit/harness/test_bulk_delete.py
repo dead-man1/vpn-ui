@@ -46,8 +46,24 @@ print(f"after delete-all: applied={r2.get('applied')} skipped={r2.get('skipped')
 ok2 = len(after2) == 1
 print("  NEVER-EMPTY verdict:", "PASS" if ok2 else "FAIL")
 
-# 3) client_traffics cleaned for a deleted client?
-_, dbrow, _ = R.server_exec("journalctl -u vpn-ui --since '-20 sec' --no-pager 2>/dev/null | grep -i l2tp | tail -1")
-
 p.del_inbound(iid)
-print("\ncleanup done. OVERALL:", "PASS" if (ok1 and ok2) else "FAIL")
+
+# 3) mixed delete (simulates runBulkDelete): a whole INBOUND + a standalone CLIENT.
+settingsA = dict(settings); settingsA["clients"] = [cl(5), cl(6), cl(7)]
+settingsB = dict(settings); settingsB["clients"] = [cl(8), cl(9)]
+ibA = p.add_inbound("bulk-del-A", 1802, "l2tp", settingsA)["id"]
+ibB = p.add_inbound("bulk-del-B", 1803, "l2tp", settingsB)["id"]
+before_ids = {i["id"] for i in p.list_inbounds()}
+# runBulkDelete step 1: delete inbound A wholesale
+p.del_inbound(ibA)
+# step 2: delete standalone client bd8 from inbound B
+p.bulk_update_clients({"op": "delete", "skipFirstUse": False, "skipUnlimited": False,
+                       "skipDisabled": False, "targets": [{"inboundId": ibB, "email": "bd8@t"}]})
+ids_after = {i["id"] for i in p.list_inbounds()}
+b_clients = clients(ibB)
+ok3 = (ibA not in ids_after) and (ibB in ids_after) and (b_clients == ["bd9@t"])
+print(f"mixed: inboundA_gone={ibA not in ids_after} inboundB_kept={ibB in ids_after} B_clients={b_clients}")
+print("  MIXED verdict:", "PASS" if ok3 else "FAIL")
+p.del_inbound(ibB)
+
+print("\ncleanup done. OVERALL:", "PASS" if (ok1 and ok2 and ok3) else "FAIL")

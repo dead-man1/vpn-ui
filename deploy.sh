@@ -8,6 +8,9 @@ DEST_DIR="/opt/vpn-ui"
 DEST="$DEST_DIR/$ASSET"
 UNIT="vpn-ui"
 DL_URL="https://github.com/$REPO/releases/latest/download/$ASSET"
+# The panel keeps its SQLite DB next to the binary (exe dir). Backups go beside it.
+DB="$DEST_DIR/vpn-ui.db"
+BACKUP_DIR="$DEST_DIR/backups"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     B=$'\e[1m'; D=$'\e[2m'; R=$'\e[0m'
@@ -47,6 +50,15 @@ arch="$(uname -m)"
 [[ "$arch" == "x86_64" || "$arch" == "amd64" ]] || \
     warn "host architecture is '$arch' — this installs the amd64 build, which may not run here."
 
+# Fresh install vs in-place update: an already-installed binary means UPDATE. On
+# update we must NOT re-randomize credentials (that would lock the operator out of
+# their own panel) and we snapshot the DB before the new binary can migrate it.
+MODE="install"; OLD_VER=""
+if [[ -e "$DEST" ]]; then
+    MODE="update"
+    OLD_VER="$("$DEST" -v 2>/dev/null | tr -d '[:space:]')"
+fi
+
 if   command -v curl >/dev/null 2>&1; then DL="curl"
 elif command -v wget >/dev/null 2>&1; then DL="wget"
 else die "need 'curl' or 'wget' to download the release."; fi
@@ -61,6 +73,11 @@ if [[ "$DL" == "curl" ]]; then
            | grep -oE 'tag/[^/[:space:]]+$' | sed 's#tag/##' || true)"
 fi
 [[ -n "$ver" ]] && act "latest release: ${GREEN}${ver}${R}" || act "asset: ${GREEN}${ASSET}${R}"
+if [[ "$MODE" == "update" ]]; then
+    act "mode:   ${YELLOW}update${R} (${OLD_VER:-unknown} -> ${ver:-latest})"
+else
+    act "mode:   ${GREEN}fresh install${R}"
+fi
 
 install -d -m 0755 "$DEST_DIR"
 tmp="$(mktemp "${DEST}.XXXXXX")"
@@ -89,18 +106,41 @@ if systemctl is-active --quiet "$UNIT" 2>/dev/null; then
     act "stopping running ${UNIT} for replacement"
     systemctl stop "$UNIT" || true
 fi
+
+# Safety net: on update, snapshot the DB (timestamped + tagged with the outgoing
+# version) before the new binary can touch or migrate it. The service is already
+# stopped above, so copy the SQLite WAL/SHM sidecars alongside it for a consistent
+# set. Abort if the copy fails — never replace the binary without a good backup.
+if [[ "$MODE" == "update" && -f "$DB" ]]; then
+    install -d -m 0755 "$BACKUP_DIR"
+    ts="$(date +%Y%m%d-%H%M%S)"
+    backup="$BACKUP_DIR/vpn-ui_${OLD_VER:-unknown}_${ts}.db"
+    cp -p "$DB" "$backup" || die "DB backup failed ($DB -> $backup) — aborting before replacing the binary."
+    for side in wal shm; do
+        [[ -f "$DB-$side" ]] && cp -p "$DB-$side" "$backup-$side" || true
+    done
+    ok "backed up DB -> $backup"
+fi
+
 chmod +x "$tmp"
 mv -f "$tmp" "$DEST"
 trap - EXIT
 ok "installed -> $DEST"
 
-# Configure (random credentials) + install the systemd unit, then start
-msg "Configuring credentials + installing systemd unit"
-warn "--random sets a fresh port, username, password and web path — note them below."
-"$DEST" --random --systemd
+# Configure + install/refresh the systemd unit. Fresh installs get randomized
+# credentials (--random); updates DO NOT, so the operator's existing port, login
+# and web path survive the upgrade.
+if [[ "$MODE" == "install" ]]; then
+    msg "Configuring credentials + installing systemd unit"
+    warn "--random sets a fresh port, username, password and web path — note them below."
+    "$DEST" --random --systemd
+else
+    msg "Refreshing systemd unit (existing credentials preserved)"
+    "$DEST" --systemd
+fi
 
 msg "Starting ${UNIT}"
-systemctl start "$UNIT"
+systemctl restart "$UNIT"
 sleep 1
 if systemctl is-active --quiet "$UNIT"; then
     ok "${UNIT} is running"
@@ -111,7 +151,12 @@ fi
 # Done
 hr
 msg "Deploy complete"
-act "the randomized login (port / user / password / web path) is printed above ${B}↑${R}"
+if [[ "$MODE" == "install" ]]; then
+    act "the randomized login (port / user / password / web path) is printed above ${B}↑${R}"
+else
+    act "updated to ${GREEN}${ver:-latest}${R} — your existing port / login / web path are unchanged"
+    [[ -n "${backup:-}" ]] && act "DB backup: ${TEAL}${backup}${R}"
+fi
 act "status:  ${TEAL}systemctl status ${UNIT}${R}"
 act "logs:    ${TEAL}journalctl -u ${UNIT} -f${R}"
 hr

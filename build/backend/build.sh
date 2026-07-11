@@ -125,6 +125,18 @@ build_arch() {
         -v "$REPO_ROOT/build/backend/libreswan-bundle.sh:/libreswan-bundle.sh:ro" \
         alpine:3.22 sh -e /libreswan-bundle.sh
 
+    # ocserv (OpenConnect server) — built from source (not packaged by Alpine) as a
+    # single static musl binary WITH RADIUS (radcli) + AnyConnect compat. GnuTLS is
+    # source-built static inside the recipe (the only dep Alpine ships no *-static
+    # for). Emits /out/ocserv + /out/occtl. Separate Alpine 3.22 run so the recipe
+    # stays self-contained, like pppd/libreswan above.
+    step "Building ocserv (OpenConnect) static binary for $goarch"
+    docker run --rm ${DOCKER_NET:-} --platform "$platform" \
+        -e ARCH="$muslarch" \
+        -v "$outdir:/out" \
+        -v "$REPO_ROOT/build/backend/ocserv-bundle.sh:/ocserv-bundle.sh:ro" \
+        alpine:3.22 sh -e /ocserv-bundle.sh
+
     ok "Done: $(ls -lh "$outdir")"
 }
 

@@ -53,7 +53,7 @@ const (
 
 // CoreStatus is the status of a single backend core shown in the Core Settings panel.
 type CoreStatus struct {
-	Name     string         `json:"name"`     // xray | l2tp | pptp | openvpn | radius
+	Name     string         `json:"name"`     // xray | l2tp | pptp | openvpn | openconnect | radius
 	State    CoreState      `json:"state"`    //
 	Detail   string         `json:"detail"`   // human-readable extra info / error
 	Version  string         `json:"version"`  // where available (xray)
@@ -99,6 +99,7 @@ type CoreService struct {
 	l2tpService    L2tpService
 	pptpService    PptpService
 	openvpnService OpenVpnService
+	ocservService  OcservService
 	xrayService    XrayService
 }
 
@@ -251,6 +252,13 @@ func (s *CoreService) MissingDokodemoPorts() []int {
 			}
 		}
 	}
+	if ins, err := s.ocservService.GetOcservInbounds(); err == nil {
+		for _, in := range ins {
+			if port := s.ocservService.GetTproxyPort(in); in.Enable && !dokodemoPortBound(port) {
+				missing = append(missing, port)
+			}
+		}
+	}
 	return missing
 }
 
@@ -262,6 +270,7 @@ func (s *CoreService) GetCoresStatus() []CoreStatus {
 		s.ipsecStatus(),
 		s.pptpStatus(),
 		s.openvpnStatus(),
+		s.ocservStatus(),
 		s.radiusStatus(),
 	}
 }
@@ -371,6 +380,27 @@ func (s *CoreService) openvpnStatus() CoreStatus {
 	return cs
 }
 
+func (s *CoreService) ocservStatus() CoreStatus {
+	cs := CoreStatus{Name: "openconnect"}
+	inbounds, _ := s.ocservService.GetOcservInbounds()
+	cs.Inbounds = len(inbounds)
+	if !daemonInstalled("ocserv") {
+		cs.State = CoreNotInstalled
+		cs.Detail = "ocserv not installed"
+		return cs
+	}
+	cs.Version = daemonVersion("ocserv")
+	switch {
+	case procMgr.AnyRunningWithPrefix("ocserv-server-"):
+		cs.State = CoreRunning
+	case cs.Inbounds == 0:
+		cs.State = CoreIdle
+	default:
+		cs.State = CoreStopped
+	}
+	return cs
+}
+
 func (s *CoreService) radiusStatus() CoreStatus {
 	cs := CoreStatus{Name: "radius"}
 	// RADIUS is embedded in the panel binary, so its version is the panel's.
@@ -447,6 +477,8 @@ func (s *CoreService) RestartCore(name string) error {
 		return s.pptpService.RestartServices()
 	case "openvpn":
 		return s.openvpnService.RestartServices()
+	case "openconnect":
+		return s.ocservService.RestartServices()
 	case "radius":
 		return RestartRadius()
 	case "ipsec":
@@ -461,7 +493,7 @@ func (s *CoreService) RestartCore(name string) error {
 // one failing core doesn't abort the rest.
 func (s *CoreService) RestartAll() error {
 	var errs []string
-	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "radius"} {
+	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "openconnect", "radius"} {
 		if err := s.RestartCore(name); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 		}
@@ -486,6 +518,9 @@ func (s *CoreService) StopCore(name string) error {
 	case "openvpn":
 		s.openvpnService.StopServices()
 		return nil
+	case "openconnect":
+		s.ocservService.StopServices()
+		return nil
 	case "radius":
 		return StopRadius()
 	case "ipsec":
@@ -506,6 +541,8 @@ func (s *CoreService) CoreLogs(name string) string {
 		return procMgr.Logs("pptpd")
 	case "openvpn":
 		return procMgr.LogsByPrefix("openvpn-server-")
+	case "openconnect":
+		return procMgr.LogsByPrefix("ocserv-server-")
 	case "xray":
 		out := filterLogs("xray")
 		if out == "" {
@@ -817,6 +854,7 @@ func (s *CoreService) StartProvision() bool {
 			cs.l2tpService.InitL2tp()
 			cs.pptpService.InitPptp()
 			cs.openvpnService.InitOpenVpn()
+			cs.ocservService.InitOcserv()
 			if err := cs.xrayService.RestartXray(true); err != nil {
 				logger.Warning("provision: failed to restart xray after setup:", err)
 			}

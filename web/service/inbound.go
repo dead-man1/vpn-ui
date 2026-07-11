@@ -259,7 +259,7 @@ func (s *InboundService) checkEmailExistForInbound(inbound *model.Inbound) (stri
 // protocols), silently killing the clients' route to the internet. Changes to
 // them are applied by a full Xray restart instead.
 func isVpnProtocol(p model.Protocol) bool {
-	return p == model.L2TP || p == model.PPTP || p == model.OPENVPN
+	return p == model.L2TP || p == model.PPTP || p == model.OPENVPN || p == model.OPENCONNECT
 }
 
 // AddInbound creates a new inbound configuration.

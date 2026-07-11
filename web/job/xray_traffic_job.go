@@ -20,6 +20,7 @@ type XrayTrafficJob struct {
 	l2tpService     service.L2tpService
 	pptpService     service.PptpService
 	openvpnService  service.OpenVpnService
+	ocservService   service.OcservService
 	nftService      service.NftService
 	radiusService   *service.RadiusService
 }
@@ -38,6 +39,7 @@ func NewXrayTrafficJob(rs *service.RadiusService) *XrayTrafficJob {
 	j.l2tpService.SetRadius(rs, "")
 	j.pptpService.SetRadius(rs, "")
 	j.openvpnService.SetRadius(rs, "")
+	j.ocservService.SetRadius(rs, "")
 	return j
 }
 
@@ -61,10 +63,12 @@ func (j *XrayTrafficJob) Run() {
 	l2tpSessions := j.radiusService.GetSessions("l2tp")
 	pptpSessions := j.radiusService.GetSessions("pptp")
 	ovpnSessions := j.radiusService.GetSessions("openvpn")
-	if l2tpTraffics, pptpTraffics, ovpnTraffics := j.nftService.CollectAndResetTraffic(l2tpSessions, pptpSessions, ovpnSessions); len(l2tpTraffics) > 0 || len(pptpTraffics) > 0 || len(ovpnTraffics) > 0 {
+	ocservSessions := j.radiusService.GetSessions("openconnect")
+	if l2tpTraffics, pptpTraffics, ovpnTraffics, ocservTraffics := j.nftService.CollectAndResetTraffic(l2tpSessions, pptpSessions, ovpnSessions, ocservSessions); len(l2tpTraffics) > 0 || len(pptpTraffics) > 0 || len(ovpnTraffics) > 0 || len(ocservTraffics) > 0 {
 		clientTraffics = append(clientTraffics, l2tpTraffics...)
 		clientTraffics = append(clientTraffics, pptpTraffics...)
 		clientTraffics = append(clientTraffics, ovpnTraffics...)
+		clientTraffics = append(clientTraffics, ocservTraffics...)
 	}
 
 	// Level-triggered enforcement: disconnect any STILL-connected client that is no
@@ -78,6 +82,7 @@ func (j *XrayTrafficJob) Run() {
 	j.l2tpService.KillDisabledSessions()
 	j.pptpService.KillDisabledSessions()
 	j.openvpnService.KillDisabledSessions()
+	j.ocservService.KillDisabledSessions()
 
 	// Skip DB update if no traffic to process
 	if len(traffics) == 0 && len(clientTraffics) == 0 {

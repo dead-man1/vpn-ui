@@ -36,6 +36,8 @@ var Daemons = []Daemon{
 	{Name: "openvpn"},
 	{Name: "pptpd"},
 	{Name: "pptpctrl"},
+	{Name: "ocserv"},
+	{Name: "occtl"},
 }
 
 // PptpCtrlLink is the fixed path pptpd was compiled to exec pptpctrl from

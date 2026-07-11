@@ -556,17 +556,14 @@ func ovpnThirds(udpRanges []string) []int {
 	return thirds
 }
 
-// ovpnBlock returns the network address and prefix length of the OpenVPN block
-// covering udpRanges, for the given transport (udp => 10.2.x, tcp => 10.3.x).
-// Falls back to the legacy 10.{2|3}.{fallbackId}.0/24 when no ranges are stored.
-func ovpnBlock(udpRanges []string, proto string, fallbackId int) (net.IP, int) {
-	second := byte(2)
-	if proto == "tcp" {
-		second = 3
-	}
-	thirds := ovpnThirds(udpRanges)
+// vpnBlock returns the network address and prefix length of the aligned block
+// covering ranges in the 10.{base} /16. Falls back to the legacy
+// 10.{base}.{fallbackId}.0/24 when no ranges are stored. Shared by OpenVPN (base
+// 2/3) and OpenConnect (base 4).
+func vpnBlock(ranges []string, base, fallbackId int) (net.IP, int) {
+	thirds := ovpnThirds(ranges)
 	if len(thirds) == 0 {
-		return net.IPv4(10, second, byte(fallbackId), 0).To4(), 24
+		return net.IPv4(10, byte(base), byte(fallbackId), 0).To4(), 24
 	}
 	count := len(thirds)
 	// Round up to a power of two so the covering prefix is exact/aligned.
@@ -577,7 +574,18 @@ func ovpnBlock(udpRanges []string, proto string, fallbackId int) (net.IP, int) {
 	prefix := 24 - log2i(blk)
 	// Align the network address down to the block boundary.
 	minThird := thirds[0] &^ (blk - 1)
-	return net.IPv4(10, second, byte(minThird), 0).To4(), prefix
+	return net.IPv4(10, byte(base), byte(minThird), 0).To4(), prefix
+}
+
+// ovpnBlock returns the network address and prefix length of the OpenVPN block
+// covering udpRanges, for the given transport (udp => 10.2.x, tcp => 10.3.x).
+// Falls back to the legacy 10.{2|3}.{fallbackId}.0/24 when no ranges are stored.
+func ovpnBlock(udpRanges []string, proto string, fallbackId int) (net.IP, int) {
+	base := 2
+	if proto == "tcp" {
+		base = 3
+	}
+	return vpnBlock(udpRanges, base, fallbackId)
 }
 
 // ovpnBlockClientIP returns the tunnel IP for client index i inside an OpenVPN

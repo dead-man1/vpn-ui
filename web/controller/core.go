@@ -37,12 +37,13 @@ func (a *CoreController) initRouter(g *gin.RouterGroup) {
 func (a *CoreController) status(c *gin.Context) {
 	prov := a.coreService.ProvisionState()
 	jsonObj(c, gin.H{
-		"cores":          a.coreService.GetCoresStatus(),
-		"system":         a.coreService.GetSystemStatus(),
-		"provisioned":    a.coreService.IsProvisioned(),
-		"rebootRequired": prov.RebootRequired,
-		"rebootModules":  prov.RebootModules,
-		"rebootPkg":      prov.RebootPkg,
+		"cores":            a.coreService.GetCoresStatus(),
+		"system":           a.coreService.GetSystemStatus(),
+		"provisioned":      a.coreService.IsProvisioned(),
+		"missingProtocols": a.coreService.MissingProtocols(),
+		"rebootRequired":   prov.RebootRequired,
+		"rebootModules":    prov.RebootModules,
+		"rebootPkg":        prov.RebootPkg,
 	}, nil)
 }
 

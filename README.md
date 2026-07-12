@@ -12,6 +12,7 @@ This project is an enhanced version of the **[3X-UI](https://github.com/MHSanaei
 - L2TP (RAW)
 - L2TP/IPsec
 - OpenVPN
+- OpenConnect (cisco)
 
 ## New Features
 
@@ -150,6 +151,7 @@ A complete **E2E** test written in Python has been designed for this project ins
 | `openvpn` | connect variants + checks + peer reachability (OpenVPN) |
 | `l2tp` | connect variants + checks + peer reachability (L2TP/IPsec) |
 | `pptp` | connect variants + checks + peer reachability (PPTP) |
+| `openconnect` | connect variants + checks + peer reachability + same-NAT user-limit (OpenConnect/ocserv) |
 | `bulk-ops` | bulk client add/sub/enable/disable + TXT/PDF export via API |
 | `backup-restore` | DB export + import round-trip |
 | `warp-socks` | Cloudflare warp-cli SOCKS install + egress |

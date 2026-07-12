@@ -13,15 +13,26 @@ from .base import Client
 
 
 def connect(client: Client, inbound, which: str, variant: str = "dtls",
-            server_ip: str = "") -> tuple[bool, str, str]:
-    """Bring up an OpenConnect tunnel for account A/B. Returns (ok, tunnel_ip, log)."""
+            server_ip: str = "", iface: str = "tun0",
+            keep_existing: bool = False) -> tuple[bool, str, str]:
+    """Bring up an OpenConnect tunnel for account A/B. Returns (ok, tunnel_ip, log).
+
+    iface/keep_existing let a SECOND tunnel run from the same VM (a distinct tun +
+    pid/log, without killing the first) so a single client can present two devices
+    on one account behind ONE source IP — the same-NAT case ocserv can't tell apart
+    (no NAS-Port). tun0 keeps its original pid/log paths for the normal flow."""
     acct = inbound.accounts[which]
     port = inbound.udp_port
     if server_ip:
         client.pin_server_route(server_ip)
 
+    pid = "/run/oc.pid" if iface == "tun0" else f"/run/oc-{iface}.pid"
+    logf = "/var/log/oc.log" if iface == "tun0" else f"/var/log/oc-{iface}.log"
     no_dtls = "--no-dtls " if variant == "tls" else ""
-    client.sh("pkill -f openconnect 2>/dev/null; rm -f /var/log/oc.log /run/oc.pid; true")
+    if keep_existing:
+        client.sh(f"rm -f {logf} {pid}; true")
+    else:
+        client.sh("pkill -f openconnect 2>/dev/null; rm -f /var/log/oc*.log /run/oc*.pid; true")
     # The server cert is self-signed and modern openconnect removed --no-cert-check,
     # so pin it. openconnect's native pin is pin-sha256:<base64> — the RFC7469
     # SHA-256 of the cert's SubjectPublicKeyInfo (NOT the cert-DER hash). Compute
@@ -35,25 +46,25 @@ def connect(client: Client, inbound, which: str, variant: str = "dtls",
     )
     fp = fp.strip()
     trust = f"--servercert pin-sha256:{fp} " if fp else "--no-cert-check "
-    # --interface=tun0 pins the device name so wait_iface('tun0') matches. openconnect
+    # --interface pins the device name so wait_iface(iface) matches. openconnect
     # runs its bundled vpnc-script to configure the tunnel; --passwd-on-stdin feeds the
     # RADIUS password. --background daemonizes after the tunnel is up.
     cmd = (
         f"echo '{acct.password}' | openconnect --protocol=anyconnect "
         f"--user={acct.user} --passwd-on-stdin {trust}{no_dtls}"
-        f"--interface=tun0 --background --pid-file=/run/oc.pid "
-        f"{server_ip}:{port} >/var/log/oc.log 2>&1"
+        f"--interface={iface} --background --pid-file={pid} "
+        f"{server_ip}:{port} >{logf} 2>&1"
     )
     client.sh(cmd)
 
-    ip = client.wait_iface("tun0", timeout=45)
+    ip = client.wait_iface(iface, timeout=45)
     if ip:
-        client.apply_tunnel_dns("tun0")
-    _, log = client.sh("cat /var/log/oc.log 2>/dev/null | tail -n 40")
+        client.apply_tunnel_dns(iface)
+    _, log = client.sh(f"cat {logf} 2>/dev/null | tail -n 40")
     if not ip:
-        return False, "", f"tun0 never came up ({variant})\n{log}"
+        return False, "", f"{iface} never came up ({variant})\n{log}"
     time.sleep(2)
-    _, log = client.sh("cat /var/log/oc.log 2>/dev/null | tail -n 40")
+    _, log = client.sh(f"cat {logf} 2>/dev/null | tail -n 40")
     return True, ip, log
 
 

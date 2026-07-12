@@ -15,6 +15,26 @@ const Protocols = {
     OPENCONNECT: 'openconnect',
 };
 
+// Display labels for the protocol picker. The Add/Edit inbound dropdown shows
+// these while binding the lowercase Protocols VALUE (openvpn/http/openconnect/…),
+// which is what the backend parses — so the pretty text never reaches the server.
+const ProtocolLabels = {
+    vmess: 'VMess',
+    vless: 'VLESS',
+    trojan: 'Trojan',
+    shadowsocks: 'Shadowsocks',
+    wireguard: 'WireGuard',
+    hysteria: 'Hysteria',
+    mixed: 'Mixed',
+    http: 'HTTP',
+    tunnel: 'Tunnel',
+    tun: 'TUN',
+    l2tp: 'L2TP',
+    pptp: 'PPTP',
+    openvpn: 'OpenVPN',
+    openconnect: 'OpenConnect (cisco)',
+};
+
 const SSMethods = {
     AES_256_GCM: 'aes-256-gcm',
     AES_128_GCM: 'aes-128-gcm',
@@ -124,6 +144,7 @@ const MODE_OPTION = {
 };
 
 Object.freeze(Protocols);
+Object.freeze(ProtocolLabels);
 Object.freeze(SSMethods);
 Object.freeze(TLS_FLOW_CONTROL);
 Object.freeze(TLS_VERSION_OPTION);
@@ -3252,7 +3273,7 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
     protocol,
     udpEnable = true,
     tcpEnable = true,
-    tcpPort = 443,
+    tcpPort = 1194,
     dns1 = "8.8.8.8",
     dns2 = "8.8.4.4",
     mtu = 1500,
@@ -3324,7 +3345,7 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
       Protocols.OPENVPN,
       json.udpEnable ?? true,
       json.tcpEnable ?? true,
-      json.tcpPort ?? 443,
+      json.tcpPort ?? 1194,
       json.dns1 ?? "8.8.8.8",
       json.dns2 ?? "8.8.4.4",
       json.mtu ?? 1500,

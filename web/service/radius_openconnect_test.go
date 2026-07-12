@@ -56,6 +56,7 @@ func TestHandleAuthOpenconnectPAP(t *testing.T) {
 		pending:     map[string]time.Time{},
 		stationIP:   map[string]string{},
 		stationSeen: map[string]time.Time{},
+		ocActiveFn:  func(string) bool { return true },
 		secret:      []byte(secret),
 	}
 

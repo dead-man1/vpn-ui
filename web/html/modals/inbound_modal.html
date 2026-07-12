@@ -231,6 +231,19 @@
                     if (!s.caCert || !s.serverCert) return false;
                     return true;
                 }
+                if (ib.protocol === "openconnect") {
+                    const s = ib.settings || {};
+                    if (!okPort(ib.port)) return false;
+                    // ocserv won't start without a TLS server cert+key — require one
+                    // just like OpenVPN. Either file paths (path mode) or pasted PEM
+                    // (content mode; the "Generate Self-Signed Cert" button fills these).
+                    const trim = v => (typeof v === "string" ? v.trim() : "");
+                    const hasCert = s.tlsUseFile
+                        ? (trim(s.certificateFile) !== "" && trim(s.keyFile) !== "")
+                        : (trim(s.certificate) !== "" && trim(s.key) !== "");
+                    if (!hasCert) return false;
+                    return true;
+                }
                 return okPort(ib.port);
             },
         },
@@ -290,15 +303,16 @@
             },
             onProtocolChange(protocol) {
                 // Prefill the standard control port for the PPP-based VPN protocols
-                // (L2TP 1701, PPTP 1723) and OpenVPN (1194 — shared by TCP + UDP by
-                // default) so the operator doesn't have to know them. Fires only on
-                // create — the protocol select is disabled when editing.
+                // (L2TP 1701, PPTP 1723) and OpenVPN (UDP 1195 / TCP 1194 when ports
+                // are separated; 1195 is also the shared default) so the operator
+                // doesn't have to know them. Fires only on create — the protocol
+                // select is disabled when editing.
                 if (protocol === 'l2tp') {
                     inModal.inbound.port = 1701;
                 } else if (protocol === 'pptp') {
                     inModal.inbound.port = 1723;
                 } else if (protocol === 'openvpn') {
-                    inModal.inbound.port = 1194;
+                    inModal.inbound.port = 1195;
                 }
             },
             streamNetworkChange() {

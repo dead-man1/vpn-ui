@@ -462,6 +462,70 @@ func (s *CoreService) IsProvisioned() bool {
 	return procFileIsOne("/proc/sys/net/ipv4/ip_forward") && daemonInstalled("openvpn")
 }
 
+// provisionProtocols is the set of VPN protocols whose host prerequisites the
+// setup step ("Initialize Setup") installs — kernel modules, packages, IPsec, etc.
+// APPEND to this list when adding a new host-dependent protocol. An install that
+// was already provisioned for the older set is then told to re-run setup for the
+// new protocol only (see MissingProtocols), so upgrades don't silently miss it.
+var provisionProtocols = []string{"l2tp", "pptp", "openvpn", "openconnect"}
+
+// provisionBaseline is FROZEN — the protocol set as of when per-protocol setup
+// tracking was introduced. Do NOT add to it; new protocols go in provisionProtocols
+// only. It credits pre-tracking installs (vpnProvisioned=true, no recorded list)
+// with the protocols that already existed, so an upgrade isn't wrongly told every
+// protocol is new — only genuinely newer ones surface as missing.
+var provisionBaseline = []string{"l2tp", "pptp", "openvpn", "openconnect"}
+
+// provisionedProtocolSet returns the protocols the host has been set up for.
+func (s *CoreService) provisionedProtocolSet() map[string]bool {
+	var ss SettingService
+	set := map[string]bool{}
+	if list := ss.GetProvisionedProtocols(); len(list) > 0 {
+		for _, p := range list {
+			set[p] = true
+		}
+		return set
+	}
+	// No recorded list but the host looks provisioned → a pre-tracking install:
+	// credit the frozen baseline so only newer protocols surface as missing.
+	if s.IsProvisioned() {
+		for _, p := range provisionBaseline {
+			set[p] = true
+		}
+	}
+	return set
+}
+
+// MissingProtocols returns provisionable protocols the host has NOT been set up
+// for yet. Non-empty exactly when a new protocol was added to an install that was
+// already provisioned for the older set — the "re-run setup for the new protocol"
+// case. Empty on a fresh (unprovisioned) host, where the first-run setup
+// call-to-action handles it instead.
+func (s *CoreService) MissingProtocols() []string {
+	if !s.IsProvisioned() {
+		return nil
+	}
+	provisioned := s.provisionedProtocolSet()
+	var missing []string
+	for _, p := range provisionProtocols {
+		if !provisioned[p] {
+			missing = append(missing, p)
+		}
+	}
+	return missing
+}
+
+// ProtocolNeedsSetup reports whether a specific protocol still needs setup run for
+// it (it was added after this host was last provisioned).
+func (s *CoreService) ProtocolNeedsSetup(protocol string) bool {
+	for _, p := range s.MissingProtocols() {
+		if p == protocol {
+			return true
+		}
+	}
+	return false
+}
+
 // --------------------------------------------------------------------------- //
 //  Control + provisioning
 // --------------------------------------------------------------------------- //
@@ -840,6 +904,12 @@ func (s *CoreService) StartProvision() bool {
 		var ss SettingService
 		if err := ss.SetVpnProvisioned(true); err != nil {
 			logger.Warning("failed to persist vpnProvisioned flag:", err)
+		}
+		// Record every protocol this setup run covers, so a later-added protocol
+		// (appended to provisionProtocols) shows up as missing on an upgrade until
+		// the operator re-runs setup — while today's protocols stay cleared.
+		if err := ss.SetProvisionedProtocols(provisionProtocols); err != nil {
+			logger.Warning("failed to persist provisionedProtocols:", err)
 		}
 
 		// With provisioning finished and no reboot pending, actively bring the VPN

@@ -223,6 +223,7 @@
             </a-tooltip>
         </template>
         <a-radio-group
+            button-style="solid"
             :value="inbound.settings.tlsUseFile ? 'file' : 'content'"
             @change="e => { inbound.settings.tlsUseFile = e.target.value === 'file'; }"
         >

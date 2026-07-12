@@ -40,7 +40,7 @@
                         {{ i18n "pages.xray.outbound.warpSocksUninstall" }}
                     </a-button>
                 </template>
-                <a-button @click="warpSocksModal.mode = 'choice'" :disabled="warpSocksModal.installing">
+                <a-button @click="warpSocksModal.hide()" :disabled="warpSocksModal.installing">
                     {{ i18n "close" }}
                 </a-button>
                 <a-tag v-if="warpSocksModal.done" color="green">{{ i18n "success" }}</a-tag>

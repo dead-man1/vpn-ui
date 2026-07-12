@@ -53,8 +53,11 @@ domain = "cloudflare.com"  # dig +short through the tunnel
 [traffic_test]
 usage_mb = 15              # "counted correctly" download
 multi_user_mb = 8          # per-device for K-device aggregation (pulled N times, keep small)
-limit_mb = 100             # account limit for the termination test
-over_mb = 120              # download to exceed the limit (> limit_mb)
+limit_mb = 15              # account limit for the termination test (low so the VM tunnel's
+                           # variable throughput reliably trips it; the mechanism, not the
+                           # magnitude, is what's under test — a broken limit fails to disable
+                           # regardless of size). Was 100MB → flaky N/A when the tunnel was slow.
+over_mb = 50               # download to exceed the limit (> limit_mb)
 settle_timeout = 40        # seconds to poll the counter / auto-disable flag
 urls = [
   "https://proof.ovh.net/files/1Gb.dat",

@@ -85,6 +85,22 @@
             </a-card>
           </a-col>
 
+          <!-- Upgrade: a protocol was added since this host was last set up -->
+          <a-col :span="24" v-if="provisioned && missingProtocols.length">
+            <a-alert type="warning" show-icon :style="{ marginBottom: '16px' }">
+              <span slot="message">{{ i18n "pages.core.newProtocolTitle" }}</span>
+              <template slot="description">
+                <div :style="{ marginBottom: '10px' }">
+                  {{ i18n "pages.core.newProtocolDesc" }}
+                  <b>[[ missingProtocols.map(coreTitle).join(', ') ]]</b>
+                </div>
+                <a-button type="primary" size="small" :loading="provisionRunning" @click="startProvision">
+                  <a-icon type="thunderbolt"></a-icon>{{ i18n "pages.core.reRunSetup" }}
+                </a-button>
+              </template>
+            </a-alert>
+          </a-col>
+
           <!-- Per-core cards -->
           <a-col :span="24" v-if="provisioned">
             <a-row type="flex" :gutter="[16, 16]">
@@ -348,6 +364,7 @@
       spinning: false,
       loaded: false,
       provisioned: false,
+      missingProtocols: [],
       cores: [],
       system: { modules: [] },
       provisionRunning: false,
@@ -381,6 +398,7 @@
           this.cores = msg.obj.cores || [];
           this.system = msg.obj.system || { modules: [] };
           this.provisioned = !!msg.obj.provisioned;
+          this.missingProtocols = msg.obj.missingProtocols || [];
           this.applyReboot(msg.obj);
         }
         this.loaded = true;
@@ -604,7 +622,7 @@
         this.reconnectTimer = setTimeout(probe, 20000);
       },
       coreTitle(name) {
-        return ({ xray: 'Xray', l2tp: 'L2TP', ipsec: 'IPsec (libreswan)', pptp: 'PPTP', openvpn: 'OpenVPN', openconnect: 'OpenConnect', radius: 'RADIUS' })[name] || name;
+        return ({ xray: 'Xray', l2tp: 'L2TP', ipsec: 'IPsec (libreswan)', pptp: 'PPTP', openvpn: 'OpenVPN', openconnect: 'OpenConnect (cisco)', radius: 'RADIUS' })[name] || name;
       },
       coreIcon(name) {
         return ({ xray: 'tool', l2tp: 'lock', ipsec: 'security-scan', pptp: 'api', openvpn: 'safety-certificate', openconnect: 'cloud-server', radius: 'key' })[name] || 'appstore';

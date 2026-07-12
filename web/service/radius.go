@@ -30,15 +30,27 @@ import (
 // Auth: pppd sends Access-Request with MS-CHAPv2 → we query SQLite → Accept/Reject.
 // Acct: pppd sends Acct-Start/Stop → we manage nft counters and track sessions in memory.
 type RadiusService struct {
-	nftService NftService
-	authServer *radius.PacketServer
-	acctServer *radius.PacketServer
-	mu         sync.Mutex
-	sessions   map[string]*radiusSession // key: Acct-Session-Id
-	pending    map[string]time.Time      // key: freshly allocated IP awaiting Acct-Start (User Limit blocks)
-	stationIP  map[string]string         // key: "proto:idx:Calling-Station-Id" -> its stable block IP
-	stationSeen map[string]time.Time     // last time each station authenticated (for pruning)
-	secret     []byte
+	nftService  NftService
+	authServer  *radius.PacketServer
+	acctServer  *radius.PacketServer
+	mu          sync.Mutex
+	sessions    map[string]*radiusSession // key: Acct-Session-Id
+	pending     map[string]time.Time      // key: freshly allocated IP awaiting Acct-Start (User Limit blocks)
+	stationIP   map[string]string         // key: "proto:idx:Calling-Station-Id" -> its stable block IP
+	stationSeen map[string]time.Time      // last time each station authenticated (for pruning)
+	secret      []byte
+	// ocActiveFn overrides the OpenConnect liveness probe (isIPActive) — set in unit
+	// tests where no real ocserv route table exists. nil in production.
+	ocActiveFn func(ip string) bool
+}
+
+// ocIsActive reports whether an OpenConnect tunnel IP is still live (routes via an
+// ocserv device), through the injectable probe so tests can stub it.
+func (s *RadiusService) ocIsActive(ip string) bool {
+	if s.ocActiveFn != nil {
+		return s.ocActiveFn(ip)
+	}
+	return s.isIPActive(ip, "openconnect")
 }
 
 // pendingLeaseTTL is how long a block-allocated IP is held between the
@@ -53,12 +65,27 @@ const pendingLeaseTTL = 90 * time.Second
 // (ghost) lease is reclaimed promptly instead of wedging the account until TTL.
 const pendingReclaimGrace = 15 * time.Second
 
+// ocStaleReclaimGrace is how long an OpenConnect block session is trusted as "still
+// establishing" before its missing ocserv route is taken to mean the tunnel is gone.
+// Long enough that a freshly-authed session's route is in the kernel; short enough
+// that a genuine re-dial of a dropped device isn't blocked as "block full" for long.
+const ocStaleReclaimGrace = 15 * time.Second
+
 type radiusSession struct {
 	email    string
 	ip       string
-	protocol string    // "l2tp", "pptp", or "openvpn"
-	started  time.Time // Acct-Start time; used to pick the oldest device to evict
+	protocol string    // "l2tp", "pptp", "openvpn", or "openconnect"
+	started  time.Time // session start; used to pick the oldest device to evict
 }
+
+// ocSessionKey is the s.sessions map key for an auth-recorded OpenConnect session.
+// ocserv's accounting can identify neither the device nor its IP (it sends no
+// Framed-IP-Address and no NAS-Port), so — unlike l2tp/pptp — an OpenConnect session
+// can't be keyed by Acct-Session-Id at Acct-Start. It is instead recorded at AUTH and
+// keyed by its assigned tunnel IP, which is unique per device (each holds a distinct
+// block IP) and, with groupconfig=true, equals the real ocserv tunnel IP. The "oc:"
+// prefix can't collide with a real ocserv Acct-Session-Id.
+func ocSessionKey(ip string) string { return "oc:" + ip }
 
 // runningRadius points at the RadiusService whose servers are currently bound.
 // The embedded RADIUS server lives in-process (not a child daemon), so the Core
@@ -214,6 +241,13 @@ func (s *RadiusService) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 			}
 			if clientIP != nil {
 				rfc2865.FramedIPAddress_Set(accept, clientIP)
+				// The session was recorded at auth (getClientIP -> allocateBlockIP). ocserv
+				// won't drive Acct-Start usefully, so create the nft accounting counters here
+				// too, off the lock — otherwise this device's traffic is never counted and
+				// account usage/quota enforcement silently no-ops for OpenConnect. Idempotent.
+				if err := s.nftService.AddClientAccounting(protocol, clientIP.String()); err != nil {
+					logger.Warning("RADIUS: failed to add openconnect nft accounting:", err)
+				}
 			}
 			rfc2869.AcctInterimInterval_Set(accept, rfc2869.AcctInterimInterval(60))
 			logger.Infof("RADIUS: auth accepted (PAP) user=%s nas=%s ip=%v", username, nasID, clientIP)
@@ -303,6 +337,18 @@ func (s *RadiusService) handleAcct(w radius.ResponseWriter, r *radius.Request) {
 	protocol, _, err := parseNASIdentifier(nasID)
 	if err != nil {
 		logger.Debugf("RADIUS: acct ignored — invalid NAS-Identifier %q", nasID)
+		return
+	}
+
+	// OpenConnect sessions are owned by the AUTH path (see allocateBlockIP): ocserv's
+	// Accounting-Request carries neither Framed-IP-Address nor NAS-Port, so it can't
+	// identify the per-device session, and its octet counts are unused (nft counters
+	// drive quota). Ignoring it here keeps auth the single source of truth and stops
+	// a stray Acct-Start (should ocserv ever include a Framed-IP) from double-recording
+	// the session or re-adding its nft counters. Cleanup is via CleanStaleSessions. The
+	// deferred Accounting-Response above still ACKs ocserv so it doesn't retry.
+	if protocol == "openconnect" {
+		logger.Debugf("RADIUS: acct ignored for openconnect (auth-managed) user=%s status=%v", username, statusType)
 		return
 	}
 
@@ -528,11 +574,18 @@ func (s *RadiusService) lookupEmail(protocol string, username string) string {
 	return ""
 }
 
-// KillSessionsByEmail kills pppd processes for all active sessions matching the given emails.
+// KillSessionsByEmail kills pppd processes for all active L2TP/PPTP sessions matching
+// the given emails. It is the ppp teardown used by the L2TP/PPTP disable paths; the
+// map now also holds OpenConnect sessions (recorded at auth), which have no pppd/ppp
+// interface, so they are skipped here — OpenConnect disable/eviction goes through
+// occtl (OcservService.KillClient / killOcservByIP).
 func (s *RadiusService) KillSessionsByEmail(emails map[string]bool) {
 	s.mu.Lock()
 	var toKill []string
 	for _, sess := range s.sessions {
+		if sess.protocol == "openconnect" {
+			continue
+		}
 		if emails[sess.email] {
 			toKill = append(toKill, sess.ip)
 		}
@@ -710,7 +763,8 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 	}
 
 	type clientEntry struct {
-		ID string `json:"id"`
+		ID    string `json:"id"`
+		Email string `json:"email"`
 	}
 	type settingsJSON struct {
 		IpRanges          []string      `json:"ipRanges"`
@@ -742,7 +796,9 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 		ranges = []string{settings.IpRange}
 	}
 
-	// User Limit K>=2 (L2TP/PPTP only — OpenVPN ignores the RADIUS Framed-IP and
+	email := settings.Clients[clientIndex].Email
+
+	// User Limit K>=2 (L2TP/PPTP/OpenConnect — OpenVPN ignores the RADIUS Framed-IP and
 	// assigns from its own pool in the connect hook): hand out a FREE IP from the
 	// account's block so K devices on one account each get a distinct IP. When the
 	// block is full the strategy decides: "reject" denies the dial, "accept" evicts
@@ -767,7 +823,7 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 			return nil, false
 		}
 		strategy := normUserLimitStrategy(settings.UserLimitStrategy)
-		return s.allocateBlockIP(inbound.Id, clientIndex, blockIPs, protocol, strategy, station, nasPort)
+		return s.allocateBlockIP(inbound.Id, clientIndex, blockIPs, protocol, strategy, station, nasPort, email)
 	}
 	return computeVpnClientIP(ranges, inbound.Id, clientIndex, protocol), false
 }
@@ -782,7 +838,7 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 // when all K are held the strategy decides — "reject" returns (nil,true) so the caller
 // denies, "accept" evicts the account's OLDEST live device. Returns (ip,false) on
 // success, (nil,true) on deny.
-func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []string, protocol, strategy, station string, nasPort uint32) (net.IP, bool) {
+func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []string, protocol, strategy, station string, nasPort uint32, email string) (net.IP, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.pending == nil {
@@ -808,8 +864,33 @@ func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []s
 		skey = fmt.Sprintf("%s:%d:%d:%s:%d", protocol, inboundId, clientIndex, station, nasPort)
 	}
 
+	// recordOC records/refreshes an OpenConnect device's session at AUTH (see
+	// ocSessionKey). ocserv's accounting can't identify the device (no Framed-IP, no
+	// NAS-Port), so this — not handleAcct — is where an OpenConnect session enters
+	// s.sessions, which is what User-Limit accept-eviction (oldestBlockSession) and
+	// traffic attribution (GetSessions) rely on. The transient `pending` lease is the
+	// gap between an Access-Accept and its confirming Acct-Start; OpenConnect has no
+	// such gap (auth IS the confirmation), so it is cleared here — leaving it would let
+	// the ghost-reclaim step below hand a live device's IP to a new one, bypassing the
+	// strategy. No-op for l2tp/pptp (their sessions come from Acct-Start with a real
+	// Framed-IP) and never reached by OpenVPN. Called under s.mu.
+	recordOC := func(ip string) {
+		if protocol != "openconnect" {
+			return
+		}
+		delete(s.pending, ip)
+		if existing, ok := s.sessions[ocSessionKey(ip)]; ok {
+			if email != "" {
+				existing.email = email // refresh; keep original `started` for stable evict order
+			}
+			return
+		}
+		s.sessions[ocSessionKey(ip)] = &radiusSession{email: email, ip: ip, protocol: protocol, started: now}
+	}
+
 	// assign claims ip for this station: it wins the slot, so drop any OTHER station's
-	// stale claim on the same ip, record ours, and reserve it (pending) until Acct-Start.
+	// stale claim on the same ip, record ours, and reserve it (pending) until Acct-Start
+	// (OpenConnect confirms immediately via recordOC, which clears the pending lease).
 	assign := func(ip string) (net.IP, bool) {
 		if skey != "" {
 			for key, oip := range s.stationIP {
@@ -822,7 +903,12 @@ func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []s
 			s.stationSeen[skey] = now
 		}
 		s.pending[ip] = now
+		recordOC(ip)
 		return net.ParseIP(ip).To4(), false
+	}
+
+	if protocol == "openconnect" {
+		logger.Debugf("RADIUS: oc alloc idx=%d station=%q nasPort=%d skey=%q block=%v", clientIndex, station, nasPort, skey, blockIPs)
 	}
 
 	// IDEMPOTENT REDIAL: a client (by Calling-Station-Id) keeps the block IP it already
@@ -830,10 +916,20 @@ func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []s
 	// flaps re-authenticates every ~1s, is treated as a new device each time, evicts its
 	// own prior session (resetting that IP's traffic counter -> "counted delta 0") and
 	// can be handed the account's other device's IP (duplicate).
-	if skey != "" {
+	//
+	// OpenConnect is EXCLUDED: it is a PPP-only protection. ocserv sends no NAS-Port
+	// (nasPort=0 always), so the skey is just protocol:inbound:idx:Calling-Station-Id —
+	// and two devices on one account behind the SAME public IP (two phones on home wifi:
+	// the common case) collapse to ONE skey. Idempotent-redial would then hand the 2nd
+	// device the 1st's IP instead of a free one / an eviction, so it never gets a routable
+	// address (no internet) and the 1st is never evicted — exactly the reported bug.
+	// OpenConnect auths once per tunnel (no CHAP flapping), so a fresh free-IP-or-evict
+	// allocation per auth is correct and safe.
+	if skey != "" && protocol != "openconnect" {
 		if ip, ok := s.stationIP[skey]; ok && isBlockIP[ip] {
 			s.stationSeen[skey] = now
 			s.pending[ip] = now
+			recordOC(ip) // openconnect: refresh session, clear the transient pending lease
 			return net.ParseIP(ip).To4(), false
 		}
 		// Prune long-abandoned station claims (client gone for good) so the map can't
@@ -842,6 +938,39 @@ func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []s
 			if now.Sub(ts) > pendingLeaseTTL {
 				delete(s.stationSeen, key)
 				delete(s.stationIP, key)
+			}
+		}
+	}
+
+	// OpenConnect reconcile against ocserv's ground truth. The panel never sees an
+	// OpenConnect disconnect (Acct is ignored — the session is auth-managed), so a
+	// dead device's oc: session lingers until the periodic CleanStaleSessions sweep.
+	// Left in place it wrongly OCCUPIES a block slot: a genuine RE-DIAL of the same
+	// device (same skey, now with idempotent-redial disabled) would be rejected as
+	// "block full", and occupancy is inflated. So before deciding, drop this account's
+	// block sessions whose IP no longer routes through an ocserv device — i.e. the
+	// tunnel is gone. A truly-live device (a real 2nd device on the account) still
+	// routes via ocserv, stays counted, and keeps the K cap honest. Only IPs that
+	// actually hold a session are probed, so this is at most K-devices `ip route get`s.
+	if protocol == "openconnect" {
+		for _, ip := range blockIPs {
+			sid := ocSessionKey(ip)
+			sess, ok := s.sessions[sid]
+			if !ok {
+				continue
+			}
+			// Don't reclaim a session still establishing: right after auth its ocserv
+			// route may not be in the kernel yet, so isIPActive would read a false
+			// negative and we'd wrongly free a live device's IP (re-opening the very
+			// collapse this fixes). Only past the grace does "no ocserv route" mean the
+			// tunnel is genuinely gone.
+			if now.Sub(sess.started) < ocStaleReclaimGrace {
+				continue
+			}
+			if !s.ocIsActive(ip) {
+				delete(s.sessions, sid)
+				s.nftService.RemoveClientAccounting("openconnect", ip)
+				logger.Debugf("RADIUS: oc reclaimed stale block IP %s (ocserv tunnel gone)", ip)
 			}
 		}
 	}
@@ -889,7 +1018,23 @@ func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []s
 	// (3) Block full. "accept": evict the account's oldest live device and reuse its IP.
 	if strategy == "accept" {
 		if victimSID, victimIP := oldestBlockSession(s.sessions, blockSet); victimIP != "" {
+			victim := s.sessions[victimSID]
 			delete(s.sessions, victimSID)
+			// Fold the evicted device's final counter bytes into its quota BEFORE deleting
+			// the nft counters — same as the Acct-Stop path (see handleAcct) — otherwise
+			// eviction silently drops the traffic accumulated since the last 10s collection.
+			// Under a redial storm (pptp CHAP churn re-keys the same device to a new NAS-Port,
+			// tripping this evict-and-readmit repeatedly) that lost traffic zeroes out real
+			// usage — the pptp multi-user "counted 0" bug. Folding first can't over-count:
+			// ReadAndResetClientCounters zeroes the counter, so the readmit starts from 0.
+			if victim != nil && victim.email != "" {
+				if up, down := s.nftService.ReadAndResetClientCounters(protocol, victimIP); up > 0 || down > 0 {
+					if db := database.GetDB(); db != nil {
+						db.Exec("UPDATE client_traffics SET up = up + ?, down = down + ? WHERE email = ?",
+							up, down, victim.email)
+					}
+				}
+			}
 			s.nftService.RemoveClientAccounting(protocol, victimIP)
 			// Force the old device's link down. L2TP/PPTP delete the ppp interface;
 			// ocserv has no ppp iface, so disconnect the session via occtl instead.
@@ -977,6 +1122,40 @@ func computeVpnClientIP(ranges []string, inboundId, clientIndex int, protocol st
 		remaining -= capacity
 	}
 	return nil
+}
+
+// ResetAllocations drops the RADIUS service's cached per-device IP assignments for
+// a protocol (keys are "protocol:inboundId:..."). Call it when an inbound's
+// settings change — User Limit, IP ranges, or strategy — because those shift the
+// account block layout: an account's device IPs move, and the routing map is
+// re-translated to the new IPs. A device that kept its OLD cached IP (via the
+// idempotent-redial cache) would then land on an address the new source-IP routing
+// rules don't cover, so its traffic isn't routed — the classic "the UI change
+// wasn't honored" symptom. Clearing the cache makes each device re-allocate under
+// the new layout on its next dial (l2tp/pptp restart the shared daemon here, so
+// every device redials anyway). Only the IP caches are touched; live sessions and
+// nft accounting counters are left intact.
+func ResetAllocations(protocol string) {
+	s := runningRadius
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prefix := protocol + ":"
+	for k := range s.stationIP {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.stationIP, k)
+		}
+	}
+	for k := range s.stationSeen {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.stationSeen, k)
+		}
+	}
+	// Pending leases are keyed by IP (not by protocol) and live only seconds; drop
+	// them all so no stale pre-change lease pins an address under the old layout.
+	s.pending = map[string]time.Time{}
 }
 
 // BuildVpnEmailToIPMap returns a map of email → deterministic tunnel IP(s) for all

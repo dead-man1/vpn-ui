@@ -154,18 +154,5 @@
             </a-button>
         </a-form-item>
     </template>
-
-    <template v-if="inbound.id">
-        <a-divider>Connection Info</a-divider>
-        <a-form-item label="Server">
-            <a-tag color="blue">[[ location.hostname ]]:[[ inbound.port ]]</a-tag>
-        </a-form-item>
-        <a-form-item :wrapper-col="{ md: {offset:8, span:14} }">
-            <span :style="{ color: '#888', fontSize: '12px' }">
-                Connect with any AnyConnect / OpenConnect client using the server
-                address above and an account's username / password.
-            </span>
-        </a-form-item>
-    </template>
 </a-form>
 {{end}}

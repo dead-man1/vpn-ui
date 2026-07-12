@@ -108,6 +108,7 @@ var defaultValueMap = map[string]string{
 	"ldapDefaultExpiryDays": "0",
 	"ldapDefaultLimitIP":    "0",
 	"vpnProvisioned":        "false",
+	"provisionedProtocols":  "",
 }
 
 // SettingService provides business logic for application settings management.
@@ -386,6 +387,30 @@ func (s *SettingService) GetVpnProvisioned() bool {
 // SetVpnProvisioned persists whether the VPN backend has been provisioned.
 func (s *SettingService) SetVpnProvisioned(value bool) error {
 	return s.setBool("vpnProvisioned", value)
+}
+
+// GetProvisionedProtocols returns the VPN protocols the host was provisioned for
+// on the last setup run, as recorded by SetProvisionedProtocols. Empty when never
+// recorded (e.g. an install provisioned before per-protocol tracking existed).
+func (s *SettingService) GetProvisionedProtocols() []string {
+	v, err := s.getString("provisionedProtocols")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// SetProvisionedProtocols records (comma-separated) the VPN protocols the host has
+// been provisioned for. Called on a successful setup run so newly added protocols
+// stop being reported as missing.
+func (s *SettingService) SetProvisionedProtocols(list []string) error {
+	return s.setString("provisionedProtocols", strings.Join(list, ","))
 }
 
 // GetSystemdServiceName returns the configured systemd unit name for the panel.

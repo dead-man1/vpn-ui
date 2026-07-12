@@ -399,6 +399,16 @@ func randomFreePort() int {
 // can log in. Invoked by `vpn-ui --random` (composable with --systemd, which is
 // applied afterwards so the unit boots with these settings).
 func randomizeSetting() error {
+	// Open the DB FIRST. GetServiceName below and every SettingService/UserService
+	// write in this function are gorm-backed, and on a fresh install nothing has opened
+	// the DB yet — calling any of them before InitDB nil-derefs gorm (SIGSEGV). This
+	// ordering regressed when the stop-the-running-panel logic was added above the
+	// original InitDB call; restore InitDB-first.
+	if err := database.InitDB(config.GetDBPath()); err != nil {
+		fmt.Println("Database initialization failed:", err)
+		return err
+	}
+
 	// A running panel holds the SQLite DB open and serves the OLD port/creds/webpath.
 	// Writing new settings underneath it races the live process (and the panel would
 	// keep the stale values until a restart anyway), so stop the systemd-managed
@@ -410,11 +420,6 @@ func randomizeSetting() error {
 	if panelWasActive {
 		fmt.Printf("Stopping %s before applying randomized settings...\n", unit)
 		_ = exec.Command("systemctl", "stop", unit).Run()
-	}
-
-	if err := database.InitDB(config.GetDBPath()); err != nil {
-		fmt.Println("Database initialization failed:", err)
-		return err
 	}
 
 	settingService := service.SettingService{}

@@ -20,7 +20,7 @@
             :dropdown-class-name="themeSwitcher.currentTheme"
         >
             <a-select-option v-for="p in Protocols" :key="p" :value="p"
-                >[[ p ]]</a-select-option
+                >[[ ProtocolLabels[p] || p ]]</a-select-option
             >
         </a-select>
     </a-form-item>
@@ -83,6 +83,28 @@
                 @change="checked => { inbound.settings.separatePorts = checked; }"
             ></a-switch>
         </a-form-item>
+        <a-form-item v-if="inbound.settings.separatePorts" label="TCP Port" :validate-status="tcpPortValidateStatus" :help="tcpPortHelp">
+            <a-space>
+                <a-switch
+                    :checked="inbound.settings.tcpEnable"
+                    @change="checked => ovpnToggleTransport('tcp', checked)"
+                ></a-switch>
+                <a-input
+                    v-if="inbound.settings.tcpEnable && inbound.settings.separatePorts"
+                    :value="inbound.settings.tcpPort"
+                    @change="e => { inbound.settings.tcpPort = sanitizePort(e.target.value); }"
+                    @keypress.native="blockNonDigit"
+                    inputmode="numeric"
+                    :max-length="5"
+                    placeholder="1194"
+                    :style="{ width: '90px' }"
+                ></a-input>
+                <span v-else-if="inbound.settings.tcpEnable" :style="{ color: '#888' }">
+                    shares the UDP port ([[ inbound.port ]])
+                </span>
+                <span v-else :style="{ color: '#888' }">Disabled</span>
+            </a-space>
+        </a-form-item>
         <a-form-item
             :label="inbound.settings.separatePorts ? 'UDP Port' : 'Port (TCP + UDP)'"
             :validate-status="portValidateStatus" :help="portHelp"
@@ -98,31 +120,9 @@
                     @keypress.native="blockNonDigit"
                     inputmode="numeric"
                     :max-length="5"
-                    placeholder="1194"
+                    placeholder="1195"
                     :style="{ width: '90px' }"
                 ></a-input>
-            </a-space>
-        </a-form-item>
-        <a-form-item label="TCP Port" :validate-status="tcpPortValidateStatus" :help="tcpPortHelp">
-            <a-space>
-                <a-switch
-                    :checked="inbound.settings.tcpEnable"
-                    @change="checked => ovpnToggleTransport('tcp', checked)"
-                ></a-switch>
-                <a-input
-                    v-if="inbound.settings.tcpEnable && inbound.settings.separatePorts"
-                    :value="inbound.settings.tcpPort"
-                    @change="e => { inbound.settings.tcpPort = sanitizePort(e.target.value); }"
-                    @keypress.native="blockNonDigit"
-                    inputmode="numeric"
-                    :max-length="5"
-                    placeholder="443"
-                    :style="{ width: '90px' }"
-                ></a-input>
-                <span v-else-if="inbound.settings.tcpEnable" :style="{ color: '#888' }">
-                    shares the UDP port ([[ inbound.port ]])
-                </span>
-                <span v-else :style="{ color: '#888' }">Disabled</span>
             </a-space>
         </a-form-item>
     </template>

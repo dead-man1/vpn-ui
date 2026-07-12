@@ -342,6 +342,8 @@
                     return new Inbound.PptpSettings.PptpUser();
                 case Protocols.OPENVPN:
                     return new Inbound.OpenvpnSettings.OpenvpnUser();
+                case Protocols.OPENCONNECT:
+                    return new Inbound.OcservSettings.OcservUser();
                 default:
                     return null;
             }

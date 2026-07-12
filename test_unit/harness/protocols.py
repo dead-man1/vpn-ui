@@ -153,12 +153,26 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
                           "primary connection failed; shared checks skipped"))
         log(f"-> primary connect failed -> skipping shared checks (strategy test still runs)")
     else:
-        # bring the primary up fresh for the shared check suite
-        _disconnect(cA, proto)
-        ok, a_primary_ip, clog = _connect(cA, sc, proto, "A")
+        # Bring the primary up fresh for the shared check suite, RETRYING with a full
+        # teardown + settle between attempts. Cycling the connect variants just above
+        # leaves the daemon mid-teardown of the last variant's session, so an immediate
+        # single reconnect can race it freeing the tunnel IP (esp. ocserv releasing the
+        # just-used block IP) and intermittently fail — which would wrongly SKIP the
+        # entire shared suite (tunnel-egress/internet/dns-leak/user-limit/c2c/routing/
+        # cross-inbound) for the phase. The strategy/traffic tests already use this
+        # retry (traffic._connect_retry); the shared-suite re-establish was the one
+        # connect that didn't, which is why it flaked here and nowhere else.
+        ok, a_primary_ip, clog = False, "", ""
+        for _ in range(3):
+            _disconnect(cA, proto)
+            cA.disconnect_all()
+            time.sleep(4)
+            ok, a_primary_ip, clog = _connect(cA, sc, proto, "A")
+            if ok:
+                break
         if not ok:
             suite_ok = False
-            phase.add(SubTest("suite", Status.SKIP, "could not re-establish primary"))
+            phase.add(SubTest("suite", Status.SKIP, "could not re-establish primary after retries"))
             log(f"-> could not re-establish primary -> skipping shared checks (strategy test still runs)")
 
     ib = sc.inbounds.get(proto)
@@ -247,6 +261,15 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
     # Always runs (independent of the shared suite): it restarts the daemon.
     if ib is not None and getattr(ib, "user_limit", 1) > 1 and panel is not None:
         _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec)
+
+    # ---- OpenConnect same-NAT device limit -----------------------------
+    # Two devices on ONE account from ONE source IP (two phones on home wifi). ocserv
+    # sends no NAS-Port, so both share a Calling-Station-Id — the E2E's separate client
+    # VMs have distinct IPs and can't hit this, so cA opens a SECOND tunnel (tun1)
+    # itself. Each device must get a DISTINCT routable block IP; the idempotent-redial
+    # cache used to collapse them onto one IP → 2nd device no internet (the real report).
+    if proto == "openconnect" and ib is not None and getattr(ib, "user_limit", 1) > 1:
+        _oc_same_nat_check(cA, sc, ib, log, phase, server_exec)
 
     # ---- User Limit: traffic AGGREGATION across the account's devices --
     # Prove the account's counted traffic is the SUM over its K simultaneous
@@ -476,9 +499,20 @@ def _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec=No
             rows_before = _ovpn_status_rows(server_exec, ib.inbound_id, "udp")
             victim_cid = _ovpn_cid_at_ip(rows_before, ip1)
             ok3, ip3, clog3 = _connect(cC, sc, proto, "A")  # device3: admitted, evicts oldest
-            time.sleep(6)  # detached evict fires (~1.5s) + status-file refresh (5s)
-            rows_after = _ovpn_status_rows(server_exec, ib.inbound_id, "udp")
-            still = _ovpn_cid_present(rows_after, victim_cid)
+            # The detached evictor kills the victim ~1.5s after the connect hook returns,
+            # but OpenVPN only rewrites the status file on a FIXED 5s timer (unanchored to
+            # the kill), so the victim's ORIGINAL client-id can linger in the file for up to
+            # one refresh past the kill. A single read at +6s races that timer. Poll for the
+            # cid's disappearance instead (up to ~18s = 3+ refreshes). A monotonic client-id
+            # never returns once killed (a reconnect gets a NEW id), and eviction that never
+            # fired keeps the cid present through every poll — so this can't mask over-admit.
+            still = True
+            for _ in range(9):
+                time.sleep(2)
+                still = _ovpn_cid_present(
+                    _ovpn_status_rows(server_exec, ib.inbound_id, "udp"), victim_cid)
+                if victim_cid != "" and not still:
+                    break
             evicted = ok3 and victim_cid != "" and not still
             evwhy = f"cA orig client-id={victim_cid or '?'} present_after={still} (absent ⇒ evicted)"
         else:
@@ -515,11 +549,17 @@ def _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec=No
                     link_gone = (addrs or "").strip() == ""
                 except Exception:  # noqa: BLE001
                     pass
-            # Pass requires the eviction to have actually happened: the log line AND,
-            # when we can check it, the victim's server-side link being gone. The
-            # client-side drop is the fallback only when no server signal is available.
+            # Pass requires the eviction to have actually happened, proven server-side by
+            # the churn-proof RADIUS "evicted oldest device" log (server_evicted): the panel
+            # emits it only after deleting the victim's session AND killing its link. That is
+            # CORROBORATED by the victim's tunnel really dropping — but accept-strategy REUSES
+            # the victim's IP for the incoming device, so the server-side `peer <ip>/` probe
+            # (link_gone) reads False the instant dev3 takes that IP over — a false negative,
+            # not a lingering victim. So accept EITHER corroboration: the victim's client-side
+            # drop (authoritative for openconnect — DPD tears tun0 down within seconds; the
+            # race-prone fallback for the keepalive-less l2tp CLI) OR the server link gone.
             if server_exec is not None:
-                evicted = server_evicted and (link_gone is not False)
+                evicted = server_evicted and (dropped["v"] or link_gone is not False)
             else:
                 evicted = dropped["v"]
             evwhy = (f"dev1 dropped(client)={dropped['v']} server-evicted={server_evicted} "
@@ -538,6 +578,55 @@ def _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec=No
     log(f"-> strategy-accept [{ac.status.value}] {ac.detail}")
 
     all_down()
+
+
+def _oc_same_nat_check(cA, sc, ib, log, phase, server_exec=None):
+    """Two OpenConnect devices on ONE account from ONE source IP (same VM → same
+    Calling-Station-Id; ocserv sends no NAS-Port). Each must get a DISTINCT block IP.
+    The idempotent-redial cache used to collapse them onto one IP so the 2nd device
+    got no routable address / never came up — the reported "new client no internet"."""
+    st = phase.add(SubTest("same-nat-limit"))
+    log(f"-> same-nat-limit (2 devices on account A, ONE source IP, K={ib.user_limit})...")
+    try:
+        cA.disconnect_all()
+        cA.sh("pkill -f openconnect 2>/dev/null; true")
+        time.sleep(3)
+        ok1, ip1, _ = oc_mod.connect(cA, ib, "A", variant="dtls",
+                                     server_ip=sc.server_ip, iface="tun0",
+                                     keep_existing=False)
+        time.sleep(3)
+        ok2, ip2, log2 = oc_mod.connect(cA, ib, "A", variant="dtls",
+                                        server_ip=sc.server_ip, iface="tun1",
+                                        keep_existing=True)
+        time.sleep(3)
+        ip1_now = cA.wait_iface("tun0", timeout=5)
+        ip2_now = cA.wait_iface("tun1", timeout=5)
+        distinct = bool(ok1 and ok2 and ip1_now and ip2_now and ip1_now != ip2_now)
+        # server-side evidence: the two Access-Accept IPs the panel handed out.
+        srv = ""
+        if server_exec is not None:
+            try:
+                _, srv, _ = server_exec(
+                    "journalctl -u vpn-ui-panel --no-pager 2>/dev/null | "
+                    "grep 'auth accepted (PAP)' | grep 'nas=openconnect' | tail -4")
+            except Exception:  # noqa: BLE001
+                pass
+        st.log = (f"dev1 tun0={ip1_now!r} dev2 tun1={ip2_now!r} distinct={distinct}\n"
+                  f"server auth log:\n{srv}\n{log2[-400:]}")
+        if distinct:
+            st.status = Status.PASS
+            st.detail = (f"2 same-NAT devices on 1 account each got a DISTINCT IP "
+                         f"({ip1_now}, {ip2_now}) — no idempotent-redial collapse")
+        else:
+            st.status = Status.FAIL
+            st.detail = (f"same-NAT COLLAPSE: dev1={ip1_now!r} dev2={ip2_now!r} "
+                         f"(ok1={ok1} ok2={ok2}) — 2nd device didn't get a distinct IP")
+    except Exception as e:  # noqa: BLE001
+        st.status, st.detail = Status.ERROR, str(e)[:150]
+    finally:
+        cA.sh("pkill -f openconnect 2>/dev/null; true")
+        time.sleep(1)
+    log(f"-> same-nat-limit [{st.status.value}] {st.detail}")
 
 
 def _ovpn_status_rows(server_exec, inbound_id, transport):

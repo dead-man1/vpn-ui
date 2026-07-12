@@ -80,6 +80,9 @@ func (a *InboundController) onL2tpChanged() {
 	if err := a.l2tpService.RestartServices(); err != nil {
 		logger.Warning("L2TP: service restart failed:", err)
 	}
+	// Drop cached per-device IP assignments so a changed User Limit / range / strategy
+	// takes effect on reconnect instead of being pinned to the pre-change layout.
+	service.ResetAllocations("l2tp")
 	a.l2tpService.KillDisabledSessions()
 	a.xrayService.SetToNeedRestart()
 }
@@ -96,6 +99,9 @@ func (a *InboundController) onPptpChanged() {
 	if err := a.pptpService.RestartServices(); err != nil {
 		logger.Warning("PPTP: service restart failed:", err)
 	}
+	// Drop cached per-device IP assignments so a changed User Limit / range / strategy
+	// takes effect on reconnect instead of being pinned to the pre-change layout.
+	service.ResetAllocations("pptp")
 	a.pptpService.KillDisabledSessions()
 	a.xrayService.SetToNeedRestart()
 }
@@ -131,6 +137,9 @@ func (a *InboundController) onOcservChanged() {
 	if err := a.ocservService.RestartServices(); err != nil {
 		logger.Warning("OpenConnect: service restart failed:", err)
 	}
+	// Drop cached per-device IP assignments so a changed User Limit / range / strategy
+	// takes effect on reconnect instead of being pinned to the pre-change layout.
+	service.ResetAllocations("openconnect")
 	a.ocservService.KillDisabledSessions()
 	// OpenConnect routes through Xray via dokodemo-door, so Xray must be restarted
 	// to bind the inbound's dokodemo port when an OpenConnect inbound changes.
@@ -208,6 +217,13 @@ func (a *InboundController) addInbound(c *gin.Context) {
 		var coreService service.CoreService
 		if !coreService.IsProvisioned() {
 			pureJsonMsg(c, http.StatusOK, false, I18nWeb(c, "pages.inbounds.toasts.setupRequired"))
+			return
+		}
+		// Provisioned, but this protocol was added after the last setup run (an
+		// upgrade that introduced a new protocol) — its host prerequisites aren't
+		// in place yet, so require a re-run of setup for it specifically.
+		if coreService.ProtocolNeedsSetup(string(inbound.Protocol)) {
+			pureJsonMsg(c, http.StatusOK, false, I18nWeb(c, "pages.inbounds.toasts.setupRequiredForProtocol"))
 			return
 		}
 	}

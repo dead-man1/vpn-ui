@@ -95,7 +95,7 @@
                   <div :style="{ display: 'flex', flexWrap: 'wrap', gap: '16px' }">
                     <div v-for="c in vpnCoreStatuses()" :key="c.name"
                       :style="{ flex: '1 1 0', minWidth: '84px', textAlign: 'center' }">
-                      <div :style="{ fontWeight: 600, marginBottom: '8px' }">[[ coreLabel(c.name) ]]</div>
+                      <div :style="{ fontWeight: 600, marginBottom: '8px', whiteSpace: 'normal', wordBreak: 'break-word' }">[[ coreLabel(c.name) ]]</div>
                       <a-badge :color="coreStateColor(c.state)" :text="coreStateText(c.state)"></a-badge>
                     </div>
                   </div>
@@ -1101,13 +1101,13 @@
         this.distroModal.visible = false;
       },
       vpnCoreStatuses() {
-        const order = ['l2tp', 'ipsec', 'pptp', 'openvpn', 'radius'];
+        const order = ['l2tp', 'ipsec', 'pptp', 'openvpn', 'openconnect', 'radius'];
         const byName = {};
         (this.coreStatuses || []).forEach(c => { byName[c.name] = c; });
         return order.map(n => byName[n] || { name: n, state: 'unknown' });
       },
       coreLabel(name) {
-        return { l2tp: 'L2TP', ipsec: 'IPsec', pptp: 'PPTP', openvpn: 'OpenVPN', radius: 'RADIUS' }[name] || name;
+        return { l2tp: 'L2TP', ipsec: 'IPsec', pptp: 'PPTP', openvpn: 'OpenVPN', openconnect: 'OpenConnect (cisco)', radius: 'RADIUS' }[name] || name;
       },
       coreStateColor(state) {
         return { running: '#52c41a', idle: '#1890ff', stopped: '#faad14', not_installed: '#8c8c8c', error: '#f5222d' }[state] || '#8c8c8c';

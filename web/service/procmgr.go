@@ -446,6 +446,19 @@ func migrateFromSystemd() {
 			if usingBundledIpsec() {
 				_ = exec.Command("pkill", "-KILL", "-f", backend.LibreswanBundleRoot+"/libexec/ipsec/pluto.bin").Run()
 			}
+			// Orphaned ocserv from a crashed/killed previous panel. ocserv RENAMES its
+			// processes to ocserv-main/-sm/-worker, so `pkill -f <exec path>` (used
+			// above) can never match them — their cmdline is the retitled name, not
+			// the binary path. Kill by EXACT process name instead (-x). Without this
+			// the orphan keeps holding the ocserv TCP/UDP port, so the panel's fresh
+			// ocserv can't bind → exit 1 → a permanent 5s procmgr restart loop, while
+			// the orphan keeps old sessions alive that the panel can't manage (occtl
+			// eviction hits the panel's socket, not the orphan) — exactly the
+			// "User Limit does nothing / new client has no internet" failure. Safe
+			// here: procMgr has spawned nothing yet, so any ocserv* is a stale orphan.
+			for _, comm := range []string{"ocserv-main", "ocserv-sm", "ocserv-worker", "ocserv"} {
+				_ = exec.Command("pkill", "-KILL", "-x", comm).Run()
+			}
 		}
 	})
 }

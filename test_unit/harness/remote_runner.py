@@ -8,7 +8,10 @@ l2tp-ipsec / pptp:
   * strategy reject   (device K+1 actively refused)
   * strategy accept   (device K+1 admitted, oldest device evicted)
 
-Run from repo root:  python3 -m test_unit.harness.remote_runner [all|openvpn|l2tp|pptp]
+Run from repo root:  python3 -m test_unit.harness.remote_runner [all|openvpn|l2tp|pptp|sstp]
+Config comes from RR_* env vars (RR_SERVER_IP, RR_PORT, RR_BP, RR_SCHEME, RR_PUSER,
+RR_PPASS, RR_SSH_PASS) so no creds are committed. NOTE: `all` includes pptp; for a
+live box your network may not reach pptp — run protocols individually there.
 
 Client VMs: cA=deb11 cB=deb13 cC=deb12 (all apt, behind one host NAT -> share a
 public IP = realistic multi-device-behind-NAT test). Server signals are read over
@@ -36,12 +39,12 @@ from .server_setup import Inbound, Account, _dict_client, PSK
 
 # ---- fixed environment ------------------------------------------------------
 # Fill in for your remote panel + SSH before running (do NOT commit real creds).
-SERVER_IP = "REPLACE_ME"
-PORT = 2083
-BP = "/REPLACE_ME/"
-SCHEME = "https"
-PUSER, PPASS = "REPLACE_ME", "REPLACE_ME"
-SSH_PASS = "REPLACE_ME"
+SERVER_IP = os.getenv("RR_SERVER_IP", "REPLACE_ME")
+PORT = int(os.getenv("RR_PORT", "2083"))
+BP = os.getenv("RR_BP", "/REPLACE_ME/")
+SCHEME = os.getenv("RR_SCHEME", "https")
+PUSER, PPASS = os.getenv("RR_PUSER", "REPLACE_ME"), os.getenv("RR_PPASS", "REPLACE_ME")
+SSH_PASS = os.getenv("RR_SSH_PASS", "REPLACE_ME")
 
 VM_A, VM_B, VM_C = "rtca", "rtcb", "rtcc"  # 3 existing apt client VMs behind one host NAT
 
@@ -450,7 +453,7 @@ def run_proto(panel, ib, proto, transport, clients):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
-    protos = ["openvpn", "l2tp", "pptp"] if mode == "all" else [mode]
+    protos = ["openvpn", "l2tp", "pptp", "sstp"] if mode == "all" else [mode]
 
     panel = Panel(host=SERVER_IP, port=PORT, base_path=BP, scheme=SCHEME,
                   username=PUSER, password=PPASS, timeout=40)

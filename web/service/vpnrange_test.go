@@ -176,11 +176,31 @@ func TestOvpnBlockClientIPBounds(t *testing.T) {
 // ---- User Limit (per-account CIDR blocks) ----------------------------------
 
 func TestNormUserLimit(t *testing.T) {
-	// Clamp to [1,64]; ANY integer allowed (not just powers of two).
-	cases := map[int]int{0: 1, 1: 1, 2: 2, 3: 3, 6: 6, 7: 7, 10: 10, 64: 64, 65: 64, 1000: 64}
+	// A PRESENT 0 means "no limit" => noLimitDevices; >=1 clamps to [1,64]; ANY
+	// integer allowed (not just powers of two).
+	cases := map[int]int{0: noLimitDevices, 1: 1, 2: 2, 3: 3, 6: 6, 7: 7, 10: 10, 64: 64, 65: 64, 1000: 64}
 	for in, want := range cases {
 		if got := normUserLimit(in); got != want {
 			t.Errorf("normUserLimit(%d) = %d want %d", in, got, want)
+		}
+	}
+}
+
+func TestEffectiveUserLimit(t *testing.T) {
+	// The absent-vs-explicit-0 distinction: nil (absent, legacy) must stay 1, while
+	// an explicit 0 expands to the no-limit block. Guards against a regression that
+	// would flip every legacy inbound to no-limit.
+	if got := effectiveUserLimit(nil); got != 1 {
+		t.Errorf("effectiveUserLimit(nil) = %d want 1 (legacy)", got)
+	}
+	zero := 0
+	if got := effectiveUserLimit(&zero); got != noLimitDevices {
+		t.Errorf("effectiveUserLimit(&0) = %d want %d (no limit)", got, noLimitDevices)
+	}
+	for _, v := range []int{1, 2, 5, 64, 100} {
+		vv := v
+		if got, want := effectiveUserLimit(&vv), normUserLimit(v); got != want {
+			t.Errorf("effectiveUserLimit(&%d) = %d want %d", v, got, want)
 		}
 	}
 }

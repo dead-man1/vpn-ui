@@ -59,7 +59,7 @@
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
-                    Simultaneous devices per account (each device gets its own IP; 1 = single device, or an even number 2-64)
+                    Simultaneous devices per account (each gets its own IP). 0 = no limit, 1 = single device, up to 64.
                 </template>
                 User Limit
                 <a-icon type="question-circle"></a-icon>
@@ -67,8 +67,8 @@
         </template>
         <a-input-number
             :value="inbound.settings.userLimit"
-            @change="inbound.settings.userLimit = Math.max(1, Math.min(64, Math.floor($event || 1)))"
-            :min="1" :max="64" :step="1" :precision="0" style="width: 90px"
+            @change="inbound.settings.userLimit = Math.max(0, Math.min(64, Math.floor($event || 0)))"
+            :min="0" :max="64" :step="1" :precision="0" style="width: 90px"
         ></a-input-number>
     </a-form-item>
     <a-form-item>

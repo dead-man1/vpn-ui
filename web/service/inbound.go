@@ -1542,6 +1542,12 @@ func (s *InboundService) BulkUpdateClients(req BulkClientUpdateRequest) (BulkCli
 				if email == "" || !emails[email] {
 					continue
 				}
+				// Single filtering point: every op (incl. freeze/unfreeze) honours the
+				// skip toggles here, so all operations are filtered uniformly.
+				if bulkClientSkipped(cm, req) {
+					result.Skipped++
+					continue
+				}
 				if applyBulkClientOp(cm, req, now) {
 					cm["updated_at"] = now
 					clientsAny[i] = cm
@@ -1584,25 +1590,41 @@ func (s *InboundService) BulkUpdateClients(req BulkClientUpdateRequest) (BulkCli
 }
 
 // bulkClientSkipped reports whether a client is excluded by the request's skip
-// toggles — shared by the update ops and delete: never-used (delayed start),
-// disabled, or unlimited-traffic accounts.
+// toggles. It is the SINGLE filtering point for every bulk op (the update ops,
+// freeze/unfreeze, and delete) so that every operation honours every toggle
+// uniformly: a never-used (delayed start), disabled, or "unlimited" account is
+// skipped. skipUnlimited is dimension-aware — day ops treat "unlimited" as
+// no-expiry (expiryTime==0) so a lifetime account is never stamped with a
+// deadline; every other op treats it as unlimited traffic (totalGB==0).
 func bulkClientSkipped(cm map[string]any, req BulkClientUpdateRequest) bool {
-	if req.SkipFirstUse && bulkNumToInt64(cm["expiryTime"]) < 0 {
+	expiry := bulkNumToInt64(cm["expiryTime"])
+	total := bulkNumToInt64(cm["totalGB"])
+	enable, _ := cm["enable"].(bool)
+
+	if req.SkipFirstUse && expiry < 0 {
 		return true
 	}
-	if req.SkipDisabled {
-		if enable, _ := cm["enable"].(bool); !enable {
-			return true
+	if req.SkipDisabled && !enable {
+		return true
+	}
+	if req.SkipUnlimited {
+		switch req.Op {
+		case "addDays", "subDays":
+			if expiry == 0 { // unlimited time (lifetime): don't stamp a deadline
+				return true
+			}
+		default: // traffic ops, enable/disable, freeze/unfreeze, delete: unlimited traffic
+			if total == 0 {
+				return true
+			}
 		}
-	}
-	if req.SkipUnlimited && bulkNumToInt64(cm["totalGB"]) == 0 {
-		return true
 	}
 	return false
 }
 
 // applyBulkClientOp mutates one client map per the request, returning false when the
-// skip toggles exclude it or the op is a no-op for that client. Semantics:
+// op is a no-op for that client. Skip-toggle filtering is done by the caller via
+// bulkClientSkipped, so every op is filtered uniformly. Semantics:
 //   - addDays/subDays adjust expiryTime: >0 absolute (ms), <0 delayed "start after
 //     first use" (grow the delay when adding), ==0 no expiry (addDays anchors from now).
 //   - subTraffic floors totalGB at 1 byte so a subtract never flips a limited account
@@ -1612,20 +1634,32 @@ func applyBulkClientOp(cm map[string]any, req BulkClientUpdateRequest, now int64
 	total := bulkNumToInt64(cm["totalGB"])
 	enable, _ := cm["enable"].(bool)
 
-	// Freeze/unfreeze are explicit actions and bypass the skip toggles. Freeze disables
+	// Skip-toggle filtering happens in the caller (bulkClientSkipped). Freeze disables
 	// the account and LOCKS its remaining time: a running (absolute) expiry is stored as
 	// its negative remaining — the panel's "delayed start" form, which does not tick down
 	// or trigger the auto-disable/expire check while the account is off. GB is locked for
 	// free (a disabled account passes no traffic). Unfreeze re-enables and resumes the
 	// clock immediately, converting the locked remaining back to an absolute deadline from
 	// now. A frozen account is thus recognisable as (enable=false AND expiryTime<0).
+	// frozenNoExpiry marks a frozen account that had NO expiry to lock (unlimited
+	// duration). A frozen account must be recognisable as (enable=false AND
+	// expiryTime<0); a no-expiry account has expiryTime==0, so without this sentinel
+	// freezing it would leave expiryTime==0 and it would read as a plain disable, not
+	// frozen (no cross icon / no "Frozen" badge, and it could never be unfrozen). The
+	// magnitude 1(ms) can't collide with a real locked remaining (always a multi-day
+	// duration) or a real delayed-start value, so unfreeze restores it to 0.
+	const frozenNoExpiry int64 = -1
 	switch req.Op {
 	case "freeze":
-		if !enable && expiry <= 0 {
-			return false // already off with nothing counting -> no-op
+		if !enable && expiry < 0 {
+			return false // already frozen (disabled + locked) -> no-op
 		}
-		if expiry > 0 {
+		switch {
+		case expiry > 0:
 			cm["expiryTime"] = now - expiry // = -(remaining): a non-ticking delayed value
+		case expiry == 0:
+			cm["expiryTime"] = frozenNoExpiry // no expiry to lock: mark frozen via sentinel
+			// expiry < 0 (a delayed-start account being frozen): keep its value as-is.
 		}
 		cm["enable"] = false
 		return true
@@ -1633,30 +1667,14 @@ func applyBulkClientOp(cm map[string]any, req BulkClientUpdateRequest, now int64
 		if enable {
 			return false // already active -> nothing to unfreeze
 		}
-		if expiry < 0 {
+		switch {
+		case expiry == frozenNoExpiry:
+			cm["expiryTime"] = int64(0) // had no expiry -> restore unlimited
+		case expiry < 0:
 			cm["expiryTime"] = now - expiry // = now + remaining: resume from this moment
 		}
 		cm["enable"] = true
 		return true
-	}
-
-	if req.SkipFirstUse && expiry < 0 {
-		return false
-	}
-	if req.SkipDisabled && !enable {
-		return false
-	}
-	if req.SkipUnlimited {
-		switch req.Op {
-		case "addTraffic", "subTraffic":
-			if total == 0 {
-				return false
-			}
-		case "addDays", "subDays":
-			if expiry == 0 {
-				return false
-			}
-		}
 	}
 
 	switch req.Op {

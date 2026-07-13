@@ -211,6 +211,25 @@ func InitDB(dbPath string) error {
 	return runSeeders(isUsersEmpty)
 }
 
+// GetSettingValue opens the DB and returns a single `settings` value via a plain
+// read-only SELECT — NO AutoMigrate and NO seeders (unlike InitDB). This lets a
+// short-lived hook process (e.g. `vpn-ui openvpn-auth`, which runs on every login
+// alongside the live panel) read a setting without migrating/seeding/locking the DB
+// the panel owns. A busy timeout tolerates the panel writing concurrently; a missing
+// key yields ("", nil).
+func GetSettingValue(dbPath, key string) (string, error) {
+	rdb, err := gorm.Open(sqlite.Open(dbPath+"?_busy_timeout=3000"), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		return "", err
+	}
+	if sqlDB, e := rdb.DB(); e == nil {
+		defer sqlDB.Close()
+	}
+	var value string
+	err = rdb.Raw("SELECT value FROM settings WHERE key = ?", key).Scan(&value).Error
+	return value, err
+}
+
 // CloseDB closes the database connection if it exists.
 func CloseDB() error {
 	if db != nil {

@@ -625,7 +625,8 @@
         return ({ xray: 'Xray', l2tp: 'L2TP', ipsec: 'IPsec (libreswan)', pptp: 'PPTP', openvpn: 'OpenVPN', openconnect: 'OpenConnect (cisco)', sstp: 'SSTP', radius: 'RADIUS' })[name] || name;
       },
       coreIcon(name) {
-        return ({ xray: 'tool', l2tp: 'lock', ipsec: 'security-scan', pptp: 'api', openvpn: 'safety-certificate', openconnect: 'cloud-server', sstp: 'windows', radius: 'key' })[name] || 'appstore';
+        // A single lock icon represents every core (Xray + all VPN daemons).
+        return 'lock';
       },
       stateText(state) {
         return ({

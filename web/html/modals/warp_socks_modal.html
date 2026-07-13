@@ -1,7 +1,7 @@
 {{define "modals/warpSocksModal"}}
 <a-modal id="warp-socks-modal" v-model="warpSocksModal.visible" title="Cloudflare WARP"
          :closable="true" :mask-closable="!warpSocksModal.installing" :footer="null"
-         :class="themeSwitcher.currentTheme">
+         :width="640" :class="themeSwitcher.currentTheme">
     <!-- step 1: choose the WARP method -->
     <template v-if="warpSocksModal.mode === 'choice'">
         <p>{{ i18n "pages.xray.outbound.warpChooseDesc" }}</p>
@@ -23,7 +23,11 @@
             </a-form-item>
             <a-alert type="info" :show-icon="true" :style="{ marginBottom: '10px' }"
                 message='{{ i18n "pages.xray.outbound.warpSocksHint" }}'></a-alert>
-            <a-space>
+            <!-- with the extra "Add Outbound" button the row can exceed the modal width.
+                 ant-design-vue 1.7.8's a-space has no `wrap` prop and renders as
+                 inline-flex, so wrap must be forced via flex styles on the container;
+                 this wraps to a second line instead of a horizontal scrollbar. -->
+            <a-space :style="{ display: 'flex', flexWrap: 'wrap', rowGap: '8px' }">
                 <!-- not installed yet: one install button -->
                 <a-button v-if="!warpSocksModal.installed" type="primary" icon="cloud-download"
                     :loading="warpSocksModal.installing" @click="installSocks">
@@ -31,7 +35,13 @@
                 </a-button>
                 <!-- already installed: reinstall (uses the port) + uninstall -->
                 <template v-else>
-                    <a-button type="primary" icon="reload" :loading="warpSocksModal.installing"
+                    <!-- installed but the "warp" SOCKS outbound is missing from the
+                         config: offer to add it without re-running the installer. -->
+                    <a-button v-if="warpOutboundMissing" type="primary" icon="plus"
+                        :disabled="warpSocksModal.installing" @click="addOutboundOnly">
+                        {{ i18n "pages.xray.outbound.warpSocksAddOutbound" }}
+                    </a-button>
+                    <a-button icon="reload" :loading="warpSocksModal.installing"
                         @click="installSocks">
                         {{ i18n "pages.xray.outbound.warpSocksReinstall" }}
                     </a-button>
@@ -97,7 +107,25 @@
         data: {
             warpSocksModal: warpSocksModal,
         },
+        computed: {
+            // warp-cli is present on the server but no "warp" outbound exists in the
+            // current Xray config — the case where we offer a standalone "Add Outbound".
+            // Reads the main page's reactive outbound list, so it updates live once the
+            // outbound is added (or removed elsewhere).
+            warpOutboundMissing() {
+                if (!warpSocksModal.installed) return false;
+                if (typeof app === 'undefined' || !app.templateSettings ||
+                    !Array.isArray(app.templateSettings.outbounds)) return false;
+                return app.templateSettings.outbounds.findIndex(o => o && o.tag === 'warp') < 0;
+            },
+        },
         methods: {
+            // warp-cli already installed but its SOCKS outbound is missing: add it
+            // without re-running the installer. Uses the port shown in the field.
+            addOutboundOnly() {
+                this.addSocksOutbound();
+                warpSocksModal.done = true;
+            },
             // Hand off to the existing WireGuard WARP flow.
             chooseWireguard() {
                 warpSocksModal.visible = false;

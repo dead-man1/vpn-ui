@@ -147,9 +147,9 @@ func Uninstall(opts UninstallOptions) *UninstallReport {
 		removePath(r, backend.LibreswanNssDir) // /etc/ipsec.d — only ours on the bundled path
 	}
 
-	// 10. The bin/ dir next to the binary (xray core, geo files, config.json,
-	//     backend/bin daemons). Resolve a relative path against the exe's dir so
-	//     it works regardless of the caller's working directory.
+	// 10. The bin/ dir next to the binary (xray core, geo files, config.json, and
+	//     the flat VPN daemons — all extract here now). Resolve a relative path
+	//     against the exe's dir so it works regardless of the caller's working dir.
 	binDir := config.GetBinFolderPath()
 	if !filepath.IsAbs(binDir) {
 		base := "."

@@ -26,20 +26,20 @@ type L2tpService struct {
 
 // l2tpSettings represents the L2TP-specific settings stored in the inbound's Settings JSON.
 type l2tpSettings struct {
-	IpsecEnable    bool         `json:"ipsecEnable"`
-	IpsecPsk       string       `json:"ipsecPsk"`
-	AllowRaw       bool         `json:"allowRaw"`
-	ClientToClient bool         `json:"clientToClient"`
-	CrossInbound   bool         `json:"crossInbound"`
-	UserLimit         int       `json:"userLimit"`         // simultaneous devices per account (1..64); 1 = legacy
-	UserLimitStrategy string    `json:"userLimitStrategy"` // at the cap: "accept" (default, evict oldest) or "reject" (deny new device)
-	IpRanges       []string     `json:"ipRanges"`
-	IpRange        string       `json:"ipRange"` // legacy single-range field (read-only fallback)
-	LocalIp        string       `json:"localIp"`
-	Dns1           string       `json:"dns1"`
-	Dns2           string       `json:"dns2"`
-	Mtu            int          `json:"mtu"`
-	Clients        []l2tpClient `json:"clients"`
+	IpsecEnable       bool         `json:"ipsecEnable"`
+	IpsecPsk          string       `json:"ipsecPsk"`
+	AllowRaw          bool         `json:"allowRaw"`
+	ClientToClient    bool         `json:"clientToClient"`
+	CrossInbound      bool         `json:"crossInbound"`
+	UserLimit         *int         `json:"userLimit"`         // nil=absent(legacy=>1); 0=no limit; else 1..64. Parse-only — enforce via effectiveUserLimit.
+	UserLimitStrategy string       `json:"userLimitStrategy"` // at the cap: "accept" (default, evict oldest) or "reject" (deny new device)
+	IpRanges          []string     `json:"ipRanges"`
+	IpRange           string       `json:"ipRange"` // legacy single-range field (read-only fallback)
+	LocalIp           string       `json:"localIp"`
+	Dns1              string       `json:"dns1"`
+	Dns2              string       `json:"dns2"`
+	Mtu               int          `json:"mtu"`
+	Clients           []l2tpClient `json:"clients"`
 }
 
 type l2tpClient struct {

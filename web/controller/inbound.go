@@ -785,7 +785,7 @@ func (a *InboundController) downloadOvpn(c *gin.Context) {
 		return
 	}
 
-	content, err := a.openvpnService.GenerateClientConfig(inbound, proto)
+	content, err := a.openvpnService.GenerateClientConfig(inbound, proto, browserHost(c))
 	if err != nil {
 		jsonMsg(c, "Failed to generate client config", err)
 		return

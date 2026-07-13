@@ -31,8 +31,12 @@
             <a-row v-if="!loadingStates.fetched">
               <div :style="{ minHeight: 'calc(100vh - 120px)' }"></div>
             </a-row>
-            <a-row :gutter="[isMobile ? 8 : 16, isMobile ? 0 : 12]" v-else>
-              <a-col>
+            <!-- type="flex": ant-design-vue 1.7.8's default a-row is a FLOAT grid
+                 (.ant-row is display:block, cols float:left), so unequal-height cards
+                 (Xray/Manage have #actions bars; the rest are short) snag on the floats
+                 and leave a staircase gap. Flexbox wrap lays them in clean locked rows. -->
+            <a-row type="flex" :gutter="[isMobile ? 8 : 16, isMobile ? 0 : 12]" v-else>
+              <a-col :span="24">
                 <a-card hoverable>
                   <a-row :gutter="[0, isMobile ? 16 : 0]">
                     <a-col :sm="24" :md="12">
@@ -184,11 +188,44 @@
               </a-col>
               <a-col :sm="24" :lg="12">
                 <a-card title='VPN-UI' hoverable>
-                  <a rel="noopener" href="https://github.com/Sir-MmD/vpn-ui" target="_blank">
-                    <a-tag color="green">
-                      <span>v{{ .cur_ver }}</span>
+                  <!-- Single wrapping row so the card stays as short as its grid
+                       neighbours (a tall vertical stack staggered the card grid). The
+                       update UI appears inline only when relevant. Native flex-wrap:
+                       ant-design-vue 1.7.8's a-space has no `wrap` and is inline-flex,
+                       so it can't wrap — use the same flex div as the VPN Services card. -->
+                  <div :style="{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }">
+                    <a rel="noopener" href="https://github.com/Sir-MmD/vpn-ui" target="_blank">
+                      <a-tag color="green">
+                        <span>v{{ .cur_ver }}</span>
+                      </a-tag>
+                    </a>
+                    <a-button size="small" icon="reload" :loading="panelUpdate.checking"
+                      @click="checkForUpdate(true)">
+                      {{ i18n "pages.index.checkUpdate" }}
+                    </a-button>
+                    <a-tag v-if="panelUpdate.checked && !panelUpdate.available && !panelUpdate.checking"
+                      color="green">
+                      <a-icon type="check-circle"></a-icon> {{ i18n "pages.index.upToDate" }}
                     </a-tag>
-                  </a>
+                    <a-tag v-if="panelUpdate.available" color="orange">
+                      {{ i18n "pages.index.updateAvailable" }} v[[ panelUpdate.latest ]]
+                    </a-tag>
+                    <a-popconfirm v-if="panelUpdate.available && !panelUpdate.updating"
+                      title='{{ i18n "pages.index.updateConfirm" }}' @confirm="doPanelUpdate"
+                      ok-text='{{ i18n "confirm" }}' cancel-text='{{ i18n "cancel" }}'>
+                      <a-button type="primary" size="small" icon="cloud-download">
+                        {{ i18n "pages.index.updateNow" }}
+                      </a-button>
+                    </a-popconfirm>
+                    <span v-if="panelUpdate.updating" :style="{ color: '#1890ff' }">
+                      <a-icon type="loading"></a-icon> {{ i18n "pages.index.updateStarted" }}
+                    </span>
+                    <a-tooltip v-if="panelUpdate.error" :title="panelUpdate.error">
+                      <a-tag color="red" :style="{ cursor: 'help', margin: 0 }">
+                        <a-icon type="warning"></a-icon>
+                      </a-tag>
+                    </a-tooltip>
+                  </div>
                 </a-card>
               </a-col>
               <a-col :sm="24" :lg="12">
@@ -1070,6 +1107,7 @@
         url: '{{ i18n "pages.index.customGeoValidationUrl" }}',
       },
       coreStatuses: [],
+      panelUpdate: { checking: false, checked: false, available: false, latest: '', current: '', updating: false, error: '' },
       geofilesModal: { visible: false },
       distroModal: { visible: false, pretty: '', tested: '' },
     },
@@ -1080,6 +1118,50 @@
           const msg = await HttpUtil.get('/panel/core/status');
           if (msg && msg.success && msg.obj) this.coreStatuses = msg.obj.cores || [];
         } catch (e) { /* dashboard card is best-effort */ }
+      },
+      // --- Panel self-update (VPN-UI card) ------------------------------
+      // Runs automatically on every overview load (manual=false, silent) and on
+      // the "Check for Update" button (manual=true, surfaces errors in the card).
+      async checkForUpdate(manual) {
+        this.panelUpdate.checking = true;
+        this.panelUpdate.error = '';
+        try {
+          // manual check bypasses the 5-min server cache; auto-check on load uses it
+          const url = '/panel/api/server/checkUpdate' + (manual ? '?force=1' : '');
+          const msg = await HttpUtil.get(url);
+          if (msg && msg.success && msg.obj) {
+            this.panelUpdate.available = !!msg.obj.available;
+            this.panelUpdate.latest = msg.obj.latest || '';
+            this.panelUpdate.current = msg.obj.current || '';
+            // Only a manual check marks "checked" (drives the "Up to date" tag). The
+            // auto-check stays silent when there's no update or the check failed —
+            // an available update still surfaces via the alert below regardless.
+            if (manual) this.panelUpdate.checked = true;
+          } else if (manual) {
+            this.panelUpdate.error = (msg && msg.msg) || 'update check failed';
+          }
+        } catch (e) {
+          if (manual) this.panelUpdate.error = '' + e;
+        } finally {
+          this.panelUpdate.checking = false;
+        }
+      },
+      // Download + install the latest release and restart the panel. On success the
+      // panel restarts, so we intentionally leave `updating` true (the info alert
+      // tells the user to reload); an error resets it.
+      async doPanelUpdate() {
+        this.panelUpdate.updating = true;
+        this.panelUpdate.error = '';
+        try {
+          const msg = await HttpUtil.post('/panel/api/server/updatePanel');
+          if (!msg || !msg.success) {
+            this.panelUpdate.updating = false;
+            this.panelUpdate.error = (msg && msg.msg) || 'update failed';
+          }
+        } catch (e) {
+          this.panelUpdate.updating = false;
+          this.panelUpdate.error = '' + e;
+        }
       },
       // --- Unsupported-distro warning (dashboard modal) -----------------
       async checkDistroSupport() {
@@ -1479,6 +1561,7 @@
       await this.getStatus();
       await this.getCoreStatuses();
       this.checkDistroSupport();
+      this.checkForUpdate(false); // best-effort update check on every overview load
 
       // Setup WebSocket for real-time updates
       if (window.wsClient) {

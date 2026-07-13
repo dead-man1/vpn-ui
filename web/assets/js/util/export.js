@@ -83,7 +83,7 @@ const AccountExport = {
       const s = inbound.settings || {};
       const parts = [];
       if (s.udpEnable) parts.push('UDP ' + (inbound.port));
-      if (s.tcpEnable) parts.push('TCP ' + (s.tcpPort));
+      if (s.tcpEnable) parts.push('TCP ' + (s.separatePorts ? (s.tcpPort || 443) : inbound.port));
       return parts.join('  ') || String(inbound.port);
     }
     return String(inbound.port);

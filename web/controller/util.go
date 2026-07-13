@@ -73,24 +73,33 @@ func pureJsonMsg(c *gin.Context, statusCode int, success bool, msg string) {
 	})
 }
 
+// browserHost returns the host the client used to reach the panel (the browser
+// address-bar host, with the port stripped): X-Forwarded-Host / X-Real-IP for
+// reverse-proxied setups, otherwise the request Host. This is the server-side
+// equivalent of the location.hostname that xray share-links use, so server-generated
+// configs (e.g. .ovpn) can point at whatever address the operator is actually using.
+func browserHost(c *gin.Context) string {
+	host := c.GetHeader("X-Forwarded-Host")
+	if host == "" {
+		host = c.GetHeader("X-Real-IP")
+	}
+	if host == "" {
+		h, _, err := net.SplitHostPort(c.Request.Host)
+		if err != nil {
+			h = c.Request.Host
+		}
+		host = h
+	}
+	return host
+}
+
 // html renders an HTML template with the provided data and title.
 func html(c *gin.Context, name string, title string, data gin.H) {
 	if data == nil {
 		data = gin.H{}
 	}
 	data["title"] = title
-	host := c.GetHeader("X-Forwarded-Host")
-	if host == "" {
-		host = c.GetHeader("X-Real-IP")
-	}
-	if host == "" {
-		var err error
-		host, _, err = net.SplitHostPort(c.Request.Host)
-		if err != nil {
-			host = c.Request.Host
-		}
-	}
-	data["host"] = host
+	data["host"] = browserHost(c)
 	data["request_uri"] = c.Request.RequestURI
 	data["base_path"] = c.GetString("base_path")
 	c.HTML(http.StatusOK, name, getContext(data))

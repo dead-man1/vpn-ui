@@ -180,7 +180,9 @@
         <tr>
           <td>{{ i18n "status" }}</td>
           <td>
-            <a-tag v-if="isDepleted" color="red">{{ i18n "depleted"
+            <a-tag v-if="isFrozen" color="blue">{{ i18n "pages.client.frozen"
+              }}</a-tag>
+            <a-tag v-else-if="isDepleted" color="red">{{ i18n "depleted"
               }}</a-tag>
             <a-tag v-else-if="isEnable" color="green">{{ i18n "enabled"
               }}</a-tag>
@@ -691,6 +693,13 @@
           return infoModal.clientSettings.enable;
         }
         return infoModal.dbInbound.isEnable;
+      },
+      get isFrozen() {
+        // Frozen = explicitly disabled with a non-ticking (negative) remaining time,
+        // exactly the state the freeze op writes. Distinct from a plain disable.
+        const s = infoModal.clientSettings;
+        if (!s) return false;
+        return s.enable === false && Number(s.expiryTime ?? 0) < 0;
       },
       get isDepleted() {
         const stats = infoModal.clientStats;

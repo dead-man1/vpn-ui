@@ -362,7 +362,7 @@
                       <template v-if="dbInbound.isOpenvpn">
                         <span v-if="dbInbound.toInbound().settings.tcpEnable"
                           :style="{ display: 'block', whiteSpace: 'nowrap' }">TCP:
-                          [[ dbInbound.toInbound().settings.tcpPort ]]</span>
+                          [[ dbInbound.toInbound().settings.separatePorts ? (dbInbound.toInbound().settings.tcpPort || 443) : dbInbound.port ]]</span>
                         <span v-if="dbInbound.toInbound().settings.udpEnable"
                           :style="{ display: 'block', whiteSpace: 'nowrap' }">UDP:
                           [[ dbInbound.port ]]</span>
@@ -1218,7 +1218,7 @@
   }];
 
   const innerColumns = [
-    { width: 30, align: 'center', scopedSlots: { customRender: 'selectClient' } },
+    { width: 30, align: 'center', slots: { title: 'selectAllClientsHeader' }, scopedSlots: { customRender: 'selectClient' } },
     { title: '{{ i18n "pages.inbounds.operate" }}', width: 70, scopedSlots: { customRender: 'actions' } },
     { title: '{{ i18n "pages.inbounds.enable" }}', width: 30, scopedSlots: { customRender: 'enable' } },
     { title: '{{ i18n "online" }}', width: 32, scopedSlots: { customRender: 'online' } },
@@ -1229,7 +1229,7 @@
   ];
 
   const innerMobileColumns = [
-    { width: 24, align: 'center', scopedSlots: { customRender: 'selectClient' } },
+    { width: 24, align: 'center', slots: { title: 'selectAllClientsHeader' }, scopedSlots: { customRender: 'selectClient' } },
     { title: '{{ i18n "pages.inbounds.operate" }}', width: 10, align: 'center', scopedSlots: { customRender: 'actionMenu' } },
     { title: '{{ i18n "pages.inbounds.client" }}', width: 90, align: 'left', scopedSlots: { customRender: 'client' } },
     { title: '{{ i18n "pages.inbounds.info" }}', width: 10, align: 'center', scopedSlots: { customRender: 'info' } },
@@ -1531,6 +1531,36 @@
         if (checked) { if (!this.selClients.includes(key)) this.selClients.push(key); }
         else { this.selClients = this.selClients.filter(k => k !== key); }
       },
+      // Per-inbound "select all clients" (client-table header checkbox). Operates
+      // ONLY on selClients — never selInbounds — so the inbound row itself is never
+      // selected (a select-all of clients must not delete/select the inbound).
+      isAllClientsSel(dbInbound) {
+        if (!dbInbound) return false;
+        const emails = (this.getInboundClients(dbInbound) || []).map(c => c.email).filter(Boolean);
+        return emails.length > 0 && emails.every(em => this.isClientSel(dbInbound.id, em));
+      },
+      isSomeClientsSel(dbInbound) {
+        if (!dbInbound) return false;
+        const emails = (this.getInboundClients(dbInbound) || []).map(c => c.email).filter(Boolean);
+        const n = emails.filter(em => this.isClientSel(dbInbound.id, em)).length;
+        return n > 0 && n < emails.length;
+      },
+      toggleSelectAllClients(dbInbound, checked) {
+        if (!dbInbound) return;
+        const id = dbInbound.id;
+        const emails = (this.getInboundClients(dbInbound) || []).map(c => c.email).filter(Boolean);
+        // If the inbound was wholesale-selected, unpack it into per-client keys and
+        // drop it from selInbounds first (mirrors toggleClientSel above).
+        if (this.selInbounds.includes(id)) {
+          this.selInbounds = this.selInbounds.filter(x => x !== id);
+          emails.forEach(em => { const k = id + ':' + em; if (!this.selClients.includes(k)) this.selClients.push(k); });
+        }
+        if (checked) {
+          emails.forEach(em => { const k = id + ':' + em; if (!this.selClients.includes(k)) this.selClients.push(k); });
+        } else {
+          this.selClients = this.selClients.filter(k => !k.startsWith(id + ':'));
+        }
+      },
       toggleSelectAllInbounds(e) {
         if (e.target.checked) {
           this.selClients = [];
@@ -1644,7 +1674,7 @@
         b.confirmLoading = false;
         if (ok) {
           b.visible = false;
-          this.$message.success('{{ i18n "pages.inbounds.bulkDone" }}: ' + b.progress.applied + ' / ' + b.progress.skipped);
+          this.$message.success('{{ i18n "pages.inbounds.bulkDone" }} {{ i18n "pages.inbounds.bulkAffected" }}: ' + b.progress.applied + ' {{ i18n "pages.inbounds.bulkSkipped" }}: ' + b.progress.skipped);
           this.clearSelection();
           await this.getDBInbounds();
         }
@@ -1716,7 +1746,7 @@
         b.confirmLoading = false;
         if (ok) {
           b.visible = false;
-          this.$message.success('{{ i18n "pages.inbounds.bulkDone" }}: ' + b.progress.applied + ' / ' + b.progress.skipped);
+          this.$message.success('{{ i18n "pages.inbounds.bulkDone" }} {{ i18n "pages.inbounds.bulkAffected" }}: ' + b.progress.applied + ' {{ i18n "pages.inbounds.bulkSkipped" }}: ' + b.progress.skipped);
           this.clearSelection();
           await this.getDBInbounds();
         }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/web/global"
@@ -27,6 +28,10 @@ type ServerController struct {
 
 	lastVersions        []string
 	lastGetVersionsTime int64 // unix seconds
+
+	updMu               sync.Mutex // guards lastPanelUpdate/lastPanelUpdateTime
+	lastPanelUpdate     *service.PanelUpdateInfo
+	lastPanelUpdateTime int64 // unix seconds
 }
 
 // NewServerController creates a new ServerController, initializes routes, and starts background tasks.
@@ -51,8 +56,10 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.GET("/getNewmlkem768", a.getNewmlkem768)
 	g.GET("/getNewVlessEnc", a.getNewVlessEnc)
 	g.GET("/distroStatus", a.distroStatus)
+	g.GET("/checkUpdate", a.checkUpdate)
 
 	g.POST("/stopXrayService", a.stopXrayService)
+	g.POST("/updatePanel", a.updatePanel)
 	g.POST("/restartXrayService", a.restartXrayService)
 	g.POST("/installXray/:version", a.installXray)
 	g.POST("/updateGeofile", a.updateGeofile)
@@ -142,6 +149,70 @@ func (a *ServerController) getXrayVersion(c *gin.Context) {
 	a.lastGetVersionsTime = now
 
 	jsonObj(c, versions, nil)
+}
+
+// checkUpdate reports whether a newer vpn-ui panel release is available. The
+// result is cached for 5 minutes — including FAILURES (negative cache) — so the
+// per-overview-load auto-check can't burn GitHub's unauthenticated rate limit even
+// during an outage. The manual button passes ?force=1 to bypass the cache.
+//
+// The auto-check (non-force) must stay SILENT: on error it returns via jsonObj with
+// an empty message, so HttpUtil raises no toast. Only a manual check surfaces the
+// error (a toast on an explicit click is expected).
+func (a *ServerController) checkUpdate(c *gin.Context) {
+	now := time.Now().Unix()
+	force := c.Query("force") != ""
+
+	a.updMu.Lock()
+	if !force && a.lastPanelUpdate != nil && now-a.lastPanelUpdateTime <= 300 {
+		cached := a.lastPanelUpdate
+		a.updMu.Unlock()
+		jsonObj(c, cached, nil)
+		return
+	}
+	a.updMu.Unlock()
+
+	info, err := a.serverService.CheckPanelUpdate()
+
+	a.updMu.Lock()
+	a.lastPanelUpdateTime = now // cache success AND failure to bound GitHub calls
+	if err == nil {
+		a.lastPanelUpdate = info
+	} else if a.lastPanelUpdate == nil {
+		// Cold start with GitHub failing: seed the benign result (info is non-nil,
+		// Available=false) so the cache-hit guard engages and we stop re-hitting
+		// GitHub every load. Never overwrite a prior real result with this.
+		a.lastPanelUpdate = info
+	}
+	last := a.lastPanelUpdate
+	a.updMu.Unlock()
+
+	if err != nil {
+		if force {
+			jsonMsg(c, I18nWeb(c, "pages.index.panelUpdate"), err) // manual: surface it
+			return
+		}
+		// auto check: stay silent (empty msg => no toast). Prefer last-known-good.
+		if last != nil {
+			jsonObj(c, last, nil)
+		} else {
+			jsonObj(c, info, nil) // benign: Available=false
+		}
+		return
+	}
+	jsonObj(c, info, nil)
+}
+
+// updatePanel downloads the latest release, replaces the running binary, and
+// restarts the panel. The response returns before the restart fires. On success it
+// returns an empty message (no toast) — the frontend shows the "restarting" alert;
+// only failures toast.
+func (a *ServerController) updatePanel(c *gin.Context) {
+	if err := a.serverService.UpdatePanel(); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.index.panelUpdate"), err)
+		return
+	}
+	jsonObj(c, nil, nil)
 }
 
 // installXray installs or updates Xray to the specified version.

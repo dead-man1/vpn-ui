@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/mhsanaei/3x-ui/v2/config"
 )
 
 // bundleFS holds the per-architecture daemon binaries. The `all:` prefix keeps
@@ -63,15 +65,21 @@ func Available() bool {
 	return false
 }
 
-// BinDir is the absolute directory where daemons are extracted — next to the
-// vpn-ui executable, so it adapts to any install location (/usr/local/vpn-ui,
-// /usr/lib/vpn-ui, …).
+// BinDir is the absolute directory where daemons are extracted. It is the SAME
+// "bin" folder the Xray core uses (config.GetBinFolderPath()), so every backend
+// file lands flat in bin/ with no sub-folder — resolved next to the vpn-ui
+// executable, so it adapts to any install location (/usr/local/vpn-ui,
+// /usr/lib/vpn-ui, …). An absolute VPNUI_BIN_FOLDER is honored as-is.
 func BinDir() string {
+	bin := config.GetBinFolderPath()
+	if filepath.IsAbs(bin) {
+		return bin
+	}
 	exe, err := os.Executable()
 	if err != nil {
-		return "/usr/local/vpn-ui/backend/bin"
+		return filepath.Join("/usr/local/vpn-ui", bin)
 	}
-	return filepath.Join(filepath.Dir(exe), "backend", "bin")
+	return filepath.Join(filepath.Dir(exe), bin)
 }
 
 // DaemonPath returns the extracted path of a bundled daemon if it exists on

@@ -36,35 +36,35 @@ type OpenVpnService struct {
 
 // openvpnSettings represents the OpenVPN-specific settings stored in the inbound's Settings JSON.
 type openvpnSettings struct {
-	UdpEnable      *bool               `json:"udpEnable"` // nil == enabled (back-compat with pre-toggle inbounds)
-	TcpEnable      *bool               `json:"tcpEnable"` // nil == enabled
-	TcpPort        int                 `json:"tcpPort"`
-	SeparatePorts  *bool               `json:"separatePorts"` // nil == legacy (separate: TCP uses tcpPort); false == both on inbound.Port; true == separate
-	Dns1           string              `json:"dns1"`
-	Dns2           string              `json:"dns2"`
-	Mtu            int                 `json:"mtu"`
-	CaCert         string              `json:"caCert"`
-	CaKey          string              `json:"caKey"`
-	ServerCert     string              `json:"serverCert"`
-	ServerKey      string              `json:"serverKey"`
-	TlsCrypt       string              `json:"tlsCrypt"`
+	UdpEnable     *bool  `json:"udpEnable"` // nil == enabled (back-compat with pre-toggle inbounds)
+	TcpEnable     *bool  `json:"tcpEnable"` // nil == enabled
+	TcpPort       int    `json:"tcpPort"`
+	SeparatePorts *bool  `json:"separatePorts"` // nil == legacy (separate: TCP uses tcpPort); false == both on inbound.Port; true == separate
+	Dns1          string `json:"dns1"`
+	Dns2          string `json:"dns2"`
+	Mtu           int    `json:"mtu"`
+	CaCert        string `json:"caCert"`
+	CaKey         string `json:"caKey"`
+	ServerCert    string `json:"serverCert"`
+	ServerKey     string `json:"serverKey"`
+	TlsCrypt      string `json:"tlsCrypt"`
 	// TLS cert source (Xray-style): inline PEM content (default) or file paths.
 	// In path mode OpenVPN references these files directly instead of the content
 	// fields written into configDir.
-	TlsUseFile     *bool               `json:"tlsUseFile"`
-	CaCertFile     string              `json:"caCertFile"`
-	ServerCertFile string              `json:"serverCertFile"`
-	ServerKeyFile  string              `json:"serverKeyFile"`
-	TlsCryptFile   string              `json:"tlsCryptFile"`
-	CipherMode     string              `json:"cipherMode"` // old | new | all | custom (informative; Ciphers is authoritative)
-	Ciphers        []string            `json:"ciphers"`
-	ExternalProxy  []ovpnExternalProxy `json:"externalProxy"`
-	ClientToClient bool                `json:"clientToClient"`
-	CrossInbound   bool                `json:"crossInbound"`
-	UserLimit         int              `json:"userLimit"`         // simultaneous devices per account (1..64); 1 = legacy
-	UserLimitStrategy string           `json:"userLimitStrategy"` // at the cap: "accept" (default, evict oldest) or "reject" (deny new device)
-	IpRanges       []string            `json:"ipRanges"`  // UDP-side /24 ranges; TCP mirrors into 10.3.x. Panel-managed.
-	Clients        []openvpnClient     `json:"clients"`
+	TlsUseFile        *bool               `json:"tlsUseFile"`
+	CaCertFile        string              `json:"caCertFile"`
+	ServerCertFile    string              `json:"serverCertFile"`
+	ServerKeyFile     string              `json:"serverKeyFile"`
+	TlsCryptFile      string              `json:"tlsCryptFile"`
+	CipherMode        string              `json:"cipherMode"` // old | new | all | custom (informative; Ciphers is authoritative)
+	Ciphers           []string            `json:"ciphers"`
+	ExternalProxy     []ovpnExternalProxy `json:"externalProxy"`
+	ClientToClient    bool                `json:"clientToClient"`
+	CrossInbound      bool                `json:"crossInbound"`
+	UserLimit         *int                `json:"userLimit"`         // nil = absent (legacy => 1); 0 = no limit; else devices/account (1..64)
+	UserLimitStrategy string              `json:"userLimitStrategy"` // at the cap: "accept" (default, evict oldest) or "reject" (deny new device)
+	IpRanges          []string            `json:"ipRanges"`          // UDP-side /24 ranges; TCP mirrors into 10.3.x. Panel-managed.
+	Clients           []openvpnClient     `json:"clients"`
 }
 
 // effectiveRanges returns the inbound's UDP-side (10.2.x) client ranges, or nil
@@ -482,7 +482,7 @@ func (s *OpenVpnService) writeClientConfigDir(inbound *model.Inbound, settings *
 	}
 	netAddr, prefix := ovpnBlockFor(inbound, settings, proto)
 	mask := prefixToMask(prefix)
-	k := normUserLimit(settings.UserLimit)
+	k := effectiveUserLimit(settings.UserLimit)
 
 	// User Limit K (>=1): publish each account's device-IP block to blocks-<proto>/<CN>
 	// and let the client-connect hook lease a free IP per device and enforce the cap.
@@ -597,7 +597,7 @@ func (s *OpenVpnService) buildServerConfig(inbound *model.Inbound, settings *ope
 	// duplicate-cn off, OpenVPN's native one-per-CN guarantees a single live session: the
 	// hook still refuses the 2nd device under "reject" (exit 1), while "accept" admits the
 	// newcomer and OpenVPN drops the old same-CN session cleanly.
-	if normUserLimit(settings.UserLimit) >= 2 {
+	if effectiveUserLimit(settings.UserLimit) >= 2 {
 		b.WriteString("duplicate-cn\n")
 	}
 	if settings.ClientToClient {
@@ -784,7 +784,11 @@ func (s *OpenVpnService) StopServices() {
 }
 
 // GenerateClientConfig builds the .ovpn client config content for an inbound/protocol.
-func (s *OpenVpnService) GenerateClientConfig(inbound *model.Inbound, proto string) (string, error) {
+// panelHost is the host the operator reached the panel on (from the HTTP request);
+// with no external proxy configured it becomes the `remote` address, so the profile
+// points at whatever address the admin is actually using — the same way xray
+// share-links resolve their host from location.hostname.
+func (s *OpenVpnService) GenerateClientConfig(inbound *model.Inbound, proto string, panelHost string) (string, error) {
 	settings, err := s.parseSettings(inbound)
 	if err != nil {
 		return "", err
@@ -830,11 +834,22 @@ func (s *OpenVpnService) GenerateClientConfig(inbound *model.Inbound, proto stri
 		remotes = append(remotes, remote{dest, epPort})
 	}
 	if len(remotes) == 0 {
-		serverIP := s.getServerIP()
-		if serverIP == "" {
-			return "", fmt.Errorf("could not determine server IP")
+		// No external proxy configured: point the profile at the host the operator
+		// reached the panel on (panelHost = the browser address-bar host) — the same
+		// way xray share-links pick their address (location.hostname). An explicit,
+		// non-wildcard inbound listen wins (mirrors the xray link rule); the
+		// default-route probe is only a last resort (it's wrong behind NAT / a domain).
+		host := strings.TrimSpace(inbound.Listen)
+		if host == "" || host == "0.0.0.0" {
+			host = strings.TrimSpace(panelHost)
 		}
-		remotes = append(remotes, remote{serverIP, port})
+		if host == "" {
+			host = s.getServerIP()
+		}
+		if host == "" {
+			return "", fmt.Errorf("could not determine server address")
+		}
+		remotes = append(remotes, remote{host, port})
 	}
 
 	var b strings.Builder

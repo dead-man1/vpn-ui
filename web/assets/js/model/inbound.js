@@ -2945,7 +2945,7 @@ Inbound.L2tpSettings = class extends Inbound.Settings {
     dns1 = "8.8.8.8",
     dns2 = "8.8.4.4",
     mtu = 1400,
-    userLimit = 1,
+    userLimit = 0,
     userLimitStrategy = "accept",
     l2tpUsers = [new Inbound.L2tpSettings.L2tpUser()],
   ) {
@@ -3118,7 +3118,7 @@ Inbound.PptpSettings = class extends Inbound.Settings {
     dns1 = "8.8.8.8",
     dns2 = "8.8.4.4",
     mtu = 1400,
-    userLimit = 1,
+    userLimit = 0,
     userLimitStrategy = "accept",
     pptpUsers = [new Inbound.PptpSettings.PptpUser()],
   ) {
@@ -3294,7 +3294,7 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 1,
+    userLimit = 0,
     userLimitStrategy = "accept",
     separatePorts = false,
     tlsUseFile = false,
@@ -3368,7 +3368,7 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
       Array.isArray(json.ipRanges) ? json.ipRanges.slice() : [],
       json.userLimit ?? 1,
       json.userLimitStrategy ?? "accept",
-      json.separatePorts ?? false,
+      json.separatePorts ?? true,
       json.tlsUseFile ?? false,
       json.caCertFile ?? "",
       json.serverCertFile ?? "",
@@ -3597,7 +3597,7 @@ Inbound.OcservSettings = class extends Inbound.Settings {
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 1,
+    userLimit = 0,
     userLimitStrategy = "accept",
   ) {
     super(protocol);
@@ -3786,7 +3786,7 @@ Inbound.SstpSettings = class extends Inbound.Settings {
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 1,
+    userLimit = 0,
     userLimitStrategy = "accept",
   ) {
     super(protocol);

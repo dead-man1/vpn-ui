@@ -523,7 +523,7 @@ func (s *RadiusService) lookupClient(protocol string, inboundId int, username st
 	}
 
 	for _, client := range settings.Clients {
-		if client.ID == username {
+		if client.ID == username || client.Email == username {
 			if !client.Enable {
 				return "", fmt.Errorf("client %s disabled in settings", username)
 			}
@@ -566,7 +566,7 @@ func (s *RadiusService) lookupEmail(protocol string, username string) string {
 			continue
 		}
 		for _, client := range settings.Clients {
-			if client.ID == username {
+			if client.ID == username || client.Email == username {
 				return client.Email
 			}
 		}
@@ -775,14 +775,15 @@ func (s *RadiusService) findClientInbound(protocol, username string) (*model.Inb
 	for _, inbound := range inbounds {
 		var settings struct {
 			Clients []struct {
-				ID string `json:"id"`
+				ID    string `json:"id"`
+				Email string `json:"email"`
 			} `json:"clients"`
 		}
 		if json.Unmarshal([]byte(inbound.Settings), &settings) != nil {
 			continue
 		}
 		for _, c := range settings.Clients {
-			if c.ID == username {
+			if c.ID == username || c.Email == username {
 				return inbound, nil
 			}
 		}
@@ -818,7 +819,7 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 		IpRanges          []string      `json:"ipRanges"`
 		IpRange           string        `json:"ipRange"`
 		LocalIp           string        `json:"localIp"`
-		UserLimit         int           `json:"userLimit"`
+		UserLimit         *int          `json:"userLimit"` // nil = absent (legacy => 1); 0 = no limit
 		UserLimitStrategy string        `json:"userLimitStrategy"`
 		Clients           []clientEntry `json:"clients"`
 	}
@@ -830,7 +831,7 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 
 	clientIndex := -1
 	for i, c := range settings.Clients {
-		if c.ID == username {
+		if c.ID == username || c.Email == username {
 			clientIndex = i
 			break
 		}
@@ -851,7 +852,7 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 	// account's block so K devices on one account each get a distinct IP. When the
 	// block is full the strategy decides: "reject" denies the dial, "accept" evicts
 	// the oldest device. K==1 (and OpenVPN) keeps the legacy per-index IP.
-	k := normUserLimit(settings.UserLimit)
+	k := effectiveUserLimit(settings.UserLimit)
 	if protocol != "openvpn" {
 		// Enforce the per-account device cap for EVERY K (>=1). blockIPs is the set of
 		// addresses the account may use: K==1 is a ONE-IP block (the legacy deterministic
@@ -1243,7 +1244,7 @@ func BuildVpnEmailToIPMap() map[string][]string {
 	type pppSettingsJSON struct {
 		IpRanges  []string      `json:"ipRanges"`
 		IpRange   string        `json:"ipRange"`
-		UserLimit int           `json:"userLimit"`
+		UserLimit *int          `json:"userLimit"` // nil = absent (legacy => 1); 0 = no limit
 		Clients   []clientEntry `json:"clients"`
 	}
 
@@ -1256,7 +1257,7 @@ func BuildVpnEmailToIPMap() map[string][]string {
 		if len(ranges) == 0 && settings.IpRange != "" {
 			ranges = []string{settings.IpRange}
 		}
-		k := normUserLimit(settings.UserLimit)
+		k := effectiveUserLimit(settings.UserLimit)
 		// K>=2: each account maps to its K device IPs, so one source rule (an
 		// explicit IP list) covers every device. K==1 keeps the legacy single IP.
 		subnets := pppSubnetsOrDefault(ranges, string(inbound.Protocol), inbound.Id)
@@ -1285,7 +1286,7 @@ func BuildVpnEmailToIPMap() map[string][]string {
 		}
 		udpOn := settings.udpEnabled()
 		tcpOn := settings.tcpEnabled()
-		k := normUserLimit(settings.UserLimit)
+		k := effectiveUserLimit(settings.UserLimit)
 		var udpNet, tcpNet net.IP
 		var udpPrefix, tcpPrefix int
 		if udpOn {

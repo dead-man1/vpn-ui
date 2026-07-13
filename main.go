@@ -481,6 +481,103 @@ func randomizeSetting() error {
 	return nil
 }
 
+// applyExplicitSetting sets the panel login username/password, web port and/or web
+// base path to explicit values from `vpn-ui --user/--pass/--port/--path`. It uses
+// the exact same "work safe" envelope as randomizeSetting: open the DB first, stop
+// the running systemd panel (it holds the DB open and serves the old values), write
+// the changes, then bring it back up so the live panel serves the new values. Any
+// subset of the four may be given; omitted values are left unchanged. Composable
+// with --systemd, which runs afterwards.
+func applyExplicitSetting(username, password string, port int, webBasePath string) error {
+	// InitDB FIRST — every service call below is gorm-backed (see randomizeSetting's
+	// note on the SIGSEGV this ordering avoids).
+	if err := database.InitDB(config.GetDBPath()); err != nil {
+		fmt.Println("Database initialization failed:", err)
+		return err
+	}
+
+	svc := service.SystemdService{}
+	unit := svc.GetServiceName()
+	panelWasActive := exec.Command("systemctl", "is-active", "--quiet", unit).Run() == nil
+	if panelWasActive {
+		fmt.Printf("Stopping %s before applying settings...\n", unit)
+		_ = exec.Command("systemctl", "stop", unit).Run()
+	}
+
+	settingService := service.SettingService{}
+	userService := service.UserService{}
+
+	if port > 0 {
+		if port > 65535 {
+			fmt.Println("Ignoring invalid port (must be 1-65535):", port)
+		} else if err := settingService.SetPort(port); err != nil {
+			fmt.Println("Failed to set port:", err)
+		}
+	}
+	if username != "" || password != "" {
+		if err := applyCredential(&userService, username, password); err != nil {
+			fmt.Println("Failed to set username/password:", err)
+		}
+	}
+	if webBasePath != "" {
+		if err := settingService.SetBasePath(webBasePath); err != nil {
+			fmt.Println("Failed to set web base path:", err)
+		}
+	}
+
+	// Print the resulting login/access config (same shape as --random, minus the
+	// password, which the operator supplied). Values are read back so the printout
+	// reflects what is actually stored, including any left unchanged.
+	normPath, _ := settingService.GetBasePath()
+	if normPath == "" {
+		normPath = "/"
+	}
+	curPort, _ := settingService.GetPort()
+	curUser := ""
+	if u, err := userService.GetFirstUser(); err == nil && u != nil {
+		curUser = u.Username
+	}
+	ip := service.GetServerIPv4()
+	scheme := "http"
+	if certFile, _ := settingService.GetCertFile(); certFile != "" {
+		scheme = "https"
+	}
+	url := fmt.Sprintf("%s://%s:%d%s", scheme, ip, curPort, normPath)
+	fmt.Println("Applied panel settings:")
+	fmt.Printf("  Port:     %d\n", curPort)
+	fmt.Printf("  Username: %s\n", curUser)
+	fmt.Printf("  WebPath:  %s\n", normPath)
+	fmt.Printf("  IP:       %s\n", ip)
+	fmt.Printf("  URL:      %s\n", url)
+	if ip == "N/A" {
+		fmt.Println("  (could not detect public IP — substitute the server's address in the URL)")
+	}
+
+	if panelWasActive {
+		fmt.Printf("Restarting %s with the new settings...\n", unit)
+		_ = exec.Command("systemctl", "start", unit).Run()
+	}
+	return nil
+}
+
+// applyCredential updates the first user's login from the CLI: both fields set both;
+// only --pass keeps the current username; only --user keeps the current password hash
+// (via SetFirstUsername) so the operator need not re-supply the password to rename.
+func applyCredential(userService *service.UserService, username, password string) error {
+	if username != "" && password != "" {
+		return userService.UpdateFirstUser(username, password)
+	}
+	if password != "" { // password only — keep the current username
+		cur, err := userService.GetFirstUser()
+		if err != nil {
+			return err
+		}
+		return userService.UpdateFirstUser(cur.Username, password)
+	}
+	// username only — keep the current password hash
+	return userService.SetFirstUsername(username)
+}
+
 // resetSetting resets all panel settings to their default values.
 func resetSetting() error {
 	err := database.InitDB(config.GetDBPath())
@@ -777,8 +874,18 @@ func migrateDb() {
 	fmt.Println("Migration done!")
 }
 
-// readRadiusSecret reads the RADIUS shared secret from /etc/ppp/radius/servers.
+// readRadiusSecret returns the RADIUS shared secret used by the OpenVPN auth/connect
+// /disconnect hooks. Canonical source is the panel DB (settings key `radiusSecret`,
+// written by getOrCreateRadiusSecret on startup): these hooks are separate short-lived
+// processes that don't hold the panel's in-memory secret, and the DB is the single
+// source of truth. The legacy /etc/ppp/radius/servers file is only a fallback — it is
+// written solely by l2tp/pptp setup, so on an OpenVPN-only box it doesn't exist, which
+// is why reading only that file rejected every OpenVPN login ("RADIUS secret not found").
 func readRadiusSecret() string {
+	if secret, err := database.GetSettingValue(config.GetDBPath(), "radiusSecret"); err == nil && secret != "" {
+		return secret
+	}
+	// Fallback: the radcli servers file, present only when l2tp/pptp is configured.
 	data, err := os.ReadFile("/etc/ppp/radius/servers")
 	if err != nil {
 		return ""
@@ -1385,16 +1492,44 @@ func main() {
 
 	// Standalone maintenance switches. They can be combined in any order, e.g.
 	//   vpn-ui --random --systemd
-	// and are handled before flag parsing (they aren't top-level flags). Each
-	// accepts a `--` or bare form:
-	//   --random / random    randomize port + username + password + web path
-	//   --systemd / systemd   install + enable-at-boot + start as a systemd unit
-	// --random runs first, so a combined `--random --systemd` boots the unit
-	// with the freshly randomized settings.
+	//   vpn-ui --user admin --pass s3cret --port 8443 --path panel --systemd
+	// and are handled before flag parsing (they aren't top-level flags). Bare
+	// switches accept a `--` or bare form; the value switches take the next arg (or
+	// the `--key=value` form):
+	//   --random / random     randomize port + username + password + web path
+	//   --user <name>         set the panel login username
+	//   --pass <password>     set the panel login password
+	//   --port <n>            set the panel web port
+	//   --path <basePath>     set the panel web base path
+	//   --systemd / systemd    install + enable-at-boot + start as a systemd unit
+	// The value switches are "work safe" exactly like --random: stop the running
+	// unit, write the change, start it again. --random and the explicit values run
+	// before --systemd, so a combined invocation boots the unit with the new
+	// settings.
 	{
 		doRandom, doSystemd, doUninstall, doForce, onlySwitches := false, false, false, false, true
-		for _, a := range os.Args[1:] {
-			switch strings.TrimPrefix(a, "--") {
+		var setUser, setPass, setPath string
+		var setPort int
+		hasExplicit := false
+		cliArgs := os.Args[1:]
+		for i := 0; i < len(cliArgs); i++ {
+			key := strings.TrimPrefix(cliArgs[i], "--")
+			// Support `--key=value` in addition to `--key value`.
+			inlineVal, hasInline := "", false
+			if eq := strings.IndexByte(key, '='); eq >= 0 {
+				inlineVal, key, hasInline = key[eq+1:], key[:eq], true
+			}
+			takeVal := func() string {
+				if hasInline {
+					return inlineVal
+				}
+				if i+1 < len(cliArgs) {
+					i++
+					return cliArgs[i]
+				}
+				return ""
+			}
+			switch key {
 			case "random":
 				doRandom = true
 			case "systemd":
@@ -1403,11 +1538,22 @@ func main() {
 				doUninstall = true
 			case "yes", "force":
 				doForce = true
+			case "user":
+				setUser, hasExplicit = takeVal(), true
+			case "pass":
+				setPass, hasExplicit = takeVal(), true
+			case "path":
+				setPath, hasExplicit = takeVal(), true
+			case "port":
+				if p, err := strconv.Atoi(strings.TrimSpace(takeVal())); err == nil {
+					setPort = p
+				}
+				hasExplicit = true
 			default:
 				onlySwitches = false
 			}
 		}
-		if onlySwitches && (doRandom || doSystemd || doUninstall) {
+		if onlySwitches && (doRandom || doSystemd || doUninstall || hasExplicit) {
 			requireRoot()
 			// Uninstall is exclusive and destructive — if requested, run only it.
 			if doUninstall {
@@ -1416,6 +1562,12 @@ func main() {
 			}
 			if doRandom {
 				randomizeSetting()
+			}
+			// Explicit --user/--pass/--port/--path apply after --random (an explicit
+			// value wins over the random one) and before --systemd (so the unit boots
+			// with the new settings).
+			if hasExplicit {
+				applyExplicitSetting(setUser, setPass, setPort, setPath)
 			}
 			if doSystemd {
 				installSystemd()
@@ -1476,6 +1628,13 @@ func main() {
 		fmt.Println("    --systemd      install+enable+start the panel as a systemd service")
 		fmt.Println("    --random       randomize panel port + username + password + web path")
 		fmt.Println("                   (combinable, e.g. --random --systemd)")
+		fmt.Println("    --user <name>  set panel login username")
+		fmt.Println("    --pass <pw>    set panel login password")
+		fmt.Println("    --port <n>     set panel web port")
+		fmt.Println("    --path <p>     set panel web base path")
+		fmt.Println("                   work-safe like --random (stops the unit, applies,")
+		fmt.Println("                   restarts it); combinable with --systemd, e.g.")
+		fmt.Println("                   --user u --pass p --port 8443 --path panel --systemd")
 		fmt.Println("    --uninstall    remove the panel: systemd unit, daemons, firewall,")
 		fmt.Println("                   routing, /etc configs, bundles, logs, DB and the binary")
 		fmt.Println("                   (--yes to skip the confirmation prompt)")
@@ -1548,8 +1707,14 @@ func main() {
 		openvpnDisconnect()
 	case "openvpn-evict":
 		openvpnEvict()
+	case "help":
+		flag.Usage()
 	default:
 		fmt.Println("Invalid subcommands")
+		fmt.Println()
+		// Show the full top-level command list (incl. --user/--pass/--port/--path)
+		// on a bad command, not just the run/setting sub-flag usages.
+		flag.Usage()
 		fmt.Println()
 		runCmd.Usage()
 		fmt.Println()

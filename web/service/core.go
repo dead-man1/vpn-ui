@@ -184,6 +184,10 @@ func daemonVersion(name string) string {
 	bin := ""
 	if p := backend.DaemonPath(name); p != "" {
 		bin = p
+	} else if p := backend.AccelBinPath(name); p != "" {
+		// accel-ppp (SSTP) ships as a relocatable tree bundle, not a flat BinDir
+		// binary, so its launchers resolve here — mirrors daemonBin().
+		bin = p
 	} else if p, err := exec.LookPath(name); err == nil {
 		bin = p
 	} else {

@@ -152,3 +152,20 @@ func (s *UserService) UpdateFirstUser(username string, password string) error {
 	user.Password = hashedPassword
 	return db.Save(user).Error
 }
+
+// SetFirstUsername changes ONLY the first user's login username, preserving the
+// existing (already-hashed) password. Used by `vpn-ui --user <name>` when no
+// --pass is given, so an operator can rename the admin without re-supplying the
+// password.
+func (s *UserService) SetFirstUsername(username string) error {
+	if username == "" {
+		return errors.New("username can not be empty")
+	}
+	db := database.GetDB()
+	user := &model.User{}
+	if err := db.Model(model.User{}).First(user).Error; err != nil {
+		return err
+	}
+	user.Username = username
+	return db.Save(user).Error
+}

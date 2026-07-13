@@ -221,8 +221,10 @@ func decodeClientCount(raw map[string]json.RawMessage) int {
 	return 0
 }
 
-// decodeUserLimit returns the per-inbound User Limit (devices per account),
-// clamped to [1,64]. Absent/legacy => 1.
+// decodeUserLimit returns the per-inbound User Limit as a device-block size. An
+// explicit 0 means "no limit" (=> noLimitDevices); a present value >=1 clamps to
+// [1,64]. An ABSENT field is legacy and stays 1 (byte-identical single-IP), which
+// is why this checks presence before normalizing (see normUserLimit's note).
 func decodeUserLimit(raw map[string]json.RawMessage) int {
 	if b, ok := raw["userLimit"]; ok {
 		var k int
@@ -623,18 +625,45 @@ func ovpnBlockClientIP(netAddr net.IP, prefix, i int) string {
 
 const maxUserLimit = 64
 
-// normUserLimit clamps a raw user-limit to a valid device count in [1,64]. Any
-// integer is allowed (not just powers of two): an account owns K consecutive
-// tunnel IPs, matched in routing by an explicit IP list, so no CIDR alignment is
-// required. 0/unset decodes to 1 (legacy single-IP behavior).
+// noLimitDevices is the effective device-block size for a "no limit" (User Limit
+// 0) account. Per-account routing and per-IP quota still work — the account owns a
+// real block of that many consecutive IPs — but the block is generous enough that
+// normal use never reaches the cap. Tunable: larger = more simultaneous devices per
+// account, fewer accounts per /24.
+const noLimitDevices = 16
+
+// normUserLimit maps a PRESENT user-limit value to a concrete device-block size.
+// An explicit 0 means "no limit" and expands to a generous bounded block
+// (noLimitDevices); values >=1 clamp to [1,64]. Any integer is allowed (not just
+// powers of two): an account owns K consecutive tunnel IPs, matched in routing by
+// an explicit IP list, so no CIDR alignment is required.
+//
+// IMPORTANT: only call this with a value known to be PRESENT. An ABSENT field
+// (legacy inbound) must resolve to 1 via decodeUserLimit / effectiveUserLimit — the
+// Go zero value of an absent int is also 0, which here means "no limit", so mixing
+// the two up would silently flip every legacy inbound to no-limit.
 func normUserLimit(k int) int {
-	if k <= 1 {
+	if k == 0 {
+		return noLimitDevices
+	}
+	if k < 1 {
 		return 1
 	}
 	if k > maxUserLimit {
 		return maxUserLimit
 	}
 	return k
+}
+
+// effectiveUserLimit resolves a User Limit unmarshalled into a struct field into a
+// device-block size, distinguishing an ABSENT field (nil → 1, legacy single-IP)
+// from an explicit 0 (→ no-limit block). Use this at every JSON-struct read site,
+// where absent and 0 would otherwise collide on the int zero value.
+func effectiveUserLimit(p *int) int {
+	if p == nil {
+		return 1
+	}
+	return normUserLimit(*p)
 }
 
 // accountsPerSubnet is how many K-sized account blocks fit in one /24. K==1 keeps

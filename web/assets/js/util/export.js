@@ -36,16 +36,32 @@ const AccountExport = {
         try { used = SizeFormatter.sizeFormat(app.getSumStats(dbInbound, client.email) || 0); }
         catch (e) { used = '0'; }
 
+        // Pick the login identity by protocol family. The VPN username/password
+        // protocols authenticate with client.id (the login username) + client.password;
+        // client.email is only a tracking label, so it must NOT be shown as the username
+        // and client.id must NOT be printed as a "UUID". Xray protocols use client.id as
+        // a UUID with client.email as the label. WireGuard (C) is key-based (identity =
+        // email, credential = the downloadable config), with no username/password/UUID.
+        const proto = (dbInbound.protocol || '').toLowerCase();
+        const vpnUserPass = (proto === Protocols.L2TP || proto === Protocols.PPTP
+          || proto === Protocols.OPENVPN || proto === Protocols.OPENCONNECT
+          || proto === Protocols.SSTP || proto === Protocols.IKEV2);
+        const isWgc = (proto === Protocols.WGC);
+        const username = vpnUserPass ? (client.id || client.email || '') : (client.email || '');
+        const uuid = (!vpnUserPass && !isWgc && client.id
+          && client.id !== client.password && client.id !== client.email) ? client.id : '';
+
         cards.push({
           remark: dbInbound.remark || inbound.remark || '',
           protocol: (dbInbound.protocol || '').toUpperCase(),
           network: AccountExport._network(dbInbound, inbound),
           server: server,
           port: AccountExport._portText(dbInbound, inbound),
+          username: username,
           email: client.email || '',
           password: client.password || '',
-          uuid: (client.id && client.id !== client.password) ? client.id : '',
-          psk: AccountExport._psk(dbInbound, inbound),
+          uuid: uuid,
+          psk: AccountExport._psk(dbInbound, inbound, client),
           expiry: AccountExport._expiryText(client.expiryTime),
           used: used,
           total: client.totalGB > 0 ? SizeFormatter.sizeFormat(client.totalGB) : '∞',
@@ -89,9 +105,14 @@ const AccountExport = {
     return String(inbound.port);
   },
 
-  _psk(dbInbound, inbound) {
+  _psk(dbInbound, inbound, client) {
     if (dbInbound.isL2tp && inbound.settings && inbound.settings.ipsec) {
       return inbound.settings.psk || '';
+    }
+    // WireGuard (C): when preshared-key mode is on, each account has its own PSK.
+    if ((dbInbound.protocol || '').toLowerCase() === Protocols.WGC
+        && inbound.settings && inbound.settings.pskEnable) {
+      return (client && client.psk) || '';
     }
     return '';
   },
@@ -120,7 +141,7 @@ const AccountExport = {
       const rows = [
         line('Server', c.server + ':' + c.port),
         line('Protocol', c.protocol + (c.network ? ' / ' + c.network : '')),
-        line('Username', c.email),
+        line('Username', c.username),
         line('Password', c.password),
         line('UUID', c.uuid),
         line('PSK', c.psk),
@@ -165,7 +186,7 @@ const AccountExport = {
       const rows = [
         ['Server', c.server + ':' + c.port],
         ['Protocol', c.protocol + (c.network ? '  /  ' + c.network : '')],
-        ['Username', c.email],
+        ['Username', c.username],
         c.password ? ['Password', c.password] : null,
         c.uuid ? ['UUID', c.uuid] : null,
         c.psk ? ['PSK', c.psk] : null,

@@ -49,6 +49,19 @@ func initModels() error {
 	return nil
 }
 
+// migrateProtocolSlugs rewrites renamed protocol identifiers in existing inbound rows so
+// they keep matching the code after a slug rename. WireGuard (C) was originally stored as
+// "wgvpn"; it is now "wg-c". Best-effort: a failure just leaves the row untouched (the
+// inbound would then be unmanaged until re-created), so it never blocks startup.
+func migrateProtocolSlugs() {
+	renames := map[string]string{"wgvpn": "wg-c"}
+	for old, cur := range renames {
+		if err := db.Model(&model.Inbound{}).Where("protocol = ?", old).Update("protocol", cur).Error; err != nil {
+			log.Printf("protocol slug migration %s -> %s skipped: %v", old, cur, err)
+		}
+	}
+}
+
 // initUser creates a default admin user if the users table is empty.
 func initUser() error {
 	empty, err := isTableEmpty("users")
@@ -199,6 +212,8 @@ func InitDB(dbPath string) error {
 	if err := initModels(); err != nil {
 		return err
 	}
+
+	migrateProtocolSlugs()
 
 	isUsersEmpty, err := isTableEmpty("users")
 	if err != nil {

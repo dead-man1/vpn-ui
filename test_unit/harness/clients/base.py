@@ -24,6 +24,8 @@ CLIENT_PKGS_APT = (
     # doesn't sink the rest.
     "strongswan-swanctl charon-systemd strongswan-pki "
     "pptp-linux ppp-mppe openconnect sstp-client vpnc-scripts "
+    # WireGuard (C) client: wg + wg-quick (the kernel module is in-kernel on Ubuntu).
+    "wireguard-tools "
     "curl iproute2 net-tools dnsutils"
 )
 
@@ -173,6 +175,8 @@ class Client:
         self.incus.exec(self.vm, (
             "pkill -f 'openvpn --config' 2>/dev/null; "
             "pkill sstpc 2>/dev/null; "
+            # WireGuard (C): tear the wg-quick interface down (and force-remove a stray link).
+            "wg-quick down wgc 2>/dev/null; ip link del wgc 2>/dev/null; "
             "poff -a 2>/dev/null; pkill pppd 2>/dev/null; "
             "(echo 'd vpn' > /var/run/xl2tpd/l2tp-control 2>/dev/null); "
             "pkill xl2tpd 2>/dev/null; "

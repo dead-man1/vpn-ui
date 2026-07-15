@@ -1,0 +1,138 @@
+{{define "modals/wgcConfigModal"}}
+<a-modal id="wgc-config-modal" v-model="wgcConfigModal.visible" :title="wgcConfigModal.title"
+  :closable="true" :mask-closable="true" :class="themeSwitcher.currentTheme" :footer="null" :width="640">
+  <a-spin :spinning="wgcConfigModal.loading">
+    <div v-if="!wgcConfigModal.loading && wgcConfigModal.devices.length === 0"
+      :style="{ color: '#888', textAlign: 'center', padding: '24px' }">
+      No WireGuard configuration is available for this account yet.
+    </div>
+    <div v-for="(dev, index) in wgcConfigModal.devices" :key="index" class="wg-cfg-device">
+      <div class="wg-cfg-head">
+        <b>WireGuard Config</b>
+        <a-tag color="green" :style="{ marginInlineStart: '8px' }">[[ dev.ip ]]</a-tag>
+        <a-tag v-if="dev.remark" color="blue" :style="{ marginInlineStart: '8px' }">[[ dev.remark ]]</a-tag>
+      </div>
+      <div class="wg-cfg-body">
+        <div class="wg-cfg-text">
+          <a-textarea :value="dev.config" read-only :auto-size="{ minRows: 8, maxRows: 20 }"
+            :style="{ fontFamily: 'monospace', fontSize: '12px' }"></a-textarea>
+          <a-space :style="{ marginTop: '8px' }">
+            <a-button size="small" @click="copy(dev.config)">
+              <a-icon type="copy"></a-icon> Copy
+            </a-button>
+            <a-button size="small" @click="download(dev)">
+              <a-icon type="download"></a-icon> Download
+            </a-button>
+          </a-space>
+        </div>
+        <div class="wg-cfg-qr">
+          <canvas :id="'wgcQr-' + index" @click="copy(dev.config)"></canvas>
+        </div>
+      </div>
+    </div>
+  </a-spin>
+</a-modal>
+
+<style>
+  .wg-cfg-device { padding: 14px 0; border-bottom: 1px solid rgba(128, 128, 128, 0.2); }
+  .wg-cfg-device:last-child { border-bottom: none; }
+  .wg-cfg-head { margin-bottom: 8px; }
+  .wg-cfg-body { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  .wg-cfg-text { flex: 1 1 300px; min-width: 260px; }
+  .wg-cfg-qr { flex: 0 0 auto; }
+  .wg-cfg-qr canvas {
+    width: 172px; height: 172px; cursor: pointer;
+    background: #fff; border-radius: 8px; padding: 6px;
+  }
+</style>
+
+<script>
+  const wgcConfigModal = {
+    visible: false,
+    loading: false,
+    title: 'WireGuard Config',
+    dbInboundId: 0,
+    email: '',
+    devices: [],
+    show: function (dbInboundId, client) {
+      this.dbInboundId = dbInboundId;
+      this.email = client && client.email ? client.email : '';
+      this.title = 'WireGuard Config' + (this.email ? ' - ' + this.email : '');
+      this.devices = [];
+      this.loading = true;
+      this.visible = true;
+      wgcConfigModalApp.fetchConfigs();
+    },
+    close: function () {
+      this.visible = false;
+    },
+  };
+
+  const wgcConfigModalApp = new Vue({
+    delimiters: ['[[', ']]'],
+    el: '#wgc-config-modal',
+    data: {
+      wgcConfigModal: wgcConfigModal,
+    },
+    methods: {
+      async fetchConfigs() {
+        try {
+          // Respect the global axios baseURL: do NOT prefix with base_path here.
+          const msg = await HttpUtil.get(
+            '/panel/api/inbounds/' + wgcConfigModal.dbInboundId + '/wgc-configs',
+            { email: wgcConfigModal.email }
+          );
+          wgcConfigModal.devices = (msg && msg.success && Array.isArray(msg.obj)) ? msg.obj : [];
+        } catch (e) {
+          console.error('Failed to load WireGuard configs:', e);
+          wgcConfigModal.devices = [];
+        } finally {
+          wgcConfigModal.loading = false;
+        }
+      },
+      copy(content) {
+        ClipboardManager.copyText(content).then(() => {
+          app.$message.success('{{ i18n "copied" }}');
+        });
+      },
+      download(dev) {
+        // Filename is the account email; when several configs exist (external-proxy
+        // endpoints) the remark keeps their downloads from colliding.
+        const base = wgcConfigModal.email || 'client';
+        const suffix = dev.remark ? '-' + String(dev.remark).replace(/[^A-Za-z0-9_.-]/g, '_') : '';
+        const name = base + suffix + '.conf';
+        const blob = new Blob([dev.config], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      },
+      renderQrs() {
+        wgcConfigModal.devices.forEach((dev, index) => {
+          const el = document.querySelector('#wgcQr-' + index);
+          if (!el) return;
+          new QRious({
+            element: el,
+            size: 360,
+            value: dev.config,
+            background: 'white',
+            backgroundAlpha: 1,
+            foreground: 'black',
+            padding: 8,
+            level: 'L',
+          });
+        });
+      },
+    },
+    updated() {
+      if (this.wgcConfigModal.visible && !this.wgcConfigModal.loading) {
+        this.$nextTick(() => this.renderQrs());
+      }
+    },
+  });
+</script>
+{{end}}

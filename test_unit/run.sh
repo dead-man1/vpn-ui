@@ -61,7 +61,11 @@ Tests (ids mirror harness/model.py:ALL_PHASES; always run in this fixed order):
   pptp            connect variants + checks + peer reachability (PPTP)
   openconnect     connect variants + checks + peer reachability (OpenConnect/ocserv)
   sstp            connect + checks + peer reachability (SSTP/accel-ppp, PPP-over-TLS)
-  ikev2           connect + checks + peer reachability (IKEv2/IPsec, strongSwan charon; eap-mschapv2 + psk + eap-tls)
+  ikev2           alias: runs all three IKEv2 auth-mode phases below (strongSwan charon)
+  ikev2-eap-mschapv2  full suite, RADIUS path (2 accounts) - IKEv2 + EAP-MSCHAPv2
+  ikev2-psk           full suite, rbridge-sweep path (1 account, K=2) - IKEv2 + PSK
+  ikev2-eap-tls       full suite, rbridge-sweep path (1 account, K=2) - IKEv2 + EAP-TLS
+  wg-c            full suite, rbridge-sweep path (kernel WireGuard via wgctrl, gateway /29, +psk-mode) - WireGuard (C)
   bulk-ops        bulk client add/sub/enable/disable + TXT/PDF export via API
   backup-restore  DB export + import round-trip
   warp-socks      Cloudflare warp-cli SOCKS install + egress

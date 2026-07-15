@@ -26,6 +26,7 @@ type InboundController struct {
 	ocservService  service.OcservService
 	sstpService    service.SstpService
 	ikev2Service   service.Ikev2Service
+	wgcService   service.WgcService
 }
 
 // NewInboundController creates a new InboundController and sets up its routes.
@@ -73,6 +74,8 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/:id/generate-ikev2-cert", a.generateIkev2Cert)
 	g.POST("/generate-ikev2-cert", a.generateIkev2Cert)
 	g.POST("/check-ikev2-cert", a.checkIkev2Cert)
+	// WireGuard (C): render a client's per-device .conf(s) (keys are server-minted).
+	g.GET("/:id/wgc-configs", a.getWgcConfigs)
 }
 
 // onL2tpChanged regenerates L2TP configs and restarts services when an L2TP inbound is modified.
@@ -228,6 +231,26 @@ func (a *InboundController) ikev2Changed(clientOnly bool) {
 	a.xrayService.SetToNeedRestart()
 }
 
+// onWgcChanged reconciles WireGuard (C) keys + the kernel interface peer set when a
+// wgc inbound is modified. Like IKEv2 it routes through Xray via dokodemo-door, but
+// there is NO daemon: each inbound is a kernel wgc<id> interface driven by wgctrl.
+func (a *InboundController) onWgcChanged()       { a.wgcChanged(false) }
+func (a *InboundController) onWgcClientChanged() { a.wgcChanged(true) }
+func (a *InboundController) wgcChanged(clientOnly bool) {
+	expanded := service.AutoExpandVpnRanges("wg-c")
+	// Mint any missing server/device keypairs (sized to each account's User Limit K) and
+	// persist them, so GenerateAllConfigs can materialize the peers.
+	a.wgcService.ReconcileAllKeys()
+	if err := a.wgcService.GenerateAllConfigs(); err != nil {
+		logger.Warning("WireGuard: config generation failed:", err)
+	}
+	if err := a.wgcService.SetupRouting(); err != nil {
+		logger.Warning("WireGuard: routing setup failed:", err)
+	}
+	_ = expanded
+	a.xrayService.SetToNeedRestart()
+}
+
 type CopyInboundClientsRequest struct {
 	SourceInboundID int      `form:"sourceInboundId" json:"sourceInboundId"`
 	ClientEmails    []string `form:"clientEmails" json:"clientEmails"`
@@ -343,6 +366,8 @@ func (a *InboundController) addInbound(c *gin.Context) {
 		a.onSstpChanged()
 	} else if inbound.Protocol == model.IKEV2 {
 		a.onIkev2Changed()
+	} else if inbound.Protocol == model.WGC {
+		a.onWgcChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -383,6 +408,8 @@ func (a *InboundController) delInbound(c *gin.Context) {
 		a.onSstpChanged()
 	} else if oldInbound != nil && oldInbound.Protocol == model.IKEV2 {
 		a.onIkev2Changed()
+	} else if oldInbound != nil && oldInbound.Protocol == model.WGC {
+		a.onWgcChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -431,6 +458,8 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 		a.onSstpChanged()
 	} else if inbound.Protocol == model.IKEV2 {
 		a.onIkev2Changed()
+	} else if inbound.Protocol == model.WGC {
+		a.onWgcChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -531,6 +560,8 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 		a.onSstpClientChanged()
 	} else if data.Protocol == model.IKEV2 {
 		a.onIkev2ClientChanged()
+	} else if data.Protocol == model.WGC {
+		a.onWgcClientChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -594,6 +625,8 @@ func (a *InboundController) delInboundClient(c *gin.Context) {
 		a.onSstpChanged()
 	} else if oldInbound != nil && oldInbound.Protocol == model.IKEV2 {
 		a.onIkev2Changed()
+	} else if oldInbound != nil && oldInbound.Protocol == model.WGC {
+		a.onWgcChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -636,6 +669,8 @@ func (a *InboundController) updateInboundClient(c *gin.Context) {
 		a.onSstpClientChanged()
 	} else if inbound.Protocol == model.IKEV2 {
 		a.onIkev2ClientChanged()
+	} else if inbound.Protocol == model.WGC {
+		a.onWgcClientChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -680,6 +715,8 @@ func (a *InboundController) bulkUpdateClients(c *gin.Context) {
 			a.onSstpClientChanged()
 		case string(model.IKEV2):
 			a.onIkev2ClientChanged()
+		case string(model.WGC):
+			a.onWgcClientChanged()
 		default:
 			xrayRestart = true
 		}
@@ -713,6 +750,7 @@ func (a *InboundController) resetClientTraffic(c *gin.Context) {
 	a.onOcservClientChanged()
 	a.onSstpClientChanged()
 	a.onIkev2ClientChanged()
+	a.onWgcClientChanged()
 }
 
 // resetAllTraffics resets all traffic counters across all inbounds.
@@ -731,6 +769,7 @@ func (a *InboundController) resetAllTraffics(c *gin.Context) {
 	a.onOcservClientChanged()
 	a.onSstpClientChanged()
 	a.onIkev2ClientChanged()
+	a.onWgcClientChanged()
 }
 
 // resetAllClientTraffics resets traffic counters for all clients in a specific inbound.
@@ -755,6 +794,7 @@ func (a *InboundController) resetAllClientTraffics(c *gin.Context) {
 	a.onOcservClientChanged()
 	a.onSstpClientChanged()
 	a.onIkev2ClientChanged()
+	a.onWgcClientChanged()
 }
 
 // importInbound imports an inbound configuration from provided data.
@@ -1047,6 +1087,30 @@ func (a *InboundController) generateIkev2Cert(c *gin.Context) {
 		"key":         serverKey,
 		"caCert":      caCert,
 	}, nil)
+}
+
+// getWgcConfigs renders the WireGuard (C) client configuration(s) for one account
+// (?email=) of an inbound: one .conf per device (K = the account's User Limit), with
+// server-minted keys and the panel-access host as the endpoint. Ensures keys exist first.
+func (a *InboundController) getWgcConfigs(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		jsonMsg(c, "Invalid inbound ID", err)
+		return
+	}
+	// Mint/persist any missing server + device keypairs so the render has keys to use.
+	a.wgcService.ReconcileAllKeys()
+	inbound, err := a.inboundService.GetInbound(id)
+	if err != nil {
+		jsonMsg(c, "Inbound not found", err)
+		return
+	}
+	configs, err := a.wgcService.RenderClientConfigs(inbound, c.Query("email"), browserHost(c))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	jsonObj(c, configs, nil)
 }
 
 // checkIkev2Cert inspects the supplied IKEv2 server certificate's public-key type

@@ -23,7 +23,7 @@ from .panel import Panel
 
 # protocol base octet for the 10.<base>.<id>.<host> tunnel address
 BASE = {"l2tp": 0, "pptp": 1, "ovpn-udp": 2, "ovpn-tcp": 3, "openconnect": 4,
-        "sstp": 5, "ikev2": 6}
+        "sstp": 5, "ikev2": 6, "wg-c": 7}
 
 PSK = "TestPSK-9182"  # L2TP/IPsec pre-shared key
 IKEV2_PSK = "TestIkev2PSK-7f3a91"  # IKEv2 psk-mode shared key (single-account inbound)
@@ -44,6 +44,12 @@ PPTP_USER_LIMIT = 2
 OC_USER_LIMIT = 2
 SSTP_USER_LIMIT = 2
 IKEV2_USER_LIMIT = 2
+# WireGuard (C): gateway model. ONE keypair per account; the User Limit sizes the account's
+# aligned IP block (rounded up to a power of two), and the single config's Address is that
+# whole block (e.g. 6 -> a /29 of 8 addresses) which a router hands out to its LAN. 6 -> /29.
+# Per-device tests (user-limit 2nd device / multi-user-total / strategy) are Not Applicable
+# (one keypair can't split into distinct simultaneous device IPs — the /29 IS the block).
+WGC_USER_LIMIT = 6
 
 # Ports for the SECOND same-protocol inbound (protocols.py multi-inbound test).
 # Distinct from the primary ports (openvpn udp 1194 / tcp 1443, l2tp 1701, pptp
@@ -61,6 +67,9 @@ SECOND_PORTS = {
     # this port is only a unique DB label (like l2tp/pptp above); the 2nd inbound is
     # distinguished by its own /16-block accounts via RADIUS, not by a distinct port.
     "ikev2":       {"udp": 4500},
+    # WireGuard listens on its OWN per-inbound UDP port (a kernel wgc<id> interface),
+    # so this really binds a distinct listener (like openvpn/sstp, unlike l2tp/pptp).
+    "wg-c":       {"udp": 51821},
 }
 
 # Nominal DB port labels for the EXTRA ikev2 auth-mode inbounds (psk / eap-tls).
@@ -68,6 +77,11 @@ SECOND_PORTS = {
 # binds 500/4500 for every ikev2 inbound; each is distinguished by its own account
 # block, not by a distinct listener. Distinct from every other inbound's port.
 IKEV2_EXTRA_PORTS = {"psk": 4501, "eap-tls": 4502}
+# Devices-per-account for the psk/eap-tls inbounds. K=2 so each mode runs the full
+# User-Limit / strategy / multi-user-total / termination suite against the rbridge sweep,
+# not just a connect smoke. The shared charon admits multiple SAs per identity (proven
+# by the eap-mschapv2 K=2 test), so the 2 devices share the single account.
+IKEV2_EXTRA_USER_LIMIT = 2
 
 
 def build_second_inbound(panel: Panel, proto: str) -> Inbound:
@@ -166,6 +180,21 @@ def build_second_inbound(panel: Panel, proto: str) -> Inbound:
             protocol="ikev2", inbound_id=inb["id"], udp_port=ports["udp"],
             tcp_port=0, accounts={"A": acct}, user_limit=1,
             ca_cert=cert.get("caCert", ""), server_addr="")
+    if proto == "wg-c":
+        # A distinct kernel wgc<id> interface on its own UDP port + 10.7 /24 pool,
+        # single account (K=1). Keys are server-minted; fetch its device config too.
+        settings = {
+            "dns1": "1.1.1.1", "dns2": "8.8.8.8", "mtu": 1420,
+            "pskEnable": False,
+            "clientToClient": True, "crossInbound": True,
+            "clients": [_dict_client(acct)],
+        }
+        inb = panel.add_inbound("test-wgc-2", ports["udp"], "wg-c", settings)
+        second = Inbound(
+            protocol="wg-c", inbound_id=inb["id"], udp_port=ports["udp"],
+            tcp_port=0, accounts={"A": acct}, user_limit=1)
+        _fetch_wg_configs(panel, second)
+        return second
     raise ValueError(proto)
 
 
@@ -178,9 +207,9 @@ def build_ikev2_extra(panel: Panel, server_ip: str, mode: str) -> Inbound:
     panel error (or eap-tls cert-mint failure), which the caller records as a subtest
     ERROR without sinking the rest of setup.
 
-    Nominal port only (charon owns 500/4500 for all ikev2 inbounds). K=1: the extra
-    modes exercise connect + data-plane, not the User-Limit allocator (the primary
-    eap-mschapv2 inbound covers K=2 / strategy)."""
+    Nominal port only (charon owns 500/4500 for all ikev2 inbounds). K=2 so each mode
+    runs the full single-account suite (User-Limit + strategy + multi-user-total +
+    account-usage/termination) against the rbridge sweep, not just a connect smoke."""
     port = IKEV2_EXTRA_PORTS[mode]
     if mode == "psk":
         acct = _acct("ik2psk", 0)   # distinct email -> its own routing block
@@ -188,13 +217,13 @@ def build_ikev2_extra(panel: Panel, server_ip: str, mode: str) -> Inbound:
             "dns1": "1.1.1.1", "dns2": "8.8.8.8",
             "authMode": "psk", "psk": IKEV2_PSK, "serverAddr": "",
             "clientToClient": True, "crossInbound": True,
-            "userLimit": 1,
+            "userLimit": IKEV2_EXTRA_USER_LIMIT,
             "clients": [_dict_client(acct)],
         }
         inb = panel.add_inbound("test-ikev2-psk", port, "ikev2", settings)
         return Inbound(
             protocol="ikev2", inbound_id=inb["id"], udp_port=port, tcp_port=0,
-            accounts={"A": acct}, user_limit=1,
+            accounts={"A": acct}, user_limit=IKEV2_EXTRA_USER_LIMIT,
             auth_mode="psk", psk=IKEV2_PSK, server_addr="")
     if mode == "eap-tls":
         acct = _acct("ik2tls", 0)
@@ -211,13 +240,13 @@ def build_ikev2_extra(panel: Panel, server_ip: str, mode: str) -> Inbound:
             "certificate": certs.server_cert, "key": certs.server_key,
             "caCert": certs.ca_cert,
             "clientToClient": True, "crossInbound": True,
-            "userLimit": 1,
+            "userLimit": IKEV2_EXTRA_USER_LIMIT,
             "clients": [_dict_client(acct)],
         }
         inb = panel.add_inbound("test-ikev2-eap-tls", port, "ikev2", settings)
         return Inbound(
             protocol="ikev2", inbound_id=inb["id"], udp_port=port, tcp_port=0,
-            accounts={"A": acct}, user_limit=1,
+            accounts={"A": acct}, user_limit=IKEV2_EXTRA_USER_LIMIT,
             auth_mode="eap-tls",
             server_addr=IKEV2_EAPTLS_ID,    # -> client remote id = IDr (clients/ikev2.py)
             ca_cert=certs.ca_cert,          # client's server-trust anchor (== inbound caCert)
@@ -252,6 +281,9 @@ class Inbound:
     client_cert: str = ""  # ikev2 eap-tls: client leaf PEM to push to the client VM
     client_key: str = ""   # ikev2 eap-tls: client leaf key PEM to push to the client VM
     client_id: str = ""    # ikev2 eap-tls: the client's EAP identity (rfc822 SAN) -> `local id`
+    # wgc: {which: [ {deviceIndex, ip, publicKey, config}, ... ]} — the panel-minted
+    # per-device client configs, fetched from the wgc-configs endpoint after build.
+    wg_configs: dict = field(default_factory=dict)
 
     def client_ip(self, which: str, transport: str = "udp", device: int = 0) -> str:
         """Tunnel IP for account A/B on this inbound. With user_limit K>1 each
@@ -262,6 +294,13 @@ class Inbound:
             base = BASE["ovpn-tcp"] if transport == "tcp" else BASE["ovpn-udp"]
         else:
             base = BASE[self.protocol]
+        if self.protocol == "wg-c" and self.user_limit > 1:
+            # gateway model: one aligned power-of-two block per account; its IP is the
+            # block's first address (nextPow2 rounding, mirrors Go wgcAccountBlock).
+            bs = 1
+            while bs < self.user_limit:
+                bs <<= 1
+            return f"10.{base}.{self.inbound_id}.{(acct.index + 1) * bs}"
         if self.user_limit > 1:
             host = (acct.index + 1) * self.user_limit + device
         else:
@@ -519,6 +558,40 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
                 ex.detail = str(e)[:300]
             log(f"-> ikev2-{mode}-inbound [{ex.status.value}] {ex.detail}")
 
+    # ---- WireGuard (C) inbound ------------------------------------------
+    # In-kernel WireGuard driven by wgctrl (protocol id `wgc`, base 10.7/16). No
+    # RADIUS: a peer's public key is its credential, so the rbridge sweep bills usage +
+    # enforces quota/disable, and the panel mints one keypair per account. Gateway model:
+    # the User Limit (6) sizes each account's aligned block (-> a /29), and its single
+    # config addresses that whole block. After build we fetch each account's config.
+    log("-> creating wgc inbound (kernel wireguard, gateway /29, 2 accounts, user-limit 6)...")
+    wgs = phase.add(SubTest("wgc-inbound"))
+    try:
+        settings = {
+            "dns1": "1.1.1.1", "dns2": "8.8.8.8", "mtu": 1420,
+            "pskEnable": False,
+            "clientToClient": True, "crossInbound": True,
+            "userLimit": WGC_USER_LIMIT,
+            "clients": [_dict_client(_acct("wg-c", 0)),
+                        _dict_client(_acct("wg-c", 1))],
+        }
+        inb = panel.add_inbound("test-wgc", 51820, "wg-c", settings)
+        iid = inb["id"]
+        wg_ib = Inbound(
+            protocol="wg-c", inbound_id=iid, udp_port=51820, tcp_port=0,
+            accounts={"A": _acct("wg-c", 0), "B": _acct("wg-c", 1)},
+            user_limit=WGC_USER_LIMIT)
+        _fetch_wg_configs(panel, wg_ib)
+        sc.inbounds["wg-c"] = wg_ib
+        n_cfg = sum(len(v) for v in wg_ib.wg_configs.values())
+        wgs.status = Status.PASS
+        wgs.detail = f"inbound {iid}, udp 51820, 2 accounts (gateway /29), {n_cfg} configs"
+    except Exception as e:  # noqa: BLE001
+        wgs.status = Status.ERROR
+        wgs.detail = str(e)[:300]
+
+    log(f"-> wgc-inbound [{wgs.status.value}] {wgs.detail}")
+
     # ---- source-IP routing rules (built-in outbounds, no external link) ----
     # Prove Xray routes by source IP using the two outbounds every config already
     # ships: `direct` (freedom) and `blocked` (blackhole). Author by email (the
@@ -629,3 +702,15 @@ def _safe(panel: Panel, core: str) -> str:
 
 def _dict_client(a: Account) -> dict:
     return {"id": a.user, "password": a.password, "email": a.email, "enable": True}
+
+
+def _fetch_wg_configs(panel: Panel, inbound: Inbound) -> None:
+    """Populate inbound.wg_configs[which] with the panel-minted per-device client
+    configs for every account. Best-effort per account (an empty list surfaces later
+    as a clear 'no wireguard config' connect failure rather than a setup crash)."""
+    inbound.wg_configs = {}
+    for which, acct in inbound.accounts.items():
+        try:
+            inbound.wg_configs[which] = panel.wgc_configs(inbound.inbound_id, acct.email)
+        except Exception:  # noqa: BLE001
+            inbound.wg_configs[which] = []

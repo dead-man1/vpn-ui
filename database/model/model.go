@@ -27,6 +27,7 @@ const (
 	OPENCONNECT Protocol = "openconnect"
 	SSTP        Protocol = "sstp"
 	IKEV2       Protocol = "ikev2"
+	WGC       Protocol = "wg-c"
 	// UI stores Hysteria v1 and v2 both as "hysteria" and uses
 	// settings.version to discriminate. Imports from outside the panel
 	// can carry the literal "hysteria2" string, so IsHysteria below

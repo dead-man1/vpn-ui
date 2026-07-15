@@ -15,6 +15,7 @@ const Protocols = {
     OPENCONNECT: 'openconnect',
     SSTP: 'sstp',
     IKEV2: 'ikev2',
+    WGC: 'wg-c',
 };
 
 // Display labels for the protocol picker. The Add/Edit inbound dropdown shows
@@ -25,7 +26,7 @@ const ProtocolLabels = {
     vless: 'VLESS',
     trojan: 'Trojan',
     shadowsocks: 'Shadowsocks',
-    wireguard: 'WireGuard',
+    wireguard: 'WireGuard (Xray)',
     hysteria: 'Hysteria',
     mixed: 'Mixed',
     http: 'HTTP',
@@ -37,6 +38,7 @@ const ProtocolLabels = {
     openconnect: 'OpenConnect (cisco)',
     sstp: 'SSTP',
     ikev2: 'IKEv2',
+    'wg-c': 'WireGuard (C)',
 };
 
 const SSMethods = {
@@ -1667,6 +1669,7 @@ class Inbound extends XrayCommonClass {
             case Protocols.OPENCONNECT: return this.settings.ocservUsers;
             case Protocols.SSTP: return this.settings.sstpUsers;
             case Protocols.IKEV2: return this.settings.ikev2Users;
+            case Protocols.WGC: return this.settings.wgcUsers;
             default: return null;
         }
     }
@@ -2400,6 +2403,7 @@ Inbound.Settings = class extends XrayCommonClass {
             case Protocols.OPENCONNECT: return new Inbound.OcservSettings(protocol);
             case Protocols.SSTP: return new Inbound.SstpSettings(protocol);
             case Protocols.IKEV2: return new Inbound.Ikev2Settings(protocol);
+            case Protocols.WGC: return new Inbound.WgcSettings(protocol);
             default: return null;
         }
     }
@@ -2422,6 +2426,7 @@ Inbound.Settings = class extends XrayCommonClass {
             case Protocols.OPENCONNECT: return Inbound.OcservSettings.fromJson(json);
             case Protocols.SSTP: return Inbound.SstpSettings.fromJson(json);
             case Protocols.IKEV2: return Inbound.Ikev2Settings.fromJson(json);
+            case Protocols.WGC: return Inbound.WgcSettings.fromJson(json);
             default: return null;
         }
     }
@@ -4128,6 +4133,203 @@ Inbound.Ikev2Settings.Ikev2User = class extends XrayCommonClass {
       password: this.password,
       email: this.email,
       enable: this.enable,
+      expiryTime: this.expiryTime,
+      tgId: this.tgId,
+      subId: this.subId,
+      comment: this.comment,
+      totalGB: this.totalGB,
+      limitIp: this.limitIp,
+      reset: this.reset,
+      created_at: this.created_at,
+      updated_at: this.updated_at,
+    };
+  }
+
+  get _expiryTime() {
+    if (this.expiryTime === 0) {
+      return null;
+    }
+    if (this.expiryTime < 0) {
+      return this.expiryTime / -86400000;
+    }
+    return moment(this.expiryTime);
+  }
+
+  set _expiryTime(t) {
+    if (t == null || t === "") {
+      this.expiryTime = 0;
+    } else {
+      this.expiryTime = t.valueOf();
+    }
+  }
+
+  get _totalGB() {
+    return NumberFormatter.toFixed(this.totalGB / SizeFormatter.ONE_GB, 2);
+  }
+
+  set _totalGB(gb) {
+    this.totalGB = NumberFormatter.toFixed(gb * SizeFormatter.ONE_GB, 0);
+  }
+};
+
+// WireGuard (C): the in-kernel wireguard module driven in-process via wgctrl (NO
+// daemon, NO RADIUS). Keys are server-side: the backend mints the server keypair
+// and one keypair per device (K = the account's User Limit) on save, so the UI
+// never generates keys. Same UI shape as SSTP/IKEv2 (auto-managed 10.7.x block
+// shown read-only, DNS, MTU, User-Limit, client-to-client), minus TLS (WireGuard
+// carries no certificate), plus an optional per-device preshared-key toggle. The
+// serverPrivKey/serverPubKey round-trip so a backend-minted keypair survives edits.
+Inbound.WgcSettings = class extends Inbound.Settings {
+  constructor(
+    protocol,
+    dns1 = "1.1.1.1",
+    dns2 = "1.0.0.1",
+    mtu = 1420,
+    serverPrivKey = "",
+    serverPubKey = "",
+    pskEnable = false,
+    wgcUsers = [new Inbound.WgcSettings.WgUser()],
+    clientToClient = false,
+    crossInbound = false,
+    ipRanges = [],
+    userLimit = 0,
+    userLimitStrategy = "accept",
+    externalProxy = [],
+  ) {
+    super(protocol);
+    this.dns1 = dns1;
+    this.dns2 = dns2;
+    this.mtu = mtu;
+    // Backend-generated server keypair. Read-only in the UI (never minted client-side).
+    this.serverPrivKey = serverPrivKey;
+    this.serverPubKey = serverPubKey;
+    // Optional preshared key: when on, the backend mints a PSK per device.
+    this.pskEnable = pskEnable;
+    this.wgcUsers = wgcUsers;
+    this.clientToClient = clientToClient;
+    this.crossInbound = crossInbound;
+    // Panel-managed, auto-assigned 10.7.x block. Read-only in the form.
+    this.ipRanges = ipRanges;
+    this.userLimit = userLimit;
+    this.userLimitStrategy = userLimitStrategy;
+    // Optional external-proxy endpoints: alternate Endpoints (relay/CDN host:port)
+    // rendered into the generated client config + QR instead of this server's address.
+    this.externalProxy = externalProxy;
+  }
+
+  static fromJson(json = {}) {
+    return new Inbound.WgcSettings(
+      Protocols.WGC,
+      json.dns1 ?? "1.1.1.1",
+      json.dns2 ?? "1.0.0.1",
+      json.mtu ?? 1420,
+      json.serverPrivKey ?? "",
+      json.serverPubKey ?? "",
+      json.pskEnable ?? false,
+      Inbound.WgcSettings.WgUser.fromJson(json.clients),
+      json.clientToClient ?? false,
+      json.crossInbound ?? false,
+      Array.isArray(json.ipRanges) ? json.ipRanges.slice() : [],
+      json.userLimit ?? 1,
+      json.userLimitStrategy ?? "accept",
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
+    );
+  }
+
+  toJson() {
+    return {
+      dns1: this.dns1,
+      dns2: this.dns2,
+      mtu: this.mtu,
+      serverPrivKey: this.serverPrivKey,
+      serverPubKey: this.serverPubKey,
+      pskEnable: this.pskEnable,
+      clients: Inbound.WgcSettings.WgUser.toJsonArray(this.wgcUsers),
+      clientToClient: this.clientToClient,
+      crossInbound: this.crossInbound,
+      ipRanges: this.ipRanges || [],
+      userLimit: this.userLimit,
+      userLimitStrategy: this.userLimitStrategy,
+      externalProxy: this.externalProxy || [],
+    };
+  }
+};
+
+// A WireGuard (C) account (gateway model). Identity is `email` — there is NO username or
+// password (the public key is the credential). ONE keypair per account {privKey,pubKey,psk}
+// minted by the backend; the config Address is the account's whole block CIDR (e.g. a /29).
+// The standard usage/quota/expiry fields are kept so the shared client form works.
+Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
+  constructor(
+    email = RandomUtil.randomLowerAndNum(9),
+    enable = true,
+    privKey = "",
+    pubKey = "",
+    psk = "",
+    expiryTime = 0,
+    tgId = "",
+    subId = "",
+    comment = "",
+    totalGB = 0,
+    limitIp = 0,
+    reset = 0,
+    created_at = undefined,
+    updated_at = undefined,
+  ) {
+    super();
+    this.email = email;
+    this.enable = enable;
+    // One keypair per account, minted by the backend (empty on add). Read-only in the UI.
+    this.privKey = privKey;
+    this.pubKey = pubKey;
+    this.psk = psk;
+    this.expiryTime = expiryTime;
+    this.tgId = tgId;
+    this.subId = subId;
+    this.comment = comment;
+    this.totalGB = totalGB;
+    this.limitIp = limitIp;
+    this.reset = reset;
+    this.created_at = created_at;
+    this.updated_at = updated_at;
+  }
+
+  static fromJson(json = []) {
+    if (!Array.isArray(json))
+      return [new Inbound.WgcSettings.WgUser()];
+    return json.map(
+      (j) =>
+        new Inbound.WgcSettings.WgUser(
+          j.email,
+          j.enable ?? true,
+          j.privKey ?? "",
+          j.pubKey ?? "",
+          j.psk ?? "",
+          j.expiryTime ?? 0,
+          j.tgId ?? "",
+          j.subId ?? "",
+          j.comment ?? "",
+          j.totalGB ?? 0,
+          j.limitIp ?? j.ipLimit ?? 0,
+          j.reset ?? 0,
+          j.created_at,
+          j.updated_at,
+        ),
+    );
+  }
+
+  static toJsonArray(users) {
+    return users.map((u) => u.toJson());
+  }
+
+  toJson() {
+    return {
+      id: this.email, // identity = email (no username); keeps shared id-based client logic working
+      email: this.email,
+      enable: this.enable,
+      privKey: this.privKey,
+      pubKey: this.pubKey,
+      psk: this.psk,
       expiryTime: this.expiryTime,
       tgId: this.tgId,
       subId: this.subId,

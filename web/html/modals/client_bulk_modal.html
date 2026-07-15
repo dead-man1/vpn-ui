@@ -348,6 +348,8 @@
                     return new Inbound.SstpSettings.SstpUser();
                 case Protocols.IKEV2:
                     return new Inbound.Ikev2Settings.Ikev2User();
+                case Protocols.WGC:
+                    return new Inbound.WgcSettings.WgUser();
                 default:
                     return null;
             }

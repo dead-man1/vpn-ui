@@ -46,6 +46,11 @@ var vpnOptionalKernelModules = []string{
 	"af_key",
 	"esp4",
 	"xfrm_user",
+	// wireguard: the in-kernel WireGuard (C) data plane (mainline since Linux 5.6),
+	// driven by wgctrl-go via netlink. Present on every validated target; optional so a
+	// kernel without it degrades to a Warn (kernel-only build, no userspace fallback yet)
+	// rather than failing provisioning. Autoloads on the first `ip link add type wireguard`.
+	"wireguard",
 }
 
 // CoreState is the coarse health of a backend "core".
@@ -110,6 +115,7 @@ type CoreService struct {
 	ocservService  OcservService
 	sstpService    SstpService
 	ikev2Service   Ikev2Service
+	wgcService   WgcService
 	xrayService    XrayService
 }
 
@@ -306,6 +312,7 @@ func (s *CoreService) GetCoresStatus() []CoreStatus {
 		s.ocservStatus(),
 		s.sstpStatus(),
 		s.ikev2Status(),
+		s.wgcStatus(),
 		s.radiusStatus(),
 	}
 }
@@ -500,6 +507,30 @@ func (s *CoreService) ikev2Status() CoreStatus {
 	return cs
 }
 
+// wgcStatus reports the WireGuard (C) core. Unlike the daemon-backed protocols there
+// is no process to check: the data plane is the in-kernel wireguard module + the panel's
+// wgctrl-managed interfaces. State is module-availability + interface presence based.
+func (s *CoreService) wgcStatus() CoreStatus {
+	cs := CoreStatus{Name: "wgc"}
+	inbounds, _ := s.wgcService.GetWgcInbounds()
+	cs.Inbounds = len(inbounds)
+	if !s.wgcService.WireguardAvailable() {
+		cs.State = CoreNotInstalled
+		cs.Detail = "wireguard kernel module not available"
+		return cs
+	}
+	cs.Version = wireguardModuleVersion()
+	switch {
+	case cs.Inbounds == 0:
+		cs.State = CoreIdle
+	case s.wgcService.AnyInterfaceUp():
+		cs.State = CoreRunning
+	default:
+		cs.State = CoreStopped
+	}
+	return cs
+}
+
 func (s *CoreService) radiusStatus() CoreStatus {
 	cs := CoreStatus{Name: "radius"}
 	// RADIUS is embedded in the panel binary, so its version is the panel's.
@@ -566,7 +597,7 @@ func (s *CoreService) IsProvisioned() bool {
 // APPEND to this list when adding a new host-dependent protocol. An install that
 // was already provisioned for the older set is then told to re-run setup for the
 // new protocol only (see MissingProtocols), so upgrades don't silently miss it.
-var provisionProtocols = []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2"}
+var provisionProtocols = []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc"}
 
 // provisionBaseline is FROZEN — the protocol set as of when per-protocol setup
 // tracking was introduced. Do NOT add to it; new protocols go in provisionProtocols
@@ -646,6 +677,8 @@ func (s *CoreService) RestartCore(name string) error {
 		return s.sstpService.RestartServices()
 	case "ikev2":
 		return s.ikev2Service.RestartServices()
+	case "wgc":
+		return s.wgcService.RestartServices()
 	case "radius":
 		return RestartRadius()
 	case "ipsec":
@@ -660,7 +693,7 @@ func (s *CoreService) RestartCore(name string) error {
 // one failing core doesn't abort the rest.
 func (s *CoreService) RestartAll() error {
 	var errs []string
-	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "radius"} {
+	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "radius"} {
 		if err := s.RestartCore(name); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 		}
@@ -693,6 +726,8 @@ func (s *CoreService) StopCore(name string) error {
 		return nil
 	case "ikev2":
 		return s.ikev2Service.StopServices()
+	case "wgc":
+		return s.wgcService.StopServices()
 	case "radius":
 		return StopRadius()
 	case "ipsec":
@@ -719,6 +754,15 @@ func (s *CoreService) CoreLogs(name string) string {
 		return procMgr.LogsByPrefix("sstp-server-")
 	case "ikev2":
 		return procMgr.Logs(ikev2ProcName)
+	case "wgc":
+		if !s.wgcService.WireguardAvailable() {
+			return "WireGuard (C): kernel module 'wireguard' not available on this host."
+		}
+		up := "no"
+		if s.wgcService.AnyInterfaceUp() {
+			up = "yes"
+		}
+		return fmt.Sprintf("WireGuard (C) runs in-kernel via wgctrl (no daemon log).\nModule version: %s\nInterface(s) up: %s", wireguardModuleVersion(), up)
 	case "xray":
 		out := filterLogs("xray")
 		if out == "" {

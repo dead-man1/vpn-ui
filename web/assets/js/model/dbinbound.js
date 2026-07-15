@@ -171,6 +171,9 @@ class DBInbound {
                 // psk and eap-tls = one email-only account (routing, usage, quota,
                 // and User-Limit attribution). Single-client gating lives in the UI.
                 return true;
+            case Protocols.WGC:
+                // WireGuard (C) is account-based (email identity, one keypair per account).
+                return true;
             case Protocols.SHADOWSOCKS:
                 return this.toInbound().isSSMultiUser;
             default:

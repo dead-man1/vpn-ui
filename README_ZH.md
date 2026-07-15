@@ -15,6 +15,7 @@
 - OpenConnect (cisco)
 - SSTP
 - IKEv2
+- WireGuard (C)
 
 ## 新增功能
 
@@ -123,6 +124,47 @@ flowchart TB
   OUT -.->|"per-account counters"| STAT
   STAT -.->|"disconnect over-limit"| RAD
   NET -.->|"replies (symmetric path back)"| OUT
+```
+
+## RBridge 如何整合非 RADIUS 协议
+
+WireGuard (C) 以及 IKEv2 的 **PSK** / **EAP-TLS** 模式使用公钥或证书进行认证，因此不会与 RADIUS 进行往返交互；若不加处理，它们将没有会话记录、没有流量计费，也没有 **User Limit** 限制。**RBridge**（Radius Bridge）正好弥补了这一空缺：在每个流量统计周期里，它的 **Sweeper** 会轮询（poll）每个协议的活动隧道，执行配额（quota）、禁用以及每账户的 **User Limit** K（并将多余者用 evict 驱逐），然后把存活的会话汇入 RADIUS 协议本就在用的同一套内置 **RADIUS** 会话注册表与 **nftables** 计费之中。如此一来，基于密钥的协议在用量、配额和设备数限制上表现完全一致，并通过同一个 Xray **dokodemo-door** 数据平面出网。
+
+```mermaid
+flowchart TB
+  subgraph SRC["Non-RADIUS protocols (public-key / certificate auth, no RADIUS round-trip)"]
+    WG["WireGuard (C)<br/>in-kernel, wgctrl-managed"]
+    IKE["IKEv2 PSK / EAP-TLS<br/>strongSwan charon"]
+  end
+
+  subgraph BRIDGE["RBridge, the Radius Bridge (one pass per traffic tick)"]
+    SWEEP["Sweeper.Tick()"]
+    P1["1 · Poll live tunnels via each Adapter"]
+    P2["2 · Enforce quota + disable<br/>+ User-Limit K + strategy"]
+    P3["3 · Reconcile survivors into the Sink"]
+  end
+
+  subgraph SINK["Sink, the existing RADIUS session model"]
+    REG["in-binary RADIUS<br/>session registry"]
+    ACCT["nftables per-account counters<br/>→ client_traffics (usage / quota)"]
+  end
+
+  XRAY["Xray-core<br/>source-IP routing → outbound → Internet"]
+
+  %% control plane
+  WG -.->|"peers + last-handshake"| P1
+  IKE -.->|"active SAs + Framed-IP"| P1
+  SWEEP --> P1 --> P2 --> P3
+  P2 -.->|"evict: remove peer / terminate SA"| WG
+  P2 -.->|"evict: terminate SA"| IKE
+  P3 -->|"tunnel IP → account"| REG
+  P3 -->|"add / remove counters"| ACCT
+  ACCT -.->|"disabled / over-quota"| P2
+
+  %% data plane
+  WG ==> XRAY
+  IKE ==> XRAY
+  ACCT -.- XRAY
 ```
 
 ## 从源码编译

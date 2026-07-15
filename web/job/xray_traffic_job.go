@@ -5,6 +5,7 @@ import (
 
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
+	"github.com/mhsanaei/3x-ui/v2/web/service/rbridge"
 	"github.com/mhsanaei/3x-ui/v2/web/websocket"
 	"github.com/mhsanaei/3x-ui/v2/xray"
 
@@ -23,8 +24,10 @@ type XrayTrafficJob struct {
 	ocservService   service.OcservService
 	sstpService     service.SstpService
 	ikev2Service    service.Ikev2Service
+	wgcService    service.WgcService
 	nftService      service.NftService
 	radiusService   *service.RadiusService
+	sweeper         *rbridge.Sweeper
 }
 
 // NewXrayTrafficJob creates a new traffic collection job instance.
@@ -44,6 +47,13 @@ func NewXrayTrafficJob(rs *service.RadiusService) *XrayTrafficJob {
 	j.ocservService.SetRadius(rs, "")
 	j.sstpService.SetRadius(rs, "")
 	j.ikev2Service.SetRadius(rs, "")
+	// The rbridge Sweeper drives the non-RADIUS (sweep-reconciled) protocols each tick: it polls
+	// their live tunnels, enforces quota/disable + User Limit, and writes their sessions +
+	// nft accounting through the RADIUS service (the rbridge.Sink). ikev2 psk/eap-tls is the
+	// first such adapter; future non-RADIUS protocols (e.g. WireGuard) register here too.
+	j.sweeper = rbridge.New(rs)
+	j.sweeper.Register(&j.ikev2Service)
+	j.sweeper.Register(&j.wgcService)
 	return j
 }
 
@@ -64,25 +74,33 @@ func (j *XrayTrafficJob) Run() {
 	// Collect L2TP, PPTP, and OpenVPN per-client traffic from nftables counters (atomic read+reset)
 	// Session maps (IP→email) come from the embedded RADIUS server
 	// This runs regardless of Xray status — VPN traffic is independent
-	// psk/eap-tls ikev2 tunnels authenticate locally at charon (no RADIUS round-trip),
-	// so reconcile their live SAs into the session store + nft counters BEFORE reading
-	// sessions, so this tick bills their traffic and enforces their User Limit.
-	j.ikev2Service.ReconcileLocalAuthSessions()
-
-	l2tpSessions := j.radiusService.GetSessions("l2tp")
-	pptpSessions := j.radiusService.GetSessions("pptp")
-	ovpnSessions := j.radiusService.GetSessions("openvpn")
-	ocservSessions := j.radiusService.GetSessions("openconnect")
-	sstpSessions := j.radiusService.GetSessions("sstp")
-	ikev2Sessions := j.radiusService.GetSessions("ikev2")
-	if l2tpTraffics, pptpTraffics, ovpnTraffics, ocservTraffics, sstpTraffics, ikev2Traffics := j.nftService.CollectAndResetTraffic(l2tpSessions, pptpSessions, ovpnSessions, ocservSessions, sstpSessions, ikev2Sessions); len(l2tpTraffics) > 0 || len(pptpTraffics) > 0 || len(ovpnTraffics) > 0 || len(ocservTraffics) > 0 || len(sstpTraffics) > 0 || len(ikev2Traffics) > 0 {
-		clientTraffics = append(clientTraffics, l2tpTraffics...)
-		clientTraffics = append(clientTraffics, pptpTraffics...)
-		clientTraffics = append(clientTraffics, ovpnTraffics...)
-		clientTraffics = append(clientTraffics, ocservTraffics...)
-		clientTraffics = append(clientTraffics, sstpTraffics...)
-		clientTraffics = append(clientTraffics, ikev2Traffics...)
+	// Non-RADIUS protocols (ikev2 psk/eap-tls, ...) authenticate locally with no RADIUS
+	// round-trip, so the rbridge Sweeper reconciles their live tunnels into the session store +
+	// nft counters BEFORE reading sessions below, so this tick bills their traffic and enforces
+	// their quota + User Limit.
+	// WireGuard: reconcile the kernel peer set to DB state FIRST (before the sweep polls),
+	// so the interface holds exactly the enabled, non-disabled devices. Because a removed
+	// peer cannot complete a handshake, this makes disable/quota enforcement HARD (a
+	// disabled account cannot reconnect at all) and re-adds re-enabled accounts within one
+	// tick — no eventual-eviction window. Cheap: a few in-process wgctrl/netlink calls.
+	if err := j.wgcService.GenerateAllConfigs(); err != nil {
+		logger.Debug("wgc: peer reconcile failed:", err)
 	}
+
+	if j.sweeper != nil {
+		j.sweeper.Tick()
+	}
+
+	vpnSessions := map[string]map[string]string{
+		"l2tp":        j.radiusService.GetSessions("l2tp"),
+		"pptp":        j.radiusService.GetSessions("pptp"),
+		"openvpn":     j.radiusService.GetSessions("openvpn"),
+		"openconnect": j.radiusService.GetSessions("openconnect"),
+		"sstp":        j.radiusService.GetSessions("sstp"),
+		"ikev2":       j.radiusService.GetSessions("ikev2"),
+		"wg-c":       j.radiusService.GetSessions("wg-c"),
+	}
+	clientTraffics = append(clientTraffics, j.nftService.CollectAndResetTraffic(vpnSessions)...)
 
 	// Level-triggered enforcement: disconnect any STILL-connected client that is no
 	// longer allowed (quota/expiry hit, or disabled in settings). The edge-triggered

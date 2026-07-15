@@ -147,6 +147,8 @@ func protocolBase(proto string) int {
 		return 5
 	case "ikev2":
 		return 6
+	case "wg-c":
+		return 7
 	default: // l2tp
 		return 0
 	}
@@ -280,7 +282,7 @@ func usedVpnSubnets(excludeId int) map[string]bool {
 		return used
 	}
 	var inbounds []*model.Inbound
-	db.Where("protocol IN ?", []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2"}).Find(&inbounds)
+	db.Where("protocol IN ?", []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wg-c"}).Find(&inbounds)
 	for _, ib := range inbounds {
 		if ib.Id == excludeId {
 			continue
@@ -364,7 +366,7 @@ func AutoExpandVpnRanges(protocol string) bool {
 // re-allocated rather than rejected on conflict.
 func normalizeRanges(inbound *model.Inbound, excludeId int) error {
 	proto := string(inbound.Protocol)
-	if proto != "l2tp" && proto != "pptp" && proto != "openvpn" && proto != "openconnect" && proto != "sstp" && proto != "ikev2" {
+	if proto != "l2tp" && proto != "pptp" && proto != "openvpn" && proto != "openconnect" && proto != "sstp" && proto != "ikev2" && proto != "wg-c" {
 		return nil
 	}
 
@@ -397,6 +399,14 @@ func normalizeRanges(inbound *model.Inbound, excludeId int) error {
 		// the 10.6 /16. One shared charon assigns each account its block IP via the
 		// RADIUS Framed-IP-Address, exactly like ocserv.
 		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, userLimit, protocolBase("ikev2"), -1, used)
+	case "wg-c":
+		// Gateway model: each account owns ONE aligned power-of-two block (nextPow2 of the
+		// User Limit, e.g. 6 -> a /29) in the 10.7 /16. User Limit 0 = the maximum 64-device
+		// block (/26), via wgc semantics (not the shared decodeUserLimit's no-limit size).
+		// Size the /24 allocation by that same block so the range never under-provisions
+		// relative to wgcAccountBlock; the kernel interface takes the /24 .1, one Xray
+		// source-route per account.
+		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, nextPow2(wgcDecodeUserLimit(raw)), protocolBase("wg-c"), -1, used)
 	default:
 		normalized, err = normalizePppRanges(proto, ranges, clientCount, userLimit, used)
 	}
@@ -409,7 +419,7 @@ func normalizeRanges(inbound *model.Inbound, excludeId int) error {
 	delete(raw, "ipRange") // superseded by ipRanges
 
 	// L2TP/PPTP: keep localIp in sync with the first range's .1 (the PPP gateway).
-	if proto != "openvpn" && proto != "openconnect" && proto != "ikev2" && len(normalized) > 0 {
+	if proto != "openvpn" && proto != "openconnect" && proto != "ikev2" && proto != "wg-c" && len(normalized) > 0 {
 		if s, _, ok := parseRange(normalized[0]); ok {
 			lb, _ := json.Marshal(fmt.Sprintf("%d.%d.%d.1", s[0], s[1], s[2]))
 			raw["localIp"] = lb
@@ -676,6 +686,40 @@ func effectiveUserLimit(p *int) int {
 		return 1
 	}
 	return normUserLimit(*p)
+}
+
+// wgcEffectiveK resolves a WireGuard (C) User Limit into an account block size. Unlike the
+// shared effectiveUserLimit/normUserLimit (where an explicit 0 means the small no-limit
+// block, noLimitDevices), WireGuard (C) treats 0 as "maximum" — a full 64-device block (a
+// /26) — because its User Limit only SIZES the account's gateway block, it does not gate
+// simultaneous devices. Absent (nil) or 1 stays a single /32; other values clamp to [1,64].
+func wgcEffectiveK(p *int) int {
+	if p == nil {
+		return 1
+	}
+	k := *p
+	if k == 0 {
+		return maxUserLimit
+	}
+	if k < 1 {
+		return 1
+	}
+	if k > maxUserLimit {
+		return maxUserLimit
+	}
+	return k
+}
+
+// wgcDecodeUserLimit is wgcEffectiveK for the raw-JSON path (normalizeRanges), where an
+// absent field is legacy (=> 1) and an explicit 0 means the maximum 64-device block.
+func wgcDecodeUserLimit(raw map[string]json.RawMessage) int {
+	if b, ok := raw["userLimit"]; ok {
+		var k int
+		if json.Unmarshal(b, &k) == nil {
+			return wgcEffectiveK(&k)
+		}
+	}
+	return 1
 }
 
 // accountsPerSubnet is how many K-sized account blocks fit in one /24. K==1 keeps

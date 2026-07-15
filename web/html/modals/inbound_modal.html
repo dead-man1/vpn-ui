@@ -202,6 +202,27 @@
                     inModal.inbound.settings.externalProxy = [];
                 }
             },
+            // WireGuard (C) keeps external-proxy Endpoints in its protocol settings too
+            // (alternate host:port rendered into the client config + QR), like OpenVPN.
+            get wgcExternalProxy() {
+                return (
+                    Array.isArray(inModal.inbound.settings.externalProxy) &&
+                    inModal.inbound.settings.externalProxy.length > 0
+                );
+            },
+            set wgcExternalProxy(value) {
+                if (value) {
+                    inModal.inbound.settings.externalProxy = [
+                        {
+                            dest: window.location.hostname,
+                            port: inModal.inbound.port,
+                            remark: "",
+                        },
+                    ];
+                } else {
+                    inModal.inbound.settings.externalProxy = [];
+                }
+            },
         },
         computed: {
             ovpnAeadCiphers() {
@@ -363,6 +384,8 @@
                     if (inModal.inbound.settings && !inModal.inbound.settings.serverAddr) {
                         inModal.inbound.settings.serverAddr = window.location.hostname;
                     }
+                } else if (protocol === 'wg-c') {
+                    inModal.inbound.port = 51820;
                 }
             },
             streamNetworkChange() {

@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +24,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/util/json_util"
+	"github.com/mhsanaei/3x-ui/v2/web/service/rbridge"
 	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
@@ -921,27 +921,27 @@ func killIkev2ByID(swanctl string, id int) {
 	_ = exec.Command(swanctl, "--terminate", "--ike-id", strconv.Itoa(id)).Run()
 }
 
-// ReconcileLocalAuthSessions is the per-tick sweep for the LOCAL-auth ikev2 modes
-// (psk, eap-tls). Those authenticate at charon without a RADIUS round-trip, so they
-// get no session record, no traffic counter, and no User-Limit gate from the normal
-// path. Each tick this lists the live tunnels, attributes each to its inbound's
-// single account, enforces quota + User Limit K + strategy, and hands the survivors
-// to the RADIUS session store so the existing traffic-collection path bills them.
-// Runs in the traffic-job goroutine (never an auth handler), so it may call swanctl
-// synchronously. eap-mschapv2 inbounds are skipped (RADIUS already owns them).
-func (s *Ikev2Service) ReconcileLocalAuthSessions() {
-	if s.radiusService == nil {
-		return
-	}
+// Ikev2Service is a rbridge.Adapter for the LOCAL-auth ikev2 modes (psk, eap-tls). Those
+// authenticate at charon without a RADIUS round-trip, so the rbridge Sweeper (not RADIUS) tracks
+// their sessions, bills their traffic, and enforces quota + User Limit K + strategy each tick.
+// eap-mschapv2 inbounds are owned by RADIUS and are skipped by Poll. The Sweeper runs in the
+// traffic-job goroutine (never an auth handler), so these methods may call swanctl synchronously.
+var _ rbridge.Adapter = (*Ikev2Service)(nil)
+
+// Protocol identifies the sessions this adapter reconciles.
+func (s *Ikev2Service) Protocol() string { return "ikev2" }
+
+// Poll lists the live psk/eap-tls tunnels, each attributed to its inbound's single account. The
+// charon SA unique-id (monotonic, lower = older) is carried as both the eviction handle
+// (DeviceKey) and, via Since, the age used for oldest-first User-Limit eviction.
+func (s *Ikev2Service) Poll() ([]rbridge.Live, error) {
 	inbounds, err := s.GetIkev2Inbounds()
 	if err != nil {
-		return
+		return nil, err
 	}
 	swanctl := s.swanctlBin()
 	sas := ikev2ListSAs(swanctl)
-	disabled := s.getDisabledEmails()
-	desired := map[string]string{} // survivor vip -> account email
-
+	var live []rbridge.Live
 	for _, inbound := range inbounds {
 		if !inbound.Enable {
 			continue
@@ -958,46 +958,51 @@ func (s *Ikev2Service) ReconcileLocalAuthSessions() {
 		}
 		account := settings.Clients[0] // psk/eap-tls = exactly one account per inbound
 		conn := s.certBaseName(inbound.Id)
-
-		var mine []ikev2SA // this inbound's SAs that hold a vip, oldest-first
 		for _, sa := range sas {
 			if sa.conn == conn && sa.vip != "" {
-				mine = append(mine, sa)
+				live = append(live, rbridge.Live{
+					Protocol:  "ikev2",
+					InboundID: inbound.Id,
+					Email:     account.Email,
+					IP:        sa.vip,
+					DeviceKey: strconv.Itoa(sa.id),
+					Disabled:  !account.Enable,
+					Since:     time.Unix(0, int64(sa.id)),
+				})
 			}
-		}
-		sort.Slice(mine, func(i, j int) bool { return mine[i].id < mine[j].id })
-
-		// Quota / disabled account: drop every tunnel, bill nothing further.
-		if !account.Enable || disabled[account.Email] {
-			for _, sa := range mine {
-				killIkev2ByID(swanctl, sa.id)
-			}
-			continue
-		}
-
-		// User Limit K + strategy. charon has no connect-time hook for local auth, so
-		// the pool admits more than K devices and the sweep trims: reject keeps the
-		// oldest K (kills the newest), accept keeps the newest K (evicts the oldest).
-		k := effectiveUserLimit(settings.UserLimit)
-		survivors := mine
-		if len(mine) > k {
-			if normUserLimitStrategy(settings.UserLimitStrategy) == "reject" {
-				survivors = mine[:k]
-				for _, sa := range mine[k:] {
-					killIkev2ByID(swanctl, sa.id)
-				}
-			} else {
-				survivors = mine[len(mine)-k:]
-				for _, sa := range mine[:len(mine)-k] {
-					killIkev2ByID(swanctl, sa.id)
-				}
-			}
-		}
-		for _, sa := range survivors {
-			desired[sa.vip] = account.Email
 		}
 	}
-	s.radiusService.ReconcileIkev2LocalSessions(desired)
+	return live, nil
+}
+
+// Limit returns the inbound's User Limit K and normalized strategy. Unknown inbound -> no limit.
+func (s *Ikev2Service) Limit(inboundID int) (int, string) {
+	inbounds, err := s.GetIkev2Inbounds()
+	if err != nil {
+		return 0, ""
+	}
+	for _, inbound := range inbounds {
+		if inbound.Id != inboundID {
+			continue
+		}
+		settings, err := s.parseSettings(inbound)
+		if err != nil {
+			return 0, ""
+		}
+		return effectiveUserLimit(settings.UserLimit), normUserLimitStrategy(settings.UserLimitStrategy)
+	}
+	return 0, ""
+}
+
+// Evict terminates one live tunnel by its charon SA unique-id (best-effort). killIkev2ByID lists
+// SAs, so it must run off the auth path; the Sweeper calls it from the traffic-job goroutine.
+func (s *Ikev2Service) Evict(l rbridge.Live) error {
+	id, err := strconv.Atoi(l.DeviceKey)
+	if err != nil {
+		return err
+	}
+	killIkev2ByID(s.swanctlBin(), id)
+	return nil
 }
 
 // KillDisabledSessions terminates active IKEv2 sessions for disabled/expired clients.

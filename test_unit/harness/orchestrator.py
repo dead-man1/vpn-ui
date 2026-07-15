@@ -24,7 +24,8 @@ from .clients.base import Client
 from .incus import Incus, image_exists, IncusError
 from .model import (JobResult, SubTest, Status, ALL_PHASES, PHASE_CORE, PHASE_SETUP,
                     PHASE_OPENVPN, PHASE_BULK, PHASE_BACKUP, PHASE_WARP, PHASE_RANDOM,
-                    PHASE_SYSTEMD, PHASE_UNINSTALL)
+                    PHASE_SYSTEMD, PHASE_UNINSTALL,
+                    IKEV2_MODE_PHASES, IKEV2_PHASE_BY_MODE)
 from .panel import Panel
 from ..report.report import write_reports
 
@@ -40,7 +41,10 @@ def _hms() -> str:
 _PHASE_TAG = {
     "core-init": "CORE", "server-setup": "SETUP", "client-prep": "PREP",
     "openvpn": "OPENVPN", "l2tp": "L2TP", "pptp": "PPTP",
-    "openconnect": "OCSERV", "sstp": "SSTP", "ikev2": "IKEV2", "bulk-ops": "BULK",
+    "openconnect": "OCSERV", "sstp": "SSTP", "ikev2": "IKEV2",
+    "ikev2-eap-mschapv2": "IKE-EAP", "ikev2-psk": "IKE-PSK", "ikev2-eap-tls": "IKE-TLS",
+    "wg-c": "WGC",
+    "bulk-ops": "BULK",
     "backup-restore": "BACKUP", "warp-socks": "WARP", "random-cfg": "RANDOM",
     "systemd": "SYSTEMD", "uninstall": "UNINSTALL",
 }
@@ -132,7 +136,7 @@ def run_job(spec: dict, index: int, cfg: dict,
         phase (e.g. only the host-only `export-js` id was passed)."""
         return phase in cfg.get("_selected", ALL_PHASES)
 
-    need_clients = any(_sel(p) for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2"))
+    need_clients = any(_sel(p) for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2", "wg-c"))
     need_setup = (need_clients or _sel(PHASE_SETUP)
                   or _sel(PHASE_BULK) or _sel(PHASE_BACKUP))
 
@@ -237,7 +241,7 @@ def run_job(spec: dict, index: int, cfg: dict,
             return incus.exec(server_vm, cmd, timeout=timeout)
 
         # --- protocol suites (filtered by the --tests selection) ---
-        for proto in [p for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2") if _sel(p)]:
+        for proto in [p for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "wg-c") if _sel(p)]:
             if _aborting():
                 break
             log(f":: {proto} — connect variants + checks + peer reachability")
@@ -247,6 +251,29 @@ def run_job(spec: dict, index: int, cfg: dict,
             except Exception as e:  # noqa: BLE001
                 result.phase(protocols.PHASE[proto]).add(
                     SubTest(f"{proto}-driver", Status.ERROR,
+                            str(e)[:200], traceback.format_exc()[-1500:]))
+            finally:
+                cA.disconnect_all()
+                cB.disconnect_all()
+                cC.disconnect_all()
+
+        # --- ikev2: one full-suite phase per auth mode ------------------
+        # eap-mschapv2 = the 2-account RADIUS path; psk/eap-tls = the single-account
+        # rbridge-sweep path. Each is its own phase/column, selected via its own
+        # ikev2-<mode> id or the "ikev2" alias.
+        for mode in ("eap-mschapv2", "psk", "eap-tls"):
+            ph_name = IKEV2_PHASE_BY_MODE[mode]
+            if not _sel(ph_name):
+                continue
+            if _aborting():
+                break
+            log(f":: {ph_name} — connect + checks + User-Limit + accounting")
+            try:
+                protocols.run("ikev2", cA, cB, cC, sc, cfg, result, panel=panel,
+                              server_exec=server_exec, mode=mode)
+            except Exception as e:  # noqa: BLE001
+                result.phase(ph_name).add(
+                    SubTest(f"ikev2-{mode}-driver", Status.ERROR,
                             str(e)[:200], traceback.format_exc()[-1500:]))
             finally:
                 cA.disconnect_all()
@@ -388,10 +415,13 @@ def main(argv=None):
         cfg["concurrency"] = args.concurrency
 
     # --- resolve --tests into the set of selected phase ids (cfg["_selected"]).
-    #     Valid ids = the runtime phases + the host-only pseudo-id "export-js"
-    #     (run.sh runs that, not this process) + the literal "all". An empty
-    #     value or "all" selects every phase; substrate phases always run. ---
-    valid_ids = ALL_PHASES + ["export-js", "all"]
+    #     Valid ids = the runtime phases + "ikev2" (alias that expands to the three
+    #     ikev2-<mode> phases) + the host-only pseudo-id "export-js" (run.sh runs that,
+    #     not this process) + the literal "all". An empty value or "all" selects every
+    #     phase; substrate phases always run. A bare "ikev2" in _selected is a MARKER
+    #     (not a report column, not in ALL_PHASES) kept so the l2tp/charon port
+    #     arbitration and need_clients still see ikev2 as active. ---
+    valid_ids = ALL_PHASES + ["ikev2", "export-js", "all"]
     tests = [t.strip() for t in args.tests.split(",") if t.strip()]
     unknown = [t for t in tests if t not in valid_ids]
     if unknown:
@@ -399,9 +429,14 @@ def main(argv=None):
         print(f"valid ids: {', '.join(valid_ids)}", file=sys.stderr)
         return 2
     if not tests or "all" in tests:
-        cfg["_selected"] = set(ALL_PHASES)
+        selected = set(ALL_PHASES)
     else:
-        cfg["_selected"] = {t for t in tests if t in ALL_PHASES}
+        selected = {t for t in tests if t in ALL_PHASES}
+        if "ikev2" in tests:                      # alias -> every ikev2 auth-mode phase
+            selected.update(IKEV2_MODE_PHASES)
+    if selected & set(IKEV2_MODE_PHASES):         # marker: any ikev2 mode active
+        selected.add("ikev2")
+    cfg["_selected"] = selected
 
     # Resolve a relative binary path against the config's dir (test_unit/), so the
     # default "test_subject/vpn-ui" means the binary in the test_subject/ folder

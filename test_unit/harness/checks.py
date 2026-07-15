@@ -12,7 +12,7 @@ from .clients.base import Client
 from .model import SubTest, Status
 
 
-def tunnel_egress(client: Client, ifaces=("tun0", "ppp0")) -> SubTest:
+def tunnel_egress(client: Client, ifaces=("tun0", "ppp0", "wgc")) -> SubTest:
     """Confirm external traffic egresses via the tunnel. NOTE: openvpn pushes
     `redirect-gateway def1`, which adds 0.0.0.0/1 + 128.0.0.0/1 via tun and
     deliberately LEAVES the `default` route intact — so we must ask the kernel
@@ -71,8 +71,9 @@ PUSHED_DNS = ("1.1.1.1", "8.8.8.8")
 
 def _tunnel_dns_state(client: Client):
     """Deterministic signal: (iface, uses_pushed, via_tunnel, resolves, ifstatus, rg)."""
-    _, up = client.sh("for i in tun0 ppp0; do ip -o link show $i 2>/dev/null; done")
-    iface = "tun0" if "tun0:" in up else ("ppp0" if "ppp0:" in up else "")
+    _, up = client.sh("for i in tun0 ppp0 wgc; do ip -o link show $i 2>/dev/null; done")
+    iface = ("tun0" if "tun0:" in up else "ppp0" if "ppp0:" in up
+             else "wgc" if "wgc:" in up else "")
     _, ifstatus = client.sh(f"resolvectl status {iface} 2>/dev/null" if iface else "true")
     _, rg = client.sh("ip route get 1.1.1.1 2>/dev/null | head -1")
     _, works = client.sh("getent hosts example.com >/dev/null 2>&1 && echo OK || echo FAIL")

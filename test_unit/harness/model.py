@@ -115,7 +115,17 @@ PHASE_L2TP = "l2tp"
 PHASE_PPTP = "pptp"
 PHASE_OPENCONNECT = "openconnect"
 PHASE_SSTP = "sstp"
-PHASE_IKEV2 = "ikev2"
+PHASE_IKEV2 = "ikev2"                        # selection alias -> the per-mode phases below
+PHASE_IKEV2_EAPMSCHAP = "ikev2-eap-mschapv2"
+PHASE_IKEV2_PSK = "ikev2-psk"
+PHASE_IKEV2_EAPTLS = "ikev2-eap-tls"
+# Each IKEv2 auth mode is its own phase/column and runs the full applicable suite
+# (eap-mschapv2 = the RADIUS path + 2-account tests; psk/eap-tls = the single-account
+# rbridge-sweep path). Order = the order they run in.
+IKEV2_MODE_PHASES = [PHASE_IKEV2_EAPMSCHAP, PHASE_IKEV2_PSK, PHASE_IKEV2_EAPTLS]
+IKEV2_PHASE_BY_MODE = {"eap-mschapv2": PHASE_IKEV2_EAPMSCHAP,
+                       "psk": PHASE_IKEV2_PSK, "eap-tls": PHASE_IKEV2_EAPTLS}
+PHASE_WGC = "wg-c"                        # WireGuard (C) — kernel wireguard via wgctrl
 PHASE_BULK = "bulk-ops"
 PHASE_BACKUP = "backup-restore"
 PHASE_WARP = "warp-socks"
@@ -124,5 +134,8 @@ PHASE_SYSTEMD = "systemd"
 PHASE_UNINSTALL = "uninstall"
 
 ALL_PHASES = [PHASE_CORE, PHASE_SETUP, PHASE_OPENVPN, PHASE_L2TP, PHASE_PPTP,
-              PHASE_OPENCONNECT, PHASE_SSTP, PHASE_IKEV2, PHASE_BULK, PHASE_BACKUP,
+              PHASE_OPENCONNECT, PHASE_SSTP,
+              PHASE_IKEV2_EAPMSCHAP, PHASE_IKEV2_PSK, PHASE_IKEV2_EAPTLS,
+              PHASE_WGC,
+              PHASE_BULK, PHASE_BACKUP,
               PHASE_WARP, PHASE_RANDOM, PHASE_SYSTEMD, PHASE_UNINSTALL]

@@ -140,6 +140,10 @@
                     return clients.push(
                         new Inbound.Ikev2Settings.Ikev2User(),
                     );
+                case Protocols.WGC:
+                    return clients.push(
+                        new Inbound.WgcSettings.WgUser(),
+                    );
                 case Protocols.HYSTERIA:
                     return clients.push(
                         new Inbound.HysteriaSettings.Hysteria(),

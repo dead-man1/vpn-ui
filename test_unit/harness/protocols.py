@@ -17,23 +17,28 @@ from .clients import pptp as pptp_mod
 from .clients import openconnect as oc_mod
 from .clients import sstp as sstp_mod
 from .clients import ikev2 as ikev2_mod
+from .clients import wgc as wgc_mod
 from .clients.base import Client
 from .model import Phase, SubTest, Status
 from .model import (PHASE_OPENVPN, PHASE_L2TP, PHASE_PPTP, PHASE_OPENCONNECT,
-                    PHASE_SSTP, PHASE_IKEV2)
+                    PHASE_SSTP, PHASE_WGC, IKEV2_PHASE_BY_MODE)
 
 # cross-inbound peer: X's cross test pings a client on peer[X]'s inbound
 PEER = {"openvpn": "l2tp", "l2tp": "pptp", "pptp": "openvpn",
-        "openconnect": "openvpn", "sstp": "openvpn", "ikev2": "openvpn"}
+        "openconnect": "openvpn", "sstp": "openvpn", "ikev2": "openvpn",
+        "wg-c": "openvpn"}
+# Non-ikev2 protocols map straight to their phase. ikev2 is split per auth mode
+# (IKEV2_PHASE_BY_MODE), resolved inside run() from its `mode` arg.
 PHASE = {"openvpn": PHASE_OPENVPN, "l2tp": PHASE_L2TP, "pptp": PHASE_PPTP,
-         "openconnect": PHASE_OPENCONNECT, "sstp": PHASE_SSTP, "ikev2": PHASE_IKEV2}
+         "openconnect": PHASE_OPENCONNECT, "sstp": PHASE_SSTP, "wg-c": PHASE_WGC}
 
 # Connect variant used when dialing the SECOND same-protocol inbound (TEST 1,
 # _multi_inbound_check): l2tp uses RAW (the client's IPsec config is pinned to the
 # primary's 17/1701, so a 2nd l2tp inbound is exercised over raw L2TP), openvpn
 # udp/new, pptp has no variant. sstp/ikev2 have no variant (single-variant protocols).
 _SECOND_VARIANT = {"openvpn": ("udp", "new"), "l2tp": "raw", "pptp": None,
-                   "openconnect": "dtls", "sstp": None, "ikev2": None}
+                   "openconnect": "dtls", "sstp": None, "ikev2": None,
+                   "wg-c": None}
 
 
 def _connect(client: Client, sc, proto: str, which: str, variant=None, ib=None):
@@ -56,6 +61,8 @@ def _connect(client: Client, sc, proto: str, which: str, variant=None, ib=None):
         return sstp_mod.connect(client, ib, which, server_ip=sc.server_ip)
     if proto == "ikev2":
         return ikev2_mod.connect(client, ib, which, server_ip=sc.server_ip)
+    if proto == "wg-c":
+        return wgc_mod.connect(client, ib, which, server_ip=sc.server_ip)
     raise ValueError(proto)
 
 
@@ -65,7 +72,8 @@ def _disconnect(client: Client, proto: str):
      "pptp": pptp_mod.disconnect,
      "openconnect": oc_mod.disconnect,
      "sstp": sstp_mod.disconnect,
-     "ikev2": ikev2_mod.disconnect}[proto](client)
+     "ikev2": ikev2_mod.disconnect,
+     "wg-c": wgc_mod.disconnect}[proto](client)
 
 
 def _variants(proto: str):
@@ -90,8 +98,26 @@ def _variants(proto: str):
     return [("connect", None, True)]
 
 
-def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, panel=None, server_exec=None) -> None:
-    phase: Phase = result.phase(PHASE[proto])
+def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, panel=None, server_exec=None, mode=None) -> None:
+    # Resolve the target phase, inbound, and account model. ikev2 runs once per auth
+    # mode: eap-mschapv2 = the primary 2-account inbound (RADIUS path); psk/eap-tls =
+    # their single-account inbound (rbridge-sweep path). Non-ikev2 protocols are unchanged
+    # (mode is None -> phase/inbound from PHASE[proto] / sc.inbounds[proto]).
+    if proto == "ikev2":
+        mode = mode or "eap-mschapv2"
+        phase: Phase = result.phase(IKEV2_PHASE_BY_MODE[mode])
+        if mode == "eap-mschapv2":
+            ib = sc.inbounds.get("ikev2")
+            single_account = False
+        else:
+            ib = (getattr(sc, "ikev2_extra", None) or {}).get(mode)
+            single_account = True   # the panel binds a psk/eap-tls inbound to ONE account
+        present = ib is not None
+    else:
+        phase = result.phase(PHASE[proto])
+        ib = sc.inbounds.get(proto)
+        single_account = False
+        present = proto in sc.inbounds
     log = cA.log
 
     def server_log():
@@ -103,7 +129,7 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
         except Exception:  # noqa: BLE001
             return ""
 
-    if proto not in sc.inbounds:
+    if not present:
         phase.add(SubTest(f"{proto}-inbound", Status.SKIP,
                           "inbound was not created in setup"))
         log(f"-> inbound not created in setup -> skipping suite")
@@ -122,7 +148,7 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
         _disconnect(cA, proto)
         log(f"-> A {label}...")
         st = phase.add(SubTest(label))
-        ok, ip, clog = _connect(cA, sc, proto, "A", variant)
+        ok, ip, clog = _connect(cA, sc, proto, "A", variant, ib=ib)
         st.log = clog if ok else clog + server_log()
         st.status = Status.PASS if ok else Status.FAIL
         st.detail = f"tunnel ip {ip}" if ok else "connect failed"
@@ -176,15 +202,13 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
             _disconnect(cA, proto)
             cA.disconnect_all()
             time.sleep(4)
-            ok, a_primary_ip, clog = _connect(cA, sc, proto, "A")
+            ok, a_primary_ip, clog = _connect(cA, sc, proto, "A", ib=ib)
             if ok:
                 break
         if not ok:
             suite_ok = False
             phase.add(SubTest("suite", Status.SKIP, "could not re-establish primary after retries"))
             log(f"-> could not re-establish primary -> skipping shared checks (strategy test still runs)")
-
-    ib = sc.inbounds.get(proto)
 
     if suite_ok:
         # ---- shared check suite (A stays connected) --------------------
@@ -209,67 +233,108 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
         # With user_limit K>1 the account owns a block; the 2nd device must get a
         # DISTINCT IP inside that block (A device 1 = cA, still up) and reach the
         # internet. cB is idle here (client-to-client connects it later).
-        if ib is not None and getattr(ib, "user_limit", 1) > 1:
+        if proto == "wg-c":
+            phase.add(SubTest("user-limit", Status.NA,
+                              "WireGuard gateway model: one keypair per account; the block "
+                              "(e.g. /29) IS the limit, not per-device enforcement"))
+            log("-> user-limit [na] gateway model (one keypair per account)")
+        elif ib is not None and getattr(ib, "user_limit", 1) > 1:
             _user_limit_check(proto, cA, cB, sc, a_primary_ip, ib, log, phase)
 
-        # ---- client-to-client (same inbound) --------------------------
-        log(f"-> client-to-client (B on same inbound)...")
-        c2c = SubTest("client-to-client")
-        cB.disconnect_all()          # clean slate on B before its connect
-        time.sleep(2)
-        okB, ipB, logB = _connect(cB, sc, proto, "B")
-        rt = SubTest("routing")
-        if okB:
-            res = checks.ping_peer("client-to-client", cA, ipB, must_reach=True)
-            c2c.status, c2c.detail, c2c.log = res.status, res.detail, res.log
-            # source-IP routing proof: A (freedom) is still up, B (blackhole) is up
-            # now — assert the split from connectivity while both are connected.
-            try:
-                r = checks.routing(cA, cB)
-                rt.status, rt.detail, rt.log = r.status, r.detail, r.log
-            except Exception as e:  # noqa: BLE001
-                rt.status, rt.detail = Status.ERROR, str(e)[:150]
+        # ---- client-to-client + routing + cross-inbound (need account B) --
+        # These need a SECOND account (B). Single-account modes (ikev2 psk/eap-tls,
+        # which the panel binds to exactly one account) have only account A, so they
+        # are Not Applicable there (source-IP A/B split is covered by eap-mschapv2).
+        if single_account:
+            for nm, why in (("client-to-client", "single-account mode: no 2nd account"),
+                            ("routing", "single-account mode: no A/B split"),
+                            ("cross-inbound", "single-account mode: no 2nd account")):
+                phase.add(SubTest(nm, Status.NA, why))
+                log(f"-> {nm} [na] {why}")
         else:
-            c2c.status = Status.SKIP
-            c2c.detail = "peer B (same protocol) failed to connect"
-            c2c.log = logB
-            rt.status = Status.SKIP
-            rt.detail = "peer B (blackhole client) failed to connect"
-        log(f"-> client-to-client [{c2c.status.value}] {c2c.detail}")
-        phase.add(c2c)
-        log(f"-> routing [{rt.status.value}] {rt.detail}")
-        phase.add(rt)
-        _disconnect(cB, proto)
-
-        # ---- cross-inbound (peer protocol) ----------------------------
-        peer = PEER[proto]
-        log(f"-> cross-inbound (B on peer '{peer}')...")
-        cross = SubTest("cross-inbound")
-        if peer not in sc.inbounds:
-            cross.status = Status.SKIP
-            cross.detail = f"peer inbound '{peer}' not available"
-        else:
-            # Full teardown on B (esp. strongswan/charon after an l2tp-ipsec run,
-            # which otherwise deactivates the fresh ppp0 of the peer protocol),
-            # then settle before connecting the peer.
-            cB.disconnect_all()
-            time.sleep(3)
-            okP, ipP, logP = _connect(cB, sc, peer, "B")
-            if okP:
-                res = checks.ping_peer("cross-inbound", cA, ipP, must_reach=True)
-                cross.status, cross.detail, cross.log = res.status, res.detail, res.log
+            # ---- client-to-client (same inbound) ----------------------
+            log(f"-> client-to-client (B on same inbound)...")
+            c2c = SubTest("client-to-client")
+            cB.disconnect_all()          # clean slate on B before its connect
+            time.sleep(2)
+            okB, ipB, logB = _connect(cB, sc, proto, "B")
+            rt = SubTest("routing")
+            if okB:
+                res = checks.ping_peer("client-to-client", cA, ipB, must_reach=True)
+                c2c.status, c2c.detail, c2c.log = res.status, res.detail, res.log
+                # source-IP routing proof: A (freedom) is still up, B (blackhole) is up
+                # now — assert the split from connectivity while both are connected.
+                try:
+                    r = checks.routing(cA, cB)
+                    rt.status, rt.detail, rt.log = r.status, r.detail, r.log
+                except Exception as e:  # noqa: BLE001
+                    rt.status, rt.detail = Status.ERROR, str(e)[:150]
             else:
+                c2c.status = Status.SKIP
+                c2c.detail = "peer B (same protocol) failed to connect"
+                c2c.log = logB
+                rt.status = Status.SKIP
+                rt.detail = "peer B (blackhole client) failed to connect"
+            log(f"-> client-to-client [{c2c.status.value}] {c2c.detail}")
+            phase.add(c2c)
+            log(f"-> routing [{rt.status.value}] {rt.detail}")
+            phase.add(rt)
+            _disconnect(cB, proto)
+
+            # ---- cross-inbound (peer protocol) ------------------------
+            peer = PEER[proto]
+            log(f"-> cross-inbound (B on peer '{peer}')...")
+            cross = SubTest("cross-inbound")
+            if peer not in sc.inbounds:
                 cross.status = Status.SKIP
-                cross.detail = f"peer {peer} on B failed to connect"
-                cross.log = logP
-            _disconnect(cB, peer)
-        log(f"-> cross-inbound [{cross.status.value}] {cross.detail}")
-        phase.add(cross)
+                cross.detail = f"peer inbound '{peer}' not available"
+            else:
+                # Full teardown on B (esp. strongswan/charon after an l2tp-ipsec run,
+                # which otherwise deactivates the fresh ppp0 of the peer protocol),
+                # then settle before connecting the peer.
+                cB.disconnect_all()
+                time.sleep(3)
+                okP, ipP, logP = _connect(cB, sc, peer, "B")
+                if okP:
+                    res = checks.ping_peer("cross-inbound", cA, ipP, must_reach=True)
+                    cross.status, cross.detail, cross.log = res.status, res.detail, res.log
+                else:
+                    cross.status = Status.SKIP
+                    cross.detail = f"peer {peer} on B failed to connect"
+                    cross.log = logP
+                _disconnect(cB, peer)
+            log(f"-> cross-inbound [{cross.status.value}] {cross.detail}")
+            phase.add(cross)
 
     # ---- User Limit Strategy: reject vs accept on a 3rd device ---------
     # Always runs (independent of the shared suite): it restarts the daemon.
-    if ib is not None and getattr(ib, "user_limit", 1) > 1 and panel is not None:
+    # WireGuard is the exception: an account owns exactly K device keypairs (a peer's
+    # key IS its credential), so there is no dynamic (K+1)th-device admission to reject
+    # or evict — the cap is structural. The device COUNT and its hard disable/quota
+    # enforcement are covered by user-limit / multi-user-total / account-termination.
+    if proto == "wg-c":
+        for nm in ("strategy-reject", "strategy-accept"):
+            phase.add(SubTest(nm, Status.NA,
+                              "WireGuard: K device keypairs are structural — no dynamic "
+                              "(K+1)th admission to reject/evict"))
+            log(f"-> {nm} [na] structural K (no dynamic admission)")
+    elif ib is not None and getattr(ib, "user_limit", 1) > 1 and panel is not None:
         _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec)
+
+    # ---- WireGuard preshared-key mode ----------------------------------
+    # Prove the optional PSK mode works end-to-end: a separate psk-enabled wgc inbound,
+    # a real handshake + internet through it, then tear it down. Covers "with and without
+    # preshared key" (the primary suite above ran the no-PSK path).
+    if proto == "wg-c" and panel is not None:
+        try:
+            pk = _wgc_psk_check(cC, sc, panel, log)
+        except Exception as e:  # noqa: BLE001
+            pk = SubTest("psk-mode", Status.ERROR, str(e)[:150])
+        phase.add(pk)
+        log(f"-> {pk.name} [{pk.status.value}] {pk.detail}")
+        for c in (cA, cB, cC):
+            c.disconnect_all()
+        time.sleep(2)
 
     # ---- OpenConnect same-NAT device limit -----------------------------
     # Two devices on ONE account from ONE source IP (two phones on home wifi). ocserv
@@ -287,13 +352,18 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
     # resets the counter fresh and, in termination, DISABLES account A — so this
     # must precede it). Independent of the shared suite; wrapped so a raising test
     # can't abort the phase.
-    if ib is not None and getattr(ib, "user_limit", 1) > 1 and panel is not None:
+    if proto == "wg-c":
+        phase.add(SubTest("multi-user-total", Status.NA,
+                          "WireGuard gateway model: one keypair per account, no per-device "
+                          "traffic split to aggregate"))
+        log("-> multi-user-total [na] gateway model (one keypair per account)")
+    elif ib is not None and getattr(ib, "user_limit", 1) > 1 and panel is not None:
         for c in (cA, cB, cC):
             c.disconnect_all()
         time.sleep(2)
         mu_clients = [cA, cB, cC]
         # per-client closure -> all connect onto the SAME account "A" (device 1..N)
-        mu_connect = [(lambda c=c: _connect(c, sc, proto, "A")) for c in mu_clients]
+        mu_connect = [(lambda c=c: _connect(c, sc, proto, "A", ib=ib)) for c in mu_clients]
         try:
             mu = traffic.multi_user_total(mu_clients, panel, ib, cfg, mu_connect, log,
                                           server_exec=server_exec)
@@ -311,7 +381,11 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
     # the shared suite (it builds & tears down its OWN 2nd inbound). Runs BEFORE the
     # traffic block, which disables account A on the primary. Wrapped so a raising
     # test can't abort the phase.
-    if panel is not None:
+    if single_account:
+        phase.add(SubTest("multi-inbound-same-proto", Status.NA,
+                          "single-account mode: covered by the eap-mschapv2 phase"))
+        log("-> multi-inbound-same-proto [na] single-account mode")
+    elif panel is not None:
         try:
             mi = _multi_inbound_check(proto, cA, cB, cC, sc, panel, log)
         except Exception as e:  # noqa: BLE001
@@ -330,7 +404,7 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
         for c in (cA, cB, cC):
             c.disconnect_all()
         time.sleep(2)
-        connect_A = lambda: _connect(cA, sc, proto, "A")  # noqa: E731
+        connect_A = lambda: _connect(cA, sc, proto, "A", ib=ib)  # noqa: E731
         u = traffic.usage(cA, panel, ib, cfg, connect_A, log, server_exec=server_exec)
         log(f"-> {u.name} [{u.status.value}] {u.detail}")
         phase.add(u)
@@ -341,19 +415,8 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
         log(f"-> {t.name} [{t.status.value}] {t.detail}")
         phase.add(t)
 
-    # ---- IKEv2 extra auth modes (psk / eap-tls): connect + core data-plane ----
-    # Each non-default mode has its OWN single-account inbound (sc.ikev2_extra, built
-    # in setup). Run a tailored connect + dns-resolve + tunnel-egress + internet block
-    # per mode, each its own SubTest under this same ikev2 phase. Independent of the
-    # eap-mschapv2 suite above, so it runs regardless of that result; last, after the
-    # primary account's traffic tests (which touch only the primary inbound/account).
-    if proto == "ikev2":
-        for mode, ib_ex in (getattr(sc, "ikev2_extra", None) or {}).items():
-            try:
-                _ikev2_mode_check(mode, ib_ex, cA, sc, cfg, log, phase)
-            except Exception as e:  # noqa: BLE001
-                phase.add(SubTest(f"{mode}-connect", Status.ERROR, str(e)[:150]))
-
+    # (ikev2 psk/eap-tls now run their OWN full suite via run(mode=...), one phase per
+    # mode — the old connect-only smoke block here is gone.)
     _disconnect(cA, proto)
 
 
@@ -366,7 +429,7 @@ def _user_limit_check(proto, cA, cB, sc, a_primary_ip, ib, log, phase) -> None:
     log(f"-> user-limit (2nd device on account A, K={ib.user_limit})...")
     cB.disconnect_all()
     time.sleep(2)
-    ok2, ip2, log2 = _connect(cB, sc, proto, "A")  # SAME account A -> device 2
+    ok2, ip2, log2 = _connect(cB, sc, proto, "A", ib=ib)  # SAME account A -> device 2
     try:
         if not ok2 or not ip2:
             ul.status, ul.detail, ul.log = Status.FAIL, "2nd device failed to connect", log2
@@ -454,11 +517,11 @@ def _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec=No
         all_down()
         panel.set_user_limit_strategy(ib.inbound_id, "reject")
         time.sleep(6)  # daemon restart + config apply
-        ok1, ip1, _ = _connect(cA, sc, proto, "A")
+        ok1, ip1, _ = _connect(cA, sc, proto, "A", ib=ib)
         time.sleep(2)
-        ok2, ip2, _ = _connect(cB, sc, proto, "A")
+        ok2, ip2, _ = _connect(cB, sc, proto, "A", ib=ib)
         time.sleep(2)
-        ok3, ip3, clog3 = _connect(cC, sc, proto, "A")  # 3rd device must be refused
+        ok3, ip3, clog3 = _connect(cC, sc, proto, "A", ib=ib)  # 3rd device must be refused
         n3 = checks.internet(cC) if ok3 else None
         admitted = ok3 and n3 is not None and n3.status == Status.PASS
 
@@ -508,9 +571,9 @@ def _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec=No
         all_down()
         panel.set_user_limit_strategy(ib.inbound_id, "accept")
         time.sleep(6)
-        ok1, ip1, _ = _connect(cA, sc, proto, "A")   # device1 = oldest
+        ok1, ip1, _ = _connect(cA, sc, proto, "A", ib=ib)   # device1 = oldest
         time.sleep(5)                                # firmly establish (must be evictable)
-        ok2, ip2, _ = _connect(cB, sc, proto, "A")   # device2
+        ok2, ip2, _ = _connect(cB, sc, proto, "A", ib=ib)   # device2
         time.sleep(4)
         if proto == "openvpn":
             # Server-side, churn-proof: capture cA's ORIGINAL session client-id, then
@@ -520,7 +583,7 @@ def _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec=No
             # unstable during the reconnect war.)
             rows_before = _ovpn_status_rows(server_exec, ib.inbound_id, "udp")
             victim_cid = _ovpn_cid_at_ip(rows_before, ip1)
-            ok3, ip3, clog3 = _connect(cC, sc, proto, "A")  # device3: admitted, evicts oldest
+            ok3, ip3, clog3 = _connect(cC, sc, proto, "A", ib=ib)  # device3: admitted, evicts oldest
             # The detached evictor kills the victim ~1.5s after the connect hook returns,
             # but OpenVPN only rewrites the status file on a FIXED 5s timer (unanchored to
             # the kill), so the victim's ORIGINAL client-id can linger in the file for up to
@@ -547,7 +610,7 @@ def _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec=No
             # a churn-proof fact regardless of when the client notices the drop. Pass
             # if EITHER signal fires (the product really evicted).
             watcher, dropped = watch_drop(cA)
-            ok3, ip3, clog3 = _connect(cC, sc, proto, "A")  # device3: admitted, evicts oldest
+            ok3, ip3, clog3 = _connect(cC, sc, proto, "A", ib=ib)  # device3: admitted, evicts oldest
             watcher.join(timeout=18)
             server_evicted = False
             if server_exec is not None:
@@ -651,49 +714,58 @@ def _oc_same_nat_check(cA, sc, ib, log, phase, server_exec=None):
     log(f"-> same-nat-limit [{st.status.value}] {st.detail}")
 
 
-def _ikev2_mode_check(mode, ib, cA, sc, cfg, log, phase) -> None:
-    """Extra IKEv2 auth mode (psk / eap-tls): connect account A on its dedicated
-    single-account inbound (built in setup, sc.ikev2_extra[mode]) and run the core
-    data-plane checks. Each is its own SubTest named '<mode>-<check>' under the ikev2
-    phase. Independent of the eap-mschapv2 suite (its own inbound + charon connection),
-    so it runs regardless of the primary result. cA is cleaned before and after."""
-    dns_domain = (cfg.get("dns_resolve") or {}).get("domain", "cloudflare.com")
-    log(f"-> ikev2 {mode}: connect account A on inbound {ib.inbound_id}...")
-    cA.disconnect_all()
-    time.sleep(3)
-    con = phase.add(SubTest(f"{mode}-connect"))
-    ok = False
+def _wgc_psk_check(spare, sc, panel, log) -> SubTest:
+    """Prove WireGuard preshared-key mode end-to-end: build a psk-enabled wgc inbound
+    (single account), require a real handshake + internet through it, then delete it. The
+    primary wgc suite ran the no-PSK path, so together they cover both modes."""
+    st = SubTest("psk-mode")
+    log("-> psk-mode (preshared-key wgc inbound: handshake + internet)...")
+    acct = server_setup._acct("wgpsk", 0)
+    settings = {
+        "dns1": "1.1.1.1", "dns2": "8.8.8.8", "mtu": 1420,
+        "pskEnable": True,
+        "clientToClient": True, "crossInbound": True,
+        "clients": [server_setup._dict_client(acct)],
+    }
+    second = None
     try:
-        ok, ip, clog = ikev2_mod.connect(cA, ib, "A", server_ip=sc.server_ip)
-        con.log = clog
-        con.status = Status.PASS if ok else Status.FAIL
-        con.detail = f"tunnel ip {ip}" if ok else f"{mode} connect failed"
+        inb = panel.add_inbound("test-wgc-psk", 51822, "wg-c", settings)
+        second = server_setup.Inbound(
+            protocol="wg-c", inbound_id=inb["id"], udp_port=51822, tcp_port=0,
+            accounts={"A": acct}, user_limit=1)
+        server_setup._fetch_wg_configs(panel, second)
+        time.sleep(4)   # peer add + interface up
+        spare.disconnect_all()
+        time.sleep(2)
+        ok, ip, clog = wgc_mod.connect(spare, second, "A", server_ip=sc.server_ip)
+        net = checks.internet(spare) if ok else None
+        works = bool(ok and net and net.status == Status.PASS)
+        cfg0 = (second.wg_configs.get("A") or [{}])[0]
+        has_psk = "PresharedKey" in (cfg0.get("config") or "")
+        st.log = (f"psk_in_config={has_psk} connect_ok={ok} ip={ip!r} "
+                  f"net={net.status.value if net else 'n/a'}\n{clog[-500:]}")
+        if works and has_psk:
+            st.status = Status.PASS
+            st.detail = f"preshared-key tunnel established ({ip}) with internet"
+        elif not has_psk:
+            st.status = Status.FAIL
+            st.detail = "psk mode enabled but the rendered client config has no PresharedKey line"
+        else:
+            st.status = Status.FAIL
+            st.detail = (f"psk tunnel did not pass traffic "
+                         f"(ok={ok} net={net.status.value if net else 'n/a'})")
     except Exception as e:  # noqa: BLE001
-        con.status, con.detail = Status.ERROR, str(e)[:150]
-    log(f"-> {mode}-connect [{con.status.value}] {con.detail}")
-
-    if ok:
-        # DNS resolution through the tunnel (dig +short) — the dns_resolve helper
-        # already takes a custom name.
-        d = checks.dns_resolve(cA, dns_domain, name=f"{mode}-dns-resolve")
-        phase.add(d)
-        log(f"-> {d.name} [{d.status.value}] {d.detail}")
-        # tunnel-egress + internet: reuse the shared checks, renamed per mode (copy
-        # the verdict into a mode-named SubTest, the c2c/routing pattern above).
-        for base_name, fn in (("tunnel-egress", lambda: checks.tunnel_egress(cA)),
-                              ("internet", lambda: checks.internet(cA))):
-            m = SubTest(f"{mode}-{base_name}")
+        st.status, st.detail = Status.ERROR, str(e)[:150]
+    finally:
+        wgc_mod.disconnect(spare)
+        spare.disconnect_all()
+        if second is not None:
             try:
-                r = fn()
-                m.status, m.detail, m.log = r.status, r.detail, r.log
-            except Exception as e:  # noqa: BLE001
-                m.status, m.detail = Status.ERROR, str(e)[:150]
-            phase.add(m)
-            log(f"-> {m.name} [{m.status.value}] {m.detail}")
-
-    _disconnect(cA, "ikev2")
-    cA.disconnect_all()
-    time.sleep(2)
+                panel.del_inbound(second.inbound_id)
+                time.sleep(3)
+            except Exception:  # noqa: BLE001
+                pass
+    return st
 
 
 def _ovpn_status_rows(server_exec, inbound_id, transport):

@@ -34,6 +34,7 @@ type XrayService struct {
 	ocservService  OcservService
 	sstpService    SstpService
 	ikev2Service   Ikev2Service
+	wgcService   WgcService
 	xrayAPI        xray.XrayAPI
 }
 
@@ -110,9 +111,9 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		if !inbound.Enable {
 			continue
 		}
-		// Skip L2TP/PPTP/OpenVPN/OpenConnect/SSTP inbounds — they are not native Xray
-		// protocols. All route through paired dokodemo-door inbounds injected below.
-		if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "openconnect" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" {
+		// Skip L2TP/PPTP/OpenVPN/OpenConnect/SSTP/IKEv2/WireGuard inbounds — they are not
+		// native Xray protocols. All route through paired dokodemo-door inbounds injected below.
+		if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "openconnect" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" {
 			continue
 		}
 		// get settings clients
@@ -256,6 +257,17 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 			continue
 		}
 		dokodemoConfig := s.ikev2Service.GetDokodemoConfig(ikev2Inbound)
+		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *dokodemoConfig)
+	}
+
+	// Inject paired dokodemo-door inbounds for WireGuard (C) (one per inbound; the kernel
+	// wireguard interface decrypts, each inbound's 10.7 block routes to its own dokodemo).
+	wgcInbounds, _ := s.wgcService.GetWgcInbounds()
+	for _, wgcInbound := range wgcInbounds {
+		if !wgcInbound.Enable {
+			continue
+		}
+		dokodemoConfig := s.wgcService.GetDokodemoConfig(wgcInbound)
 		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *dokodemoConfig)
 	}
 

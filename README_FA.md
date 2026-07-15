@@ -15,6 +15,7 @@
 - OpenConnect (cisco)
 - SSTP
 - IKEv2
+- WireGuard (C)
 
 ## امکانات جدید
 
@@ -124,6 +125,47 @@ flowchart TB
   OUT -.->|"per-account counters"| STAT
   STAT -.->|"disconnect over-limit"| RAD
   NET -.->|"replies (symmetric path back)"| OUT
+```
+
+## نحوه‌ی کار RBridge با پروتکل‌های بدون RADIUS
+
+پروتکل WireGuard (C) و حالت‌های **PSK** / **EAP-TLS** از IKEv2 با کلید عمومی یا گواهی (certificate) احراز هویت می‌شن، برای همین اصلاً رفت‌وبرگشتی با RADIUS ندارن. اگه کاری براشون نمی‌کردیم، این‌ها هیچ رکورد نشستی (session)، هیچ حساب‌رسیِ ترافیک و هیچ اعمال **User Limit** نداشتن. **RBridge** (پل RADIUS) دقیقاً همین شکاف رو پر می‌کنه: توی هر tickِ جمع‌آوری ترافیک، **Sweeper**‌ـش تونل‌های زنده‌ی هر پروتکل رو poll می‌کنه، سهمیه (quota)، غیرفعال‌سازی و **User Limit** هر اکانت (K) رو اعمال می‌کنه (و اضافه‌ها رو evict می‌کنه)، بعد بازمانده‌ها رو توی همون رجیستریِ نشستِ **RADIUS** داخلِ باینری و همون accountingِ مبتنی بر **nftables** که پروتکل‌های RADIUS ازش استفاده می‌کنن reconcile می‌کنه. در نتیجه یه پروتکل مبتنی بر کلید هم دقیقاً همون رفتار مصرف، سهمیه و محدودیت دستگاه رو داره و از همون data planeِ مبتنی بر **dokodemo-door**‌ـیِ Xray به بیرون route می‌شه.
+
+```mermaid
+flowchart TB
+  subgraph SRC["Non-RADIUS protocols (public-key / certificate auth, no RADIUS round-trip)"]
+    WG["WireGuard (C)<br/>in-kernel, wgctrl-managed"]
+    IKE["IKEv2 PSK / EAP-TLS<br/>strongSwan charon"]
+  end
+
+  subgraph BRIDGE["RBridge, the Radius Bridge (one pass per traffic tick)"]
+    SWEEP["Sweeper.Tick()"]
+    P1["1 · Poll live tunnels via each Adapter"]
+    P2["2 · Enforce quota + disable<br/>+ User-Limit K + strategy"]
+    P3["3 · Reconcile survivors into the Sink"]
+  end
+
+  subgraph SINK["Sink, the existing RADIUS session model"]
+    REG["in-binary RADIUS<br/>session registry"]
+    ACCT["nftables per-account counters<br/>→ client_traffics (usage / quota)"]
+  end
+
+  XRAY["Xray-core<br/>source-IP routing → outbound → Internet"]
+
+  %% control plane
+  WG -.->|"peers + last-handshake"| P1
+  IKE -.->|"active SAs + Framed-IP"| P1
+  SWEEP --> P1 --> P2 --> P3
+  P2 -.->|"evict: remove peer / terminate SA"| WG
+  P2 -.->|"evict: terminate SA"| IKE
+  P3 -->|"tunnel IP → account"| REG
+  P3 -->|"add / remove counters"| ACCT
+  ACCT -.->|"disabled / over-quota"| P2
+
+  %% data plane
+  WG ==> XRAY
+  IKE ==> XRAY
+  ACCT -.- XRAY
 ```
 
 ## کامپایل از سورس

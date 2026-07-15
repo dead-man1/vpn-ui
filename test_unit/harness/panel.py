@@ -287,6 +287,16 @@ class Panel:
         `remote { id = <server_ip> }` matches."""
         return self._post("/panel/api/inbounds/generate-ikev2-cert", {}).get("obj", {})
 
+    def wgc_configs(self, inbound_id: int, email: str) -> list:
+        """Fetch a WireGuard (C) account's per-device client configs. Returns a list
+        of {deviceIndex, ip, publicKey, config} (one per device = the account's User
+        Limit K). The panel mints any missing server/device keypairs on this call, so
+        it is safe to call right after add_inbound."""
+        from urllib.parse import quote
+        return self._get(
+            f"/panel/api/inbounds/{inbound_id}/wgc-configs?email={quote(email)}"
+        ).get("obj", []) or []
+
     def download_ovpn(self, inbound_id: int, proto: str) -> str:
         """proto in {udp,tcp}. Returns raw .ovpn text."""
         r = self.s.get(self._url(f"/panel/api/inbounds/{inbound_id}/ovpn/{proto}"),

@@ -15,6 +15,7 @@ This project is an enhanced version of the **[3X-UI](https://github.com/MHSanaei
 - OpenConnect (cisco)
 - SSTP
 - IKEv2
+- WireGuard (C)
 
 ## New Features
 
@@ -123,6 +124,47 @@ flowchart TB
   OUT -.->|"per-account counters"| STAT
   STAT -.->|"disconnect over-limit"| RAD
   NET -.->|"replies (symmetric path back)"| OUT
+```
+
+## How RBridge Handles Non-RADIUS Protocols
+
+WireGuard (C) and the IKEv2 **PSK** / **EAP-TLS** modes authenticate with a public key or a certificate, so they never make a RADIUS round-trip. On their own they would get no session record, no traffic accounting, and no **User Limit** enforcement. **RBridge** (Radius Bridge) closes that gap: once per traffic tick its **Sweeper** polls each protocol's live tunnels, enforces quota, disable, and the per-account **User Limit** K (evicting the losers), then reconciles the survivors into the very same in-binary **RADIUS** session registry and **nftables** accounting the RADIUS protocols already use. A key-based protocol therefore behaves identically for usage, quota, and device limits, and egresses through the same Xray **dokodemo-door** data plane.
+
+```mermaid
+flowchart TB
+  subgraph SRC["Non-RADIUS protocols (public-key / certificate auth, no RADIUS round-trip)"]
+    WG["WireGuard (C)<br/>in-kernel, wgctrl-managed"]
+    IKE["IKEv2 PSK / EAP-TLS<br/>strongSwan charon"]
+  end
+
+  subgraph BRIDGE["RBridge, the Radius Bridge (one pass per traffic tick)"]
+    SWEEP["Sweeper.Tick()"]
+    P1["1 · Poll live tunnels via each Adapter"]
+    P2["2 · Enforce quota + disable<br/>+ User-Limit K + strategy"]
+    P3["3 · Reconcile survivors into the Sink"]
+  end
+
+  subgraph SINK["Sink, the existing RADIUS session model"]
+    REG["in-binary RADIUS<br/>session registry"]
+    ACCT["nftables per-account counters<br/>→ client_traffics (usage / quota)"]
+  end
+
+  XRAY["Xray-core<br/>source-IP routing → outbound → Internet"]
+
+  %% control plane
+  WG -.->|"peers + last-handshake"| P1
+  IKE -.->|"active SAs + Framed-IP"| P1
+  SWEEP --> P1 --> P2 --> P3
+  P2 -.->|"evict: remove peer / terminate SA"| WG
+  P2 -.->|"evict: terminate SA"| IKE
+  P3 -->|"tunnel IP → account"| REG
+  P3 -->|"add / remove counters"| ACCT
+  ACCT -.->|"disabled / over-quota"| P2
+
+  %% data plane
+  WG ==> XRAY
+  IKE ==> XRAY
+  ACCT -.- XRAY
 ```
 
 ## Building from Source

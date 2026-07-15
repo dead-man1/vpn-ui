@@ -104,6 +104,14 @@
                 {{ i18n "pages.inbounds.port" }}
                 <a-icon type="question-circle"></a-icon>
             </a-tooltip>
+            <a-tooltip v-else-if="inbound.protocol === 'wg-c'">
+                <template slot="title">
+                    UDP port the WireGuard interface listens on. Most clients
+                    use port 51820.
+                </template>
+                {{ i18n "pages.inbounds.port" }}
+                <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
             <template v-else>{{ i18n "pages.inbounds.port" }}</template>
         </template>
         <a-input
@@ -354,6 +362,11 @@
 <!-- ikev2 -->
 <template v-if="inbound.protocol === Protocols.IKEV2">
     {{template "form/ikev2"}}
+</template>
+
+<!-- wgc (WireGuard C) -->
+<template v-if="inbound.protocol === Protocols.WGC">
+    {{template "form/wgc"}}
 </template>
 
 <!-- hysteria -->

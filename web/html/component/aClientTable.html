@@ -16,6 +16,10 @@
     <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="qrcode" v-if="record.hasLink()" @click="showQrcode(record.id,client);"></a-icon>
   </a-tooltip>
   <a-tooltip>
+    <template slot="title">WireGuard Config</template>
+    <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="qrcode" v-if="record.protocol === Protocols.WGC" @click="showWgcConfig(record.id,client);"></a-icon>
+  </a-tooltip>
+  <a-tooltip>
     <template slot="title">{{ i18n "pages.client.edit" }}</template>
     <a-icon :style="{ fontSize: '22px' }" class="normal-icon" type="edit" @click="openEditClient(record.id,client);"></a-icon>
   </a-tooltip>
@@ -181,6 +185,10 @@
       <a-menu-item v-if="record.hasLink()" @click="showQrcode(record.id,client);">
         <a-icon :style="{ fontSize: '14px' }" type="qrcode"></a-icon>
         {{ i18n "qrCode" }}
+      </a-menu-item>
+      <a-menu-item v-if="record.protocol === Protocols.WGC" @click="showWgcConfig(record.id,client);">
+        <a-icon :style="{ fontSize: '14px' }" type="qrcode"></a-icon>
+        WireGuard Config
       </a-menu-item>
       <a-menu-item @click="openEditClient(record.id,client);">
         <a-icon :style="{ fontSize: '14px' }" type="edit"></a-icon>

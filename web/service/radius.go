@@ -16,6 +16,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/database"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/web/service/rbridge"
 
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2759"
@@ -502,26 +503,33 @@ func (s *RadiusService) GetSessions(protocol string) map[string]string {
 	return result
 }
 
-// ikeLocalSessionKey is the s.sessions key for a psk/eap-tls tunnel reconciled by the
-// sweep. The "ike:" prefix keeps it distinct from a charon Acct-Session-Id and "oc:".
-func ikeLocalSessionKey(ip string) string { return "ike:" + ip }
+// RadiusService is the rbridge.Sink: the rbridge Sweeper writes reconciled sessions and reads the
+// disabled-account set through it, so ownership of the session store stays here in RADIUS.
+var _ rbridge.Sink = (*RadiusService)(nil)
 
-// ReconcileIkev2LocalSessions replaces the tracked psk/eap-tls ikev2 sessions with
-// `desired` (vip -> account email). Newly seen vips gain an nft accounting counter;
-// vanished vips are folded into client_traffics and their counter removed (mirrors
-// Acct-Stop). Called each tick by Ikev2Service.ReconcileLocalAuthSessions. It only
-// touches "ike:"-keyed ikev2 sessions, so it never disturbs eap-mschapv2 accounting.
-func (s *RadiusService) ReconcileIkev2LocalSessions(desired map[string]string) {
+// localSessionKey is the s.sessions key for a tunnel reconciled by the rbridge sweep (non-RADIUS
+// protocols: ikev2 psk/eap-tls, wireguard, ...). The "cp:<proto>:" prefix keeps it distinct from a
+// daemon Acct-Session-Id and from the "oc:" openconnect keys, and namespaces protocols so one
+// protocol's reconcile never touches another's sessions.
+func localSessionKey(protocol, ip string) string { return "cp:" + protocol + ":" + ip }
+
+// ReconcileLocalSessions replaces the tracked rbridge-managed sessions for one protocol with
+// `desired` (tunnel IP -> account email). Newly seen IPs gain an nft accounting counter; vanished
+// IPs are folded into client_traffics and their counter removed (mirrors Acct-Stop). Called each
+// tick by the rbridge Sweeper. It only touches this protocol's "cp:<proto>:"-keyed sessions, so it
+// never disturbs RADIUS-tracked sessions (e.g. ikev2 eap-mschapv2, keyed by Acct-Session-Id).
+func (s *RadiusService) ReconcileLocalSessions(protocol string, desired map[string]string) {
 	type kv struct{ email, ip string }
 	var gone []kv
 	var added []string
+	prefix := "cp:" + protocol + ":"
 
 	s.mu.Lock()
 	if s.sessions == nil {
 		s.sessions = make(map[string]*radiusSession)
 	}
 	for sid, sess := range s.sessions {
-		if sess.protocol != "ikev2" || !strings.HasPrefix(sid, "ike:") {
+		if sess.protocol != protocol || !strings.HasPrefix(sid, prefix) {
 			continue
 		}
 		if _, ok := desired[sess.ip]; !ok {
@@ -530,31 +538,48 @@ func (s *RadiusService) ReconcileIkev2LocalSessions(desired map[string]string) {
 		}
 	}
 	for ip, email := range desired {
-		sid := ikeLocalSessionKey(ip)
+		sid := localSessionKey(protocol, ip)
 		if existing, ok := s.sessions[sid]; ok {
 			if email != "" {
 				existing.email = email
 			}
 			continue
 		}
-		s.sessions[sid] = &radiusSession{email: email, ip: ip, protocol: "ikev2", started: time.Now()}
+		s.sessions[sid] = &radiusSession{email: email, ip: ip, protocol: protocol, started: time.Now()}
 		added = append(added, ip)
 	}
 	s.mu.Unlock()
 
-	// Fold + remove counters for vanished vips OFF the lock (slow nft/db work), same
+	// Fold + remove counters for vanished IPs OFF the lock (slow nft/db work), same
 	// as the Acct-Stop path.
 	for _, g := range gone {
-		if up, down := s.nftService.ReadAndResetClientCounters("ikev2", g.ip); (up > 0 || down > 0) && g.email != "" {
+		if up, down := s.nftService.ReadAndResetClientCounters(protocol, g.ip); (up > 0 || down > 0) && g.email != "" {
 			if db := database.GetDB(); db != nil {
 				db.Exec("UPDATE client_traffics SET up = up + ?, down = down + ? WHERE email = ?", up, down, g.email)
 			}
 		}
-		_ = s.nftService.RemoveClientAccounting("ikev2", g.ip)
+		_ = s.nftService.RemoveClientAccounting(protocol, g.ip)
 	}
 	for _, ip := range added {
-		_ = s.nftService.AddClientAccounting("ikev2", ip)
+		_ = s.nftService.AddClientAccounting(protocol, ip)
 	}
+}
+
+// DisabledEmails returns the set of accounts currently disabled: a quota/expiry hit or disabled in
+// settings (client_traffics.enable = false). It is the rbridge.Sink counterpart of the per-service
+// getDisabledEmails helpers.
+func (s *RadiusService) DisabledEmails() map[string]bool {
+	disabled := make(map[string]bool)
+	db := database.GetDB()
+	if db == nil {
+		return disabled
+	}
+	var emails []string
+	db.Table("client_traffics").Where("enable = ?", false).Pluck("email", &emails)
+	for _, e := range emails {
+		disabled[e] = true
+	}
+	return disabled
 }
 
 // GetActiveSessionEmails returns a set of emails with active sessions (for online status).
@@ -1354,7 +1379,7 @@ func BuildVpnEmailToIPMap() map[string][]string {
 	// per-index/per-block IPs come out of computeVpnClientIP/vpnAccountDeviceIPs keyed
 	// on protocolBase(protocol), identical to the ppp path. ---
 	var pppInbounds []*model.Inbound
-	db.Where("protocol IN ? AND enable = ?", []string{"l2tp", "pptp", "openconnect", "sstp", "ikev2"}, true).Find(&pppInbounds)
+	db.Where("protocol IN ? AND enable = ?", []string{"l2tp", "pptp", "openconnect", "sstp", "ikev2", "wg-c"}, true).Find(&pppInbounds)
 
 	type pppSettingsJSON struct {
 		IpRanges  []string      `json:"ipRanges"`
@@ -1388,6 +1413,25 @@ func BuildVpnEmailToIPMap() map[string][]string {
 			if string(inbound.Protocol) == "ikev2" && (settings.AuthMode == "psk" || settings.AuthMode == "eap-tls") {
 				if bn, prefix := vpnBlock(ranges, protocolBase("ikev2"), inbound.Id); bn != nil {
 					result[client.Email] = append(result[client.Email], fmt.Sprintf("%s/%d", bn.String(), prefix))
+				}
+				continue
+			}
+			// WireGuard (C) gateway model: the account owns ONE aligned block (a /29-style
+			// CIDR); route its whole CIDR (matches wgcAccountBlock) so every IP the router
+			// hands out behind the single link flows through Xray.
+			if string(inbound.Protocol) == "wg-c" {
+				// WireGuard (C) sizes the account block with wgc semantics (User Limit 0
+				// = the full 64-device /26), which differs from the shared k above.
+				wk := wgcEffectiveK(settings.UserLimit)
+				if wk <= 1 {
+					if ip := computeVpnClientIP(ranges, inbound.Id, i, "wg-c"); ip != nil {
+						result[client.Email] = append(result[client.Email], ip.String()+"/32")
+					}
+				} else {
+					bs := nextPow2(wk)
+					if subnet, hostBase, ok := vpnAccountBlock(subnets, i, bs); ok {
+						result[client.Email] = append(result[client.Email], fmt.Sprintf("%s.%d/%d", subnet, hostBase, 32-log2i(bs)))
+					}
 				}
 				continue
 			}

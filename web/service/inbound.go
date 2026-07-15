@@ -259,7 +259,7 @@ func (s *InboundService) checkEmailExistForInbound(inbound *model.Inbound) (stri
 // protocols), silently killing the clients' route to the internet. Changes to
 // them are applied by a full Xray restart instead.
 func isVpnProtocol(p model.Protocol) bool {
-	return p == model.L2TP || p == model.PPTP || p == model.OPENVPN || p == model.OPENCONNECT || p == model.SSTP || p == model.IKEV2
+	return p == model.L2TP || p == model.PPTP || p == model.OPENVPN || p == model.OPENCONNECT || p == model.SSTP || p == model.IKEV2 || p == model.WGC
 }
 
 // AddInbound creates a new inbound configuration.
@@ -442,7 +442,7 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames
-	if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" {
+	if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" {
 		dupUser, err := s.checkPPPUsernamesForDuplicates(string(inbound.Protocol), clients)
 		if err != nil {
 			return inbound, false, err
@@ -884,7 +884,7 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames
-	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" {
+	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" || oldInbound.Protocol == "wg-c" {
 		dupUser, err := s.checkPPPUsernamesForDuplicates(string(oldInbound.Protocol), clients)
 		if err != nil {
 			return false, err
@@ -1311,7 +1311,7 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames (allow keeping the same username)
-	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" {
+	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" || oldInbound.Protocol == "wg-c" {
 		oldUsername := oldClients[clientIndex].ID
 		newUsername := clients[0].ID
 		if newUsername != oldUsername {

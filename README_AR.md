@@ -15,6 +15,7 @@
 - OpenConnect (cisco)
 - SSTP
 - IKEv2
+- WireGuard (C)
 
 ## الميزات الجديدة
 
@@ -123,6 +124,47 @@ flowchart TB
   OUT -.->|"per-account counters"| STAT
   STAT -.->|"disconnect over-limit"| RAD
   NET -.->|"replies (symmetric path back)"| OUT
+```
+
+## كيف يدمج RBridge البروتوكولات بدون RADIUS
+
+يعتمد WireGuard (C) وأوضاع **PSK** / **EAP-TLS** في IKEv2 على مصادقة بمفتاح عام أو شهادة، لذا لا تُجري أي جولة تبادل مع RADIUS، وكانت لولا ذلك ستبقى بلا سجل جلسة ولا محاسبة حركة ولا فرض لحدّ **User Limit**. يسدّ **RBridge** (جسر RADIUS) هذه الفجوة: مرة واحدة في كل دورة جمع للحركة، يقوم **Sweeper** باستطلاع الأنفاق الحيّة لكل بروتوكول (poll)، ويطبّق الحصة (quota) والتعطيل وحدّ **User Limit** لكل حساب (K) مع طرد الزائدين (evict)، ثم يوفّق الناجين داخل نفس سجلّ جلسات **RADIUS** المدمج ونفس محاسبة **nftables** التي تستخدمها بروتوكولات RADIUS أصلاً. وبذلك يحصل البروتوكول القائم على المفاتيح على نفس سلوك الاستهلاك والحصة وحدّ الأجهزة تمامًا، ويخرج عبر نفس مستوى بيانات **dokodemo-door** الخاص بـ Xray.
+
+```mermaid
+flowchart TB
+  subgraph SRC["Non-RADIUS protocols (public-key / certificate auth, no RADIUS round-trip)"]
+    WG["WireGuard (C)<br/>in-kernel, wgctrl-managed"]
+    IKE["IKEv2 PSK / EAP-TLS<br/>strongSwan charon"]
+  end
+
+  subgraph BRIDGE["RBridge, the Radius Bridge (one pass per traffic tick)"]
+    SWEEP["Sweeper.Tick()"]
+    P1["1 · Poll live tunnels via each Adapter"]
+    P2["2 · Enforce quota + disable<br/>+ User-Limit K + strategy"]
+    P3["3 · Reconcile survivors into the Sink"]
+  end
+
+  subgraph SINK["Sink, the existing RADIUS session model"]
+    REG["in-binary RADIUS<br/>session registry"]
+    ACCT["nftables per-account counters<br/>→ client_traffics (usage / quota)"]
+  end
+
+  XRAY["Xray-core<br/>source-IP routing → outbound → Internet"]
+
+  %% control plane
+  WG -.->|"peers + last-handshake"| P1
+  IKE -.->|"active SAs + Framed-IP"| P1
+  SWEEP --> P1 --> P2 --> P3
+  P2 -.->|"evict: remove peer / terminate SA"| WG
+  P2 -.->|"evict: terminate SA"| IKE
+  P3 -->|"tunnel IP → account"| REG
+  P3 -->|"add / remove counters"| ACCT
+  ACCT -.->|"disabled / over-quota"| P2
+
+  %% data plane
+  WG ==> XRAY
+  IKE ==> XRAY
+  ACCT -.- XRAY
 ```
 
 ## البناء من المصدر

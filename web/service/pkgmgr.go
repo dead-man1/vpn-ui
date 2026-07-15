@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/mhsanaei/3x-ui/v2/backend"
 )
 
 // packageManager abstracts the host's package manager. It's used for the one
@@ -230,6 +232,13 @@ func startIpsecService() string {
 // keeps it enabled. Falls back to the `ipsec restart` wrapper when systemd isn't
 // present. Returns the command output for the setup/restart log.
 func restartIpsecService() (string, error) {
+	if backend.HasStrongswanBundle() {
+		// L2TP/IPsec now rides the SHARED charon (same daemon as IKEv2). "Restart ipsec"
+		// re-syncs charon: rewrites its config, ensures it's running, and reloads every
+		// swanctl connection (l2tp-psk + any ikev2-<id>). It never bounces live IKEv2 SAs.
+		err := syncCharon()
+		return "\n$ resync charon (shared IPsec/IKEv2)\n", err
+	}
 	if usingBundledIpsec() {
 		// procMgr.Start supersedes any running pluto, so this is a restart; it also
 		// re-adds the conn from the (possibly regenerated) /etc/ipsec.conf.
@@ -248,6 +257,14 @@ func restartIpsecService() (string, error) {
 // `ipsec stop` fallback — mirrors restartIpsecService so the ipsec core's Stop
 // button matches the panel's `systemctl is-active ipsec` status view.
 func stopIpsecService() error {
+	if backend.HasStrongswanBundle() {
+		// IPsec and IKEv2 share ONE charon on the bundled path, so stopping "ipsec"
+		// stops that shared daemon (any enabled IKEv2 inbound will bring it back on the
+		// next ikev2 restart / config change). Also drop the L2TP conn file so a manual
+		// resync doesn't reload a connection the operator just stopped.
+		_ = os.Remove(swanctlConfDir + "/l2tp.conf")
+		return stopCharon()
+	}
 	if usingBundledIpsec() {
 		return stopBundledPluto()
 	}

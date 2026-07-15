@@ -69,7 +69,7 @@ var knownMissing = keySet(
 	"pages.core.stateNotInstalled", "pages.core.stateRunning", "pages.core.stateStopped",
 	"pages.core.status", "pages.core.stepDaemons", "pages.core.stepForward",
 	"pages.core.stepIpsec", "pages.core.stepModules", "pages.core.stop",
-	"pages.core.subtitle", "pages.core.system", "pages.core.title",
+	"pages.core.subtitle", "pages.core.system", "pages.core.title", "pages.core.backend",
 	"pages.core.toasts.provisioned", "pages.core.toasts.rebooting",
 	"pages.core.toasts.restarted", "pages.core.toasts.stopped", "pages.core.version",
 	"pages.core.newProtocolTitle", "pages.core.newProtocolDesc",

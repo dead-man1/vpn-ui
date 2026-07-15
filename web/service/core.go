@@ -36,8 +36,16 @@ var vpnKernelModules = []string{
 //     the XFRM/netlink stack (built into the kernel, CONFIG_XFRM=y), not PF_KEY, and
 //     RHEL 10 / Rocky 10 dropped the af_key module entirely — so IPsec works fine
 //     without it. Loading it where present is harmless; its absence is expected.
+//   - esp4 / xfrm_user: the ESP transform + netlink XFRM interface the bundled
+//     strongSwan (IKEv2) drives through its kernel-netlink plugin — the SAME data-plane
+//     the existing L2TP/IPsec (libreswan) path already uses, so it is present on every
+//     validated target kernel (built-in, or a module the kernel autoloads on the first
+//     SA). Preloading them best-effort just avoids relying on that on-demand autoload;
+//     when they are built into the kernel there is no module to load and that is fine.
 var vpnOptionalKernelModules = []string{
 	"af_key",
+	"esp4",
+	"xfrm_user",
 }
 
 // CoreState is the coarse health of a backend "core".
@@ -101,6 +109,7 @@ type CoreService struct {
 	openvpnService OpenVpnService
 	ocservService  OcservService
 	sstpService    SstpService
+	ikev2Service   Ikev2Service
 	xrayService    XrayService
 }
 
@@ -188,6 +197,11 @@ func daemonVersion(name string) string {
 		// accel-ppp (SSTP) ships as a relocatable tree bundle, not a flat BinDir
 		// binary, so its launchers resolve here — mirrors daemonBin().
 		bin = p
+	} else if p := backend.StrongswanBinPath(name); p != "" {
+		// strongSwan (IKEv2) also ships as a relocatable tree bundle, so the bundled
+		// charon launcher resolves here — otherwise `charon --version` (a "strongSwan
+		// 5.9.14" line) is never run and the IKEv2 core version shows as "—".
+		bin = p
 	} else if p, err := exec.LookPath(name); err == nil {
 		bin = p
 	} else {
@@ -271,6 +285,13 @@ func (s *CoreService) MissingDokodemoPorts() []int {
 			}
 		}
 	}
+	if ins, err := s.ikev2Service.GetIkev2Inbounds(); err == nil {
+		for _, in := range ins {
+			if port := s.ikev2Service.GetTproxyPort(in); in.Enable && !dokodemoPortBound(port) {
+				missing = append(missing, port)
+			}
+		}
+	}
 	return missing
 }
 
@@ -284,6 +305,7 @@ func (s *CoreService) GetCoresStatus() []CoreStatus {
 		s.openvpnStatus(),
 		s.ocservStatus(),
 		s.sstpStatus(),
+		s.ikev2Status(),
 		s.radiusStatus(),
 	}
 }
@@ -331,6 +353,22 @@ func (s *CoreService) l2tpStatus() CoreStatus {
 // installs, versions and runs independently of xl2tpd, so it gets its own card.
 func (s *CoreService) ipsecStatus() CoreStatus {
 	cs := CoreStatus{Name: "ipsec"}
+	// Bundled-strongSwan path (amd64): L2TP/IPsec is served by the SAME charon as IKEv2
+	// (one daemon on UDP 500/4500). Report the charon process + strongSwan version so this
+	// core reflects reality instead of the retired libreswan/pluto. Note for the UI: ipsec
+	// and ikev2 now share one daemon, so stopping one stops both.
+	if backend.HasStrongswanBundle() {
+		if v := daemonVersion("charon"); v != "" {
+			cs.Version = v
+		}
+		if procMgr.IsRunning(ikev2ProcName) {
+			cs.State = CoreRunning
+		} else {
+			cs.State = CoreStopped
+		}
+		return cs
+	}
+	// Host libreswan path (arches without the strongSwan bundle).
 	if !ipsecAvailable() {
 		cs.State = CoreNotInstalled
 		cs.Detail = "libreswan (ipsec) not installed"
@@ -438,6 +476,30 @@ func (s *CoreService) sstpStatus() CoreStatus {
 	return cs
 }
 
+func (s *CoreService) ikev2Status() CoreStatus {
+	cs := CoreStatus{Name: "ikev2"}
+	inbounds, _ := s.ikev2Service.GetIkev2Inbounds()
+	cs.Inbounds = len(inbounds)
+	// charon ships as a relocatable TREE bundle (not a flat BinDir daemon), so
+	// daemonInstalled (PATH + backend.DaemonPath only) misses it; HasStrongswanBundle
+	// covers the baked-in-binary case. Either presence = installed.
+	if !daemonInstalled("charon") && !backend.HasStrongswanBundle() {
+		cs.State = CoreNotInstalled
+		cs.Detail = "strongSwan (charon) not installed"
+		return cs
+	}
+	cs.Version = daemonVersion("charon")
+	switch {
+	case procMgr.IsRunning(ikev2ProcName):
+		cs.State = CoreRunning
+	case cs.Inbounds == 0:
+		cs.State = CoreIdle
+	default:
+		cs.State = CoreStopped
+	}
+	return cs
+}
+
 func (s *CoreService) radiusStatus() CoreStatus {
 	cs := CoreStatus{Name: "radius"}
 	// RADIUS is embedded in the panel binary, so its version is the panel's.
@@ -504,7 +566,7 @@ func (s *CoreService) IsProvisioned() bool {
 // APPEND to this list when adding a new host-dependent protocol. An install that
 // was already provisioned for the older set is then told to re-run setup for the
 // new protocol only (see MissingProtocols), so upgrades don't silently miss it.
-var provisionProtocols = []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp"}
+var provisionProtocols = []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2"}
 
 // provisionBaseline is FROZEN — the protocol set as of when per-protocol setup
 // tracking was introduced. Do NOT add to it; new protocols go in provisionProtocols
@@ -582,6 +644,8 @@ func (s *CoreService) RestartCore(name string) error {
 		return s.ocservService.RestartServices()
 	case "sstp":
 		return s.sstpService.RestartServices()
+	case "ikev2":
+		return s.ikev2Service.RestartServices()
 	case "radius":
 		return RestartRadius()
 	case "ipsec":
@@ -596,7 +660,7 @@ func (s *CoreService) RestartCore(name string) error {
 // one failing core doesn't abort the rest.
 func (s *CoreService) RestartAll() error {
 	var errs []string
-	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "openconnect", "sstp", "radius"} {
+	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "radius"} {
 		if err := s.RestartCore(name); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 		}
@@ -627,6 +691,8 @@ func (s *CoreService) StopCore(name string) error {
 	case "sstp":
 		s.sstpService.StopServices()
 		return nil
+	case "ikev2":
+		return s.ikev2Service.StopServices()
 	case "radius":
 		return StopRadius()
 	case "ipsec":
@@ -651,6 +717,8 @@ func (s *CoreService) CoreLogs(name string) string {
 		return procMgr.LogsByPrefix("ocserv-server-")
 	case "sstp":
 		return procMgr.LogsByPrefix("sstp-server-")
+	case "ikev2":
+		return procMgr.Logs(ikev2ProcName)
 	case "xray":
 		out := filterLogs("xray")
 		if out == "" {
@@ -793,6 +861,17 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 			emit(ProvisionStep{Name: "link accel-ppp module dir", OK: amErr == nil, Msg: msgOrOK(amErr)})
 		}
 
+		// IKEv2 strongSwan bundle. charon is a relocatable tree (it dlopens its plugins),
+		// so extract it and symlink /usr/lib/ipsec at the bundle so charon's absolute-path
+		// plugin dlopens resolve to the bundled .so's. Binaries resolve via
+		// backend.StrongswanBinPath, so no PATH symlink is needed.
+		if backend.HasStrongswanBundle() {
+			swErr := backend.ExtractStrongswanBundle()
+			emit(ProvisionStep{Name: "extract strongswan (IKEv2) bundle", OK: swErr == nil, Msg: msgOrOK(swErr)})
+			swlErr := backend.LinkStrongswanIpsecDir()
+			emit(ProvisionStep{Name: "link strongswan ipsec dir", OK: swlErr == nil, Msg: msgOrOK(swlErr)})
+		}
+
 		// pptpd execs pptpctrl from a fixed compiled-in path; point it at the
 		// extracted bundle so pptpd works from any install dir.
 		clErr := backend.LinkPptpCtrl()
@@ -811,9 +890,12 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 	emit(ensureCommand("nftables", "nft", nftablesPackage))
 	emit(ensureCommand("iproute2 (ip)", "ip", iproutePackage))
 
-	// libreswan (IPsec for L2TP/IPsec) is the one VPN daemon that can't be baked
-	// into the binary, so install it from the host package manager.
-	emit(ensureLibreswan())
+	// IPsec for L2TP/IPsec: on the bundled path (amd64) the extracted strongSwan/charon
+	// serves the IKEv1 transport layer alongside IKEv2 on one daemon, so no host package
+	// is needed. Only fall back to host libreswan on arches without the strongSwan bundle.
+	if !backend.HasStrongswanBundle() {
+		emit(ensureLibreswan())
+	}
 
 	// L2TP/PPTP need PPP kernel modules that minimal/cloud kernels omit. Best-
 	// effort install of the distro's full kernel-modules package. When the modules
@@ -983,6 +1065,7 @@ func (s *CoreService) StartProvision() bool {
 			cs.openvpnService.InitOpenVpn()
 			cs.ocservService.InitOcserv()
 			cs.sstpService.InitSstp()
+			cs.ikev2Service.InitIkev2()
 			if err := cs.xrayService.RestartXray(true); err != nil {
 				logger.Warning("provision: failed to restart xray after setup:", err)
 			}

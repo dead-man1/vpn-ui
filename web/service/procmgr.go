@@ -23,6 +23,11 @@ func daemonBin(name string) string {
 	if p := backend.AccelBinPath(name); p != "" {
 		return p
 	}
+	// strongSwan (IKEv2) also ships as a relocatable bundle TREE, so charon/swanctl/pki
+	// resolve to their launcher wrappers here rather than via DaemonPath.
+	if p := backend.StrongswanBinPath(name); p != "" {
+		return p
+	}
 	if p, err := exec.LookPath(name); err == nil {
 		return p
 	}
@@ -456,6 +461,14 @@ func migrateFromSystemd() {
 			// Orphaned bundled pluto from a crashed panel (holds UDP 500/4500).
 			if usingBundledIpsec() {
 				_ = exec.Command("pkill", "-KILL", "-f", backend.LibreswanBundleRoot+"/libexec/ipsec/pluto.bin").Run()
+			}
+			// Orphaned bundled charon (IKEv2) from a crashed panel — it also holds UDP
+			// 500/4500. charon runs via the musl loader wrapper, so its cmdline contains
+			// the absolute charon.bin path; match on that (the sbin/charon wrapper is in a
+			// different dir than libexec/ipsec/charon.bin, so a launcher-path -f match
+			// like accel-pppd's would miss it).
+			if backend.HasStrongswanBundle() {
+				_ = exec.Command("pkill", "-KILL", "-f", backend.StrongswanBundleRoot+"/libexec/ipsec/charon.bin").Run()
 			}
 			// Orphaned ocserv from a crashed/killed previous panel. ocserv RENAMES its
 			// processes to ocserv-main/-sm/-worker, so `pkill -f <exec path>` (used

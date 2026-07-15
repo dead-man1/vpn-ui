@@ -6,7 +6,7 @@
 #
 # The Xray core is pinned as a git submodule (third_party/Xray-core, at a fixed
 # commit). On every run it syncs that submodule, builds the Xray core from it, and
-# fetches the latest geo files — then compiles build/out/vpn-ui with everything
+# fetches the latest geo files — then compiles build/out/vpn-ui-<arch> with everything
 # baked in via go:embed. warpcli.sh is committed project source
 # (web/service/warpcli.sh) and embedded directly. The static VPN daemon bundle is
 # pinned + slow to build, so it is reused when already present.
@@ -71,9 +71,9 @@ fi
 
 # 2. Static VPN daemon bundle (built in Docker/Alpine — pinned + slow, so cached).
 #    Rebuild when the daemons OR the libreswan (ALL_ALGS / MODP1024) OR the
-#    accel-ppp (SSTP) bundle are missing, so a checkout that predates either bundle
-#    still picks it up.
-if ! compgen -G "backend/bin/$ARCH/*" > /dev/null 2>&1 || [[ ! -f "backend/bin/$ARCH/libreswan-bundle.tgz" ]] || [[ ! -f "backend/bin/$ARCH/accel-ppp-bundle.tgz" ]]; then
+#    accel-ppp (SSTP) OR the strongswan (IKEv2) bundle are missing, so a checkout that
+#    predates any bundle still picks it up.
+if ! compgen -G "backend/bin/$ARCH/*" > /dev/null 2>&1 || [[ ! -f "backend/bin/$ARCH/libreswan-bundle.tgz" ]] || [[ ! -f "backend/bin/$ARCH/accel-ppp-bundle.tgz" ]] || [[ ! -f "backend/bin/$ARCH/strongswan-bundle.tgz" ]]; then
     step "VPN daemon bundle"
     bash build/backend/build.sh "$ARCH"
 else
@@ -82,12 +82,12 @@ fi
 
 # 3. Panel binary (cgo required for sqlite). Output goes to build/out/.
 OUT_DIR="$REPO_ROOT/build/out"
-OUT_BIN="$OUT_DIR/vpn-ui"
+OUT_BIN="$OUT_DIR/vpn-ui-$ARCH"
 step "compiling vpn-ui"
 mkdir -p "$OUT_DIR"
 CGO_ENABLED=1 go build -o "$OUT_BIN" main.go
 
 hr
-ok "done: ${_CB:-}$(ls -lh "$OUT_BIN" | awk '{print $5}')${_CR:-} -> ${_CB:-}build/out/vpn-ui${_CR:-}"
-info "run it:  ./build/out/vpn-ui"
+ok "done: ${_CB:-}$(ls -lh "$OUT_BIN" | awk '{print $5}')${_CR:-} -> ${_CB:-}build/out/vpn-ui-${ARCH}${_CR:-}"
+info "run it:  ./build/out/vpn-ui-${ARCH}"
 hr

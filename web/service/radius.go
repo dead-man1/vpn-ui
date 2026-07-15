@@ -39,6 +39,7 @@ type RadiusService struct {
 	stationIP   map[string]string         // key: "proto:idx:Calling-Station-Id" -> its stable block IP
 	stationSeen map[string]time.Time      // last time each station authenticated (for pruning)
 	secret      []byte
+	eapSessions map[string]*eapState      // key: hex(State attr) — in-flight EAP-MSCHAPv2 exchanges (IKEv2/strongSwan)
 	// ocActiveFn overrides the OpenConnect liveness probe (isIPActive) — set in unit
 	// tests where no real ocserv route table exists. nil in production.
 	ocActiveFn func(ip string) bool
@@ -203,6 +204,14 @@ func (s *RadiusService) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 	if err != nil {
 		logger.Infof("RADIUS: auth rejected — invalid NAS-Identifier %q", nasID)
 		w.Write(r.Response(radius.CodeAccessReject))
+		return
+	}
+
+	// EAP (IKEv2 via strongSwan's eap-radius plugin): EAP-MSCHAPv2 is a multi-round
+	// Access-Challenge exchange, unlike the single-shot PAP / native-MS-CHAPv2 paths
+	// below. Delegate the whole conversation as soon as an EAP-Message is present.
+	if eap := getEAPMessage(r.Packet); len(eap) > 0 {
+		s.handleEAPAuth(w, r, protocol, inboundId, username, station, nasPort, eap)
 		return
 	}
 
@@ -395,7 +404,33 @@ func (s *RadiusService) handleAcct(w radius.ResponseWriter, r *radius.Request) {
 		if ok {
 			delete(s.sessions, sessionID)
 		}
+		// Whose IP is being stopped, and does ANOTHER live session still own it? Under
+		// User-Limit "accept" a freed IP is immediately reassigned to a new device, and
+		// the evicted device's Acct-Stop can arrive AFTER the newcomer's Acct-Start (the
+		// evicted IKEv2 SA is torn down asynchronously — see allocateBlockIP). Removing
+		// the nft counter (or folding+resetting it) on that late stop would wipe the
+		// newcomer's accounting → its traffic counts as 0 (the multi-user regression).
+		// So if the IP is now held by a different session, this stop is stale: ACK it but
+		// touch nothing. The evicting path already folded the old device's bytes.
+		stopIP := framedIP.String()
+		if ok {
+			stopIP = sess.ip
+		}
+		reassigned := false
+		if stopIP != "" && stopIP != "<nil>" {
+			for sid, o := range s.sessions {
+				if sid != sessionID && o.ip == stopIP && o.protocol == protocol {
+					reassigned = true
+					break
+				}
+			}
+		}
 		s.mu.Unlock()
+
+		if reassigned {
+			logger.Infof("RADIUS: acct-stop stale — ip=%s reassigned to a live session, keeping its accounting (user=%s session=%s)", stopIP, username, sessionID)
+			return
+		}
 
 		if ok {
 			// Fold the final counter bytes (accumulated since the last 10s collection)
@@ -465,6 +500,61 @@ func (s *RadiusService) GetSessions(protocol string) map[string]string {
 		}
 	}
 	return result
+}
+
+// ikeLocalSessionKey is the s.sessions key for a psk/eap-tls tunnel reconciled by the
+// sweep. The "ike:" prefix keeps it distinct from a charon Acct-Session-Id and "oc:".
+func ikeLocalSessionKey(ip string) string { return "ike:" + ip }
+
+// ReconcileIkev2LocalSessions replaces the tracked psk/eap-tls ikev2 sessions with
+// `desired` (vip -> account email). Newly seen vips gain an nft accounting counter;
+// vanished vips are folded into client_traffics and their counter removed (mirrors
+// Acct-Stop). Called each tick by Ikev2Service.ReconcileLocalAuthSessions. It only
+// touches "ike:"-keyed ikev2 sessions, so it never disturbs eap-mschapv2 accounting.
+func (s *RadiusService) ReconcileIkev2LocalSessions(desired map[string]string) {
+	type kv struct{ email, ip string }
+	var gone []kv
+	var added []string
+
+	s.mu.Lock()
+	if s.sessions == nil {
+		s.sessions = make(map[string]*radiusSession)
+	}
+	for sid, sess := range s.sessions {
+		if sess.protocol != "ikev2" || !strings.HasPrefix(sid, "ike:") {
+			continue
+		}
+		if _, ok := desired[sess.ip]; !ok {
+			gone = append(gone, kv{sess.email, sess.ip})
+			delete(s.sessions, sid)
+		}
+	}
+	for ip, email := range desired {
+		sid := ikeLocalSessionKey(ip)
+		if existing, ok := s.sessions[sid]; ok {
+			if email != "" {
+				existing.email = email
+			}
+			continue
+		}
+		s.sessions[sid] = &radiusSession{email: email, ip: ip, protocol: "ikev2", started: time.Now()}
+		added = append(added, ip)
+	}
+	s.mu.Unlock()
+
+	// Fold + remove counters for vanished vips OFF the lock (slow nft/db work), same
+	// as the Acct-Stop path.
+	for _, g := range gone {
+		if up, down := s.nftService.ReadAndResetClientCounters("ikev2", g.ip); (up > 0 || down > 0) && g.email != "" {
+			if db := database.GetDB(); db != nil {
+				db.Exec("UPDATE client_traffics SET up = up + ?, down = down + ? WHERE email = ?", up, down, g.email)
+			}
+		}
+		_ = s.nftService.RemoveClientAccounting("ikev2", g.ip)
+	}
+	for _, ip := range added {
+		_ = s.nftService.AddClientAccounting("ikev2", ip)
+	}
 }
 
 // GetActiveSessionEmails returns a set of emails with active sessions (for online status).
@@ -591,6 +681,7 @@ func (s *RadiusService) KillSessionsByEmail(emails map[string]bool) {
 	s.mu.Lock()
 	var toKill []string
 	var sstpKill []string
+	var ikev2Kill []string
 	for _, sess := range s.sessions {
 		if sess.protocol == "openconnect" {
 			continue
@@ -598,6 +689,8 @@ func (s *RadiusService) KillSessionsByEmail(emails map[string]bool) {
 		if emails[sess.email] {
 			if sess.protocol == "sstp" {
 				sstpKill = append(sstpKill, sess.ip)
+			} else if sess.protocol == "ikev2" {
+				ikev2Kill = append(ikev2Kill, sess.ip)
 			} else {
 				toKill = append(toKill, sess.ip)
 			}
@@ -620,6 +713,11 @@ func (s *RadiusService) KillSessionsByEmail(emails map[string]bool) {
 		if inbound := sstpInboundForIP(ip); inbound != nil {
 			_ = (&SstpService{}).KillClientIP(inbound, ip)
 		}
+	}
+	// IKEv2: a single shared charon serves every inbound, so eviction needs no inbound
+	// routing — terminate the IKE SA holding this virtual IP via swanctl.
+	for _, ip := range ikev2Kill {
+		_ = (&Ikev2Service{}).KillClientIP(nil, ip)
 	}
 }
 
@@ -721,6 +819,10 @@ func (s *RadiusService) isIPActive(ip string, protocol string) bool {
 			return false
 		}
 		return strings.Contains(string(output), "ocserv")
+	case "ikev2":
+		// charon assigns the client's virtual IP as a remote vip (not a local addr),
+		// so ask swanctl whether any live IKE SA still holds it.
+		return ikev2IPActive(ip)
 	default: // l2tp / pptp: the IP is assigned to a local PPP interface
 		output, err := exec.Command("ip", "-o", "addr", "show").Output()
 		if err != nil {
@@ -738,7 +840,7 @@ func (s *RadiusService) isIPActive(ip string, protocol string) bool {
 //     protocol on its single fixed port, so it can carry only ONE NAS-Identifier.
 //   - per-inbound, e.g. "l2tp-3" / "pptp-5": kept for backward compatibility.
 func parseNASIdentifier(nasID string) (protocol string, inboundId int, err error) {
-	if nasID == "l2tp" || nasID == "pptp" || nasID == "openvpn" || nasID == "openconnect" || nasID == "sstp" {
+	if nasID == "l2tp" || nasID == "pptp" || nasID == "openvpn" || nasID == "openconnect" || nasID == "sstp" || nasID == "ikev2" {
 		return nasID, 0, nil
 	}
 
@@ -748,7 +850,7 @@ func parseNASIdentifier(nasID string) (protocol string, inboundId int, err error
 	}
 
 	protocol = parts[0]
-	if protocol != "l2tp" && protocol != "pptp" && protocol != "openvpn" && protocol != "openconnect" && protocol != "sstp" {
+	if protocol != "l2tp" && protocol != "pptp" && protocol != "openvpn" && protocol != "openconnect" && protocol != "sstp" && protocol != "ikev2" {
 		return "", 0, fmt.Errorf("unknown protocol in NAS-Identifier: %s", protocol)
 	}
 
@@ -979,7 +1081,7 @@ func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []s
 	// every session (verified live — two devices on one account behind ONE NAT collapsed
 	// to a single tunnel IP 10.5.2.2), and SSTP auths once per TLS tunnel (no CHAP flap),
 	// so it takes the free-IP-or-evict path like OpenConnect, not idempotent-redial.
-	if skey != "" && protocol != "openconnect" && protocol != "sstp" {
+	if skey != "" && protocol != "openconnect" && protocol != "sstp" && protocol != "ikev2" {
 		if ip, ok := s.stationIP[skey]; ok && isBlockIP[ip] {
 			s.stationSeen[skey] = now
 			s.pending[ip] = now
@@ -1098,6 +1200,19 @@ func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []s
 				killOcservByIP(inboundId, victimIP)
 			} else if protocol == "sstp" {
 				_ = (&SstpService{}).KillClientIP(&model.Inbound{Id: inboundId}, victimIP)
+			} else if protocol == "ikev2" {
+				// A single shared charon serves every inbound — terminate by virtual IP,
+				// ASYNCHRONOUSLY. The kill MUST NOT run inside this RADIUS auth handler:
+				// killIkev2ByIP calls `swanctl --list-sas`, and while THIS device's own
+				// IKE_SA is mid-authentication (its charon worker thread is blocked in
+				// eap-radius waiting for the very Access-Accept we're about to return),
+				// list-sas blocks on that checked-out SA until charon's RADIUS retransmit
+				// gives up (~14s) — a circular wait through charon's SA-manager lock that
+				// fails the new device. Returning first lets charon finish this handshake
+				// and release the SA; the goroutine's list-sas is then instant. It targets
+				// the OLDEST SA on the IP (killIkev2ByIP → lowest unique-id), so the just-
+				// admitted new device (higher id, briefly sharing the reused vip) is safe.
+				go (&Ikev2Service{}).KillClientIP(nil, victimIP)
 			} else {
 				killPPPByIP(victimIP)
 			}
@@ -1239,12 +1354,13 @@ func BuildVpnEmailToIPMap() map[string][]string {
 	// per-index/per-block IPs come out of computeVpnClientIP/vpnAccountDeviceIPs keyed
 	// on protocolBase(protocol), identical to the ppp path. ---
 	var pppInbounds []*model.Inbound
-	db.Where("protocol IN ? AND enable = ?", []string{"l2tp", "pptp", "openconnect", "sstp"}, true).Find(&pppInbounds)
+	db.Where("protocol IN ? AND enable = ?", []string{"l2tp", "pptp", "openconnect", "sstp", "ikev2"}, true).Find(&pppInbounds)
 
 	type pppSettingsJSON struct {
 		IpRanges  []string      `json:"ipRanges"`
 		IpRange   string        `json:"ipRange"`
 		UserLimit *int          `json:"userLimit"` // nil = absent (legacy => 1); 0 = no limit
+		AuthMode  string        `json:"authMode"`  // ikev2 only: psk/eap-tls = one local-auth account
 		Clients   []clientEntry `json:"clients"`
 	}
 
@@ -1263,6 +1379,16 @@ func BuildVpnEmailToIPMap() map[string][]string {
 		subnets := pppSubnetsOrDefault(ranges, string(inbound.Protocol), inbound.Id)
 		for i, client := range settings.Clients {
 			if client.Email == "" {
+				continue
+			}
+			// ikev2 psk / eap-tls: one local-auth account whose devices lease from a
+			// whole-block charon pool. Map it to the entire block CIDR so any pool
+			// address routes through Xray instead of hitting the vpnAddrSpace
+			// blackhole; the reconcile sweep enforces the real device count.
+			if string(inbound.Protocol) == "ikev2" && (settings.AuthMode == "psk" || settings.AuthMode == "eap-tls") {
+				if bn, prefix := vpnBlock(ranges, protocolBase("ikev2"), inbound.Id); bn != nil {
+					result[client.Email] = append(result[client.Email], fmt.Sprintf("%s/%d", bn.String(), prefix))
+				}
 				continue
 			}
 			if k <= 1 {

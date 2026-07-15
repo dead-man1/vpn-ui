@@ -46,6 +46,17 @@
                     this.inbound.settings.testseed = [900, 500, 900, 256].slice();
                 }
             }
+            // IKEv2's server certificate SAN must match the address clients dial.
+            // On open (add or edit) default it to the host the admin is using to
+            // reach the panel when it's still blank — never clobber a value the
+            // operator saved earlier.
+            if (
+                this.inbound.protocol === Protocols.IKEV2 &&
+                this.inbound.settings &&
+                !this.inbound.settings.serverAddr
+            ) {
+                this.inbound.settings.serverAddr = window.location.hostname;
+            }
             if (dbInbound) {
                 this.dbInbound = new DBInbound(dbInbound);
             } else {
@@ -125,6 +136,7 @@
         data: {
             inModal: inModal,
             delayedStart: false,
+            ikev2CertWarning: "",
             get inbound() {
                 return inModal.inbound;
             },
@@ -231,9 +243,12 @@
                     if (!s.caCert || !s.serverCert) return false;
                     return true;
                 }
-                if (ib.protocol === "openconnect" || ib.protocol === "sstp") {
+                if (ib.protocol === "openconnect" || ib.protocol === "sstp" || ib.protocol === "ikev2") {
                     const s = ib.settings || {};
                     if (!okPort(ib.port)) return false;
+                    // IKEv2 in PSK mode authenticates with a shared secret, not a
+                    // TLS server cert — skip the cert requirement in that mode.
+                    if (ib.protocol === "ikev2" && s.authMode === "psk") return typeof s.psk === "string" && s.psk.trim().length > 0;
                     // ocserv/accel-ppp won't start without a TLS server cert+key —
                     // require one just like OpenVPN. Either file paths (path mode) or
                     // pasted PEM (content mode; the "Generate Self-Signed Cert" button
@@ -246,6 +261,16 @@
                     return true;
                 }
                 return okPort(ib.port);
+            },
+            // Coarse signal that changes when the ikev2 server cert or auth mode
+            // changes (or the modal reopens) — drives the RSA/device-compat check.
+            ikev2CertSig() {
+                const ib = inModal.inbound;
+                if (!ib || ib.protocol !== "ikev2" || !ib.settings) return "";
+                const s = ib.settings;
+                return [s.authMode, !!s.tlsUseFile,
+                    (s.certificateFile || "").trim().length > 0,
+                    (s.certificate || "").trim().length > 0].join("|");
             },
         },
         watch: {
@@ -285,6 +310,19 @@
                 },
                 deep: true,
             },
+            // Re-check the ikev2 server cert's key type when it or the auth mode
+            // changes (or the modal reopens); a non-RSA cert warns about iOS.
+            ikev2CertSig() {
+                this.ikev2CheckCert();
+            },
+            // Auto-fill a secure pre-shared key the first time PSK mode is chosen for
+            // an ikev2 inbound (never overwrites a key the operator already set).
+            "inModal.inbound.settings.authMode"(v) {
+                if (v === "psk" && inModal.inbound.protocol === Protocols.IKEV2 &&
+                    !inModal.inbound.settings.psk) {
+                    this.generateIkev2Psk();
+                }
+            },
         },
         methods: {
             // Port inputs: hard digit-only + live cap at the max TCP/UDP port.
@@ -316,6 +354,15 @@
                     inModal.inbound.port = 1195;
                 } else if (protocol === 'sstp') {
                     inModal.inbound.port = 443;
+                } else if (protocol === 'ikev2') {
+                    inModal.inbound.port = 500;
+                    // Prefill the certificate SAN / server address with the host
+                    // the admin is currently reaching the panel on, unless the
+                    // operator already typed one. (Switching to ikev2 rebuilds
+                    // settings, so serverAddr is blank here on a fresh pick.)
+                    if (inModal.inbound.settings && !inModal.inbound.settings.serverAddr) {
+                        inModal.inbound.settings.serverAddr = window.location.hostname;
+                    }
                 }
             },
             streamNetworkChange() {
@@ -597,6 +644,73 @@
                 // Reuse the panel's own TLS certificate paths (webCertFile/webKeyFile).
                 inModal.inbound.settings.certificateFile = app.defaultCert;
                 inModal.inbound.settings.keyFile = app.defaultKey;
+            },
+            // POST the current ikev2 server cert to the panel, which parses its
+            // public-key type and returns a device-compatibility warning (a non-RSA
+            // cert is silently rejected by iOS). Stored reactively and shown inline.
+            generateIkev2Psk() {
+                inModal.inbound.settings.psk = RandomUtil.randomSeq(32);
+            },
+            async ikev2CheckCert() {
+                const ib = inModal.inbound;
+                if (!ib || ib.protocol !== Protocols.IKEV2 || !ib.settings ||
+                    ib.settings.authMode === "psk") {
+                    this.ikev2CertWarning = "";
+                    return;
+                }
+                try {
+                    const s = ib.settings;
+                    const payload = {
+                        protocol: "ikev2",
+                        settings: JSON.stringify({
+                            authMode: s.authMode,
+                            tlsUseFile: s.tlsUseFile,
+                            certificateFile: s.certificateFile,
+                            keyFile: s.keyFile,
+                            certificate: s.certificate,
+                            key: s.key,
+                            caCert: s.caCert,
+                        }),
+                    };
+                    const msg = await HttpUtil.post(
+                        "/panel/api/inbounds/check-ikev2-cert", payload);
+                    this.ikev2CertWarning =
+                        msg && msg.success && msg.obj ? (msg.obj.warning || "") : "";
+                } catch (e) {
+                    this.ikev2CertWarning = "";
+                }
+            },
+            generateIkev2Cert() {
+                // The native IKEv2 clients (Windows/iOS/Android) reject self-signed
+                // server certs unless the CA is imported into the device trust store,
+                // so warn before generating one.
+                this.$confirm({
+                    title: "Self-signed certificate — IKEv2 client caveat",
+                    content: "The native Windows/iOS/Android IKEv2 clients reject self-signed certificates unless you import the generated CA into the device's trusted roots. Prefer a CA-signed cert bound to a hostname for real users. Generate a self-signed CA + server cert anyway?",
+                    okText: "Generate anyway",
+                    cancelText: '{{ i18n "cancel" }}',
+                    class: themeSwitcher.currentTheme,
+                    onOk: async () => {
+                        inModal.loading(true);
+                        const idSeg = inModal.inbound.id ? inModal.inbound.id + '/' : '';
+                        const msg = await HttpUtil.post('/panel/api/inbounds/' + idSeg + 'generate-ikev2-cert');
+                        inModal.loading(false);
+                        if (msg.success) {
+                            const obj = msg.obj;
+                            inModal.inbound.settings.tlsUseFile = false;
+                            inModal.inbound.settings.certificate = obj.certificate;
+                            inModal.inbound.settings.key = obj.key;
+                            inModal.inbound.settings.caCert = obj.caCert;
+                            this.ikev2CheckCert();
+                        }
+                    },
+                });
+            },
+            ikev2SetDefaultCert() {
+                // Reuse the panel's own TLS certificate paths (webCertFile/webKeyFile).
+                inModal.inbound.settings.certificateFile = app.defaultCert;
+                inModal.inbound.settings.keyFile = app.defaultKey;
+                this.ikev2CheckCert();
             },
             async downloadOvpn(proto) {
                 const inbound = inModal.inbound;

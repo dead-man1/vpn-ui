@@ -17,6 +17,12 @@ from ..incus import Incus
 CLIENT_PKGS_APT = (
     "openvpn xl2tpd ppp strongswan strongswan-starter "
     "libstrongswan-extra-plugins libcharon-extra-plugins "
+    # IKEv2 client: swanctl + the swanctl-mode daemon (charon-systemd) + pki tools.
+    # strongswan-swanctl ships `swanctl` and /etc/swanctl/; charon-systemd is the
+    # daemon swanctl drives (a separate package on Debian/Ubuntu). Batch-install is
+    # best-effort (prep() retries per package), so a name absent on a given release
+    # doesn't sink the rest.
+    "strongswan-swanctl charon-systemd strongswan-pki "
     "pptp-linux ppp-mppe openconnect sstp-client vpnc-scripts "
     "curl iproute2 net-tools dnsutils"
 )
@@ -171,6 +177,12 @@ class Client:
             "(echo 'd vpn' > /var/run/xl2tpd/l2tp-control 2>/dev/null); "
             "pkill xl2tpd 2>/dev/null; "
             "ipsec down l2tp 2>/dev/null; ipsec stop 2>/dev/null; "
-            "systemctl stop strongswan strongswan-starter 2>/dev/null; true"
+            # IKEv2 (swanctl): tear the SA down gracefully, then kill the swanctl-mode
+            # daemon (charon-systemd) — which clients/ikev2.py may start directly, so the
+            # systemctl stop below wouldn't reach it. clients/ikev2.py's own disconnect
+            # removes the xfrm ppp0 link; a stray one is harmless (recreated next connect).
+            "swanctl --terminate --ike ikev2-vpn 2>/dev/null; "
+            "pkill -x charon-systemd 2>/dev/null; pkill -x charon 2>/dev/null; "
+            "systemctl stop strongswan strongswan-starter strongswan-swanctl 2>/dev/null; true"
         ))
         time.sleep(2)

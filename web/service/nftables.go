@@ -144,6 +144,7 @@ func (s *NftService) ApplyNftRules() error {
 	ovpn := OpenVpnService{}
 	ocserv := OcservService{}
 	sstp := SstpService{}
+	ikev2 := Ikev2Service{}
 
 	l2tpInbounds, err := l2tp.GetL2tpInbounds()
 	if err != nil {
@@ -165,9 +166,13 @@ func (s *NftService) ApplyNftRules() error {
 	if err != nil {
 		return err
 	}
+	ikev2Inbounds, err := ikev2.GetIkev2Inbounds()
+	if err != nil {
+		return err
+	}
 
 	// If no VPN inbounds, remove the table entirely
-	if len(l2tpInbounds) == 0 && len(pptpInbounds) == 0 && len(ovpnInbounds) == 0 && len(ocservInbounds) == 0 && len(sstpInbounds) == 0 {
+	if len(l2tpInbounds) == 0 && len(pptpInbounds) == 0 && len(ovpnInbounds) == 0 && len(ocservInbounds) == 0 && len(sstpInbounds) == 0 && len(ikev2Inbounds) == 0 {
 		s.runCmd("nft", "delete", "table", "ip", "vpn")
 		os.Remove(nftConfigFile)
 		return nil
@@ -187,6 +192,7 @@ func (s *NftService) ApplyNftRules() error {
 	b.WriteString("add chain ip vpn openvpn_acct\n")
 	b.WriteString("add chain ip vpn openconnect_acct\n")
 	b.WriteString("add chain ip vpn sstp_acct\n")
+	b.WriteString("add chain ip vpn ikev2_acct\n")
 	b.WriteString("add chain ip vpn prerouting { type filter hook prerouting priority mangle; policy accept; }\n")
 	b.WriteString("add chain ip vpn postrouting { type filter hook postrouting priority mangle; policy accept; }\n")
 	b.WriteString("add chain ip vpn input { type filter hook input priority filter; policy accept; }\n")
@@ -202,11 +208,13 @@ func (s *NftService) ApplyNftRules() error {
 	b.WriteString("add rule ip vpn prerouting jump openvpn_acct\n")
 	b.WriteString("add rule ip vpn prerouting jump openconnect_acct\n")
 	b.WriteString("add rule ip vpn prerouting jump sstp_acct\n")
+	b.WriteString("add rule ip vpn prerouting jump ikev2_acct\n")
 	b.WriteString("add rule ip vpn postrouting jump l2tp_acct\n")
 	b.WriteString("add rule ip vpn postrouting jump pptp_acct\n")
 	b.WriteString("add rule ip vpn postrouting jump openvpn_acct\n")
 	b.WriteString("add rule ip vpn postrouting jump openconnect_acct\n")
 	b.WriteString("add rule ip vpn postrouting jump sstp_acct\n")
+	b.WriteString("add rule ip vpn postrouting jump ikev2_acct\n")
 
 	// --- Cross-inbound pass (mutual opt-in) --------------------------------
 	// Gather every enabled VPN inbound's client subnet(s) plus its Client-to-
@@ -262,6 +270,16 @@ func (s *NftService) ApplyNftRules() error {
 			continue
 		}
 		allNets = append(allNets, vpnNet{subnets: subnetCIDRs(sstp.GetSubnetsForInbound(inbound)), c2c: st.ClientToClient, cross: st.CrossInbound})
+	}
+	for _, inbound := range ikev2Inbounds {
+		if !inbound.Enable {
+			continue
+		}
+		st, err := ikev2.parseSettings(inbound)
+		if err != nil {
+			continue
+		}
+		allNets = append(allNets, vpnNet{subnets: ikev2CIDRs(inbound, st), c2c: st.ClientToClient, cross: st.CrossInbound})
 	}
 	writeCrossInboundRules(&b, allNets)
 
@@ -381,6 +399,26 @@ func (s *NftService) ApplyNftRules() error {
 		}
 		port := ocserv.GetTproxyPort(inbound)
 		srcs := ocservCIDRs(inbound, settings)
+		writeClientToClientRules(&b, srcs, settings.ClientToClient)
+		for _, src := range srcs {
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+		}
+	}
+
+	// IKEv2 TPROXY rules — same single-block model as OpenConnect, in 10.6.{id}. The one
+	// shared charon decrypts ESP and the client's virtual IP (a 10.6.x source) is
+	// TPROXY'd to the inbound's dokodemo port so IKEv2 users obey the panel's routing.
+	for _, inbound := range ikev2Inbounds {
+		if !inbound.Enable {
+			continue
+		}
+		settings, err := ikev2.parseSettings(inbound)
+		if err != nil {
+			continue
+		}
+		port := ikev2.GetTproxyPort(inbound)
+		srcs := ikev2CIDRs(inbound, settings)
 		writeClientToClientRules(&b, srcs, settings.ClientToClient)
 		for _, src := range srcs {
 			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
@@ -514,17 +552,17 @@ func (s *NftService) resetCounter(name string) int64 {
 // CollectAndResetTraffic atomically reads and resets all VPN traffic counters.
 // Uses `nft -j reset counters` for atomic read+reset (no race between read and zero).
 // Session maps (IP→email) are provided by the RADIUS service.
-// Returns separate L2TP, PPTP, OpenVPN, OpenConnect, and SSTP client traffic slices.
-func (s *NftService) CollectAndResetTraffic(l2tpIPToEmail, pptpIPToEmail, ovpnIPToEmail, ocservIPToEmail, sstpIPToEmail map[string]string) ([]*xray.ClientTraffic, []*xray.ClientTraffic, []*xray.ClientTraffic, []*xray.ClientTraffic, []*xray.ClientTraffic) {
+// Returns separate L2TP, PPTP, OpenVPN, OpenConnect, SSTP, and IKEv2 client traffic slices.
+func (s *NftService) CollectAndResetTraffic(l2tpIPToEmail, pptpIPToEmail, ovpnIPToEmail, ocservIPToEmail, sstpIPToEmail, ikev2IPToEmail map[string]string) ([]*xray.ClientTraffic, []*xray.ClientTraffic, []*xray.ClientTraffic, []*xray.ClientTraffic, []*xray.ClientTraffic, []*xray.ClientTraffic) {
 	output, err := exec.Command("nft", "-j", "reset", "counters", "table", "ip", "vpn").Output()
 	if err != nil {
-		return nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil
 	}
 
 	var result nftCounterOutput
 	if err := json.Unmarshal(output, &result); err != nil {
 		logger.Debug("nft: failed to parse counter JSON:", err)
-		return nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil
 	}
 
 	// Accumulate per-email traffic
@@ -534,6 +572,7 @@ func (s *NftService) CollectAndResetTraffic(l2tpIPToEmail, pptpIPToEmail, ovpnIP
 	ovpnTraffic := make(map[string]*trafficPair)
 	ocservTraffic := make(map[string]*trafficPair)
 	sstpTraffic := make(map[string]*trafficPair)
+	ikev2Traffic := make(map[string]*trafficPair)
 
 	for _, raw := range result.Nftables {
 		var entry nftCounterEntry
@@ -572,6 +611,9 @@ func (s *NftService) CollectAndResetTraffic(l2tpIPToEmail, pptpIPToEmail, ovpnIP
 		} else if protocol == "sstp" {
 			ipMap = sstpIPToEmail
 			trafficMap = sstpTraffic
+		} else if protocol == "ikev2" {
+			ipMap = ikev2IPToEmail
+			trafficMap = ikev2Traffic
 		} else {
 			continue
 		}
@@ -613,6 +655,7 @@ func (s *NftService) CollectAndResetTraffic(l2tpIPToEmail, pptpIPToEmail, ovpnIP
 	ovpnResult := toSlice(ovpnTraffic)
 	ocservResult := toSlice(ocservTraffic)
 	sstpResult := toSlice(sstpTraffic)
+	ikev2Result := toSlice(ikev2Traffic)
 
 	if len(l2tpResult) > 0 {
 		logger.Debugf("nft: collected L2TP traffic for %d client(s)", len(l2tpResult))
@@ -629,8 +672,11 @@ func (s *NftService) CollectAndResetTraffic(l2tpIPToEmail, pptpIPToEmail, ovpnIP
 	if len(sstpResult) > 0 {
 		logger.Debugf("nft: collected SSTP traffic for %d client(s)", len(sstpResult))
 	}
+	if len(ikev2Result) > 0 {
+		logger.Debugf("nft: collected IKEv2 traffic for %d client(s)", len(ikev2Result))
+	}
 
-	return l2tpResult, pptpResult, ovpnResult, ocservResult, sstpResult
+	return l2tpResult, pptpResult, ovpnResult, ocservResult, sstpResult, ikev2Result
 }
 
 // CleanupLegacyIptables removes old iptables rules left from the pre-nftables implementation.
@@ -712,6 +758,12 @@ func ovpnCIDRs(inbound *model.Inbound, settings *openvpnSettings) []string {
 // ocservCIDRs returns the single block CIDR for an OpenConnect inbound (10.4.x).
 func ocservCIDRs(inbound *model.Inbound, settings *ocservSettings) []string {
 	n, p := ocservBlockFor(inbound, settings)
+	return []string{fmt.Sprintf("%s/%d", n.String(), p)}
+}
+
+// ikev2CIDRs returns the single block CIDR for an IKEv2 inbound (10.6.x).
+func ikev2CIDRs(inbound *model.Inbound, settings *ikev2Settings) []string {
+	n, p := ikev2BlockFor(inbound, settings)
 	return []string{fmt.Sprintf("%s/%d", n.String(), p)}
 }
 

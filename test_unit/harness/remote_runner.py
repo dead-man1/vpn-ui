@@ -8,7 +8,7 @@ l2tp-ipsec / pptp:
   * strategy reject   (device K+1 actively refused)
   * strategy accept   (device K+1 admitted, oldest device evicted)
 
-Run from repo root:  python3 -m test_unit.harness.remote_runner [all|openvpn|l2tp|pptp|sstp]
+Run from repo root:  python3 -m test_unit.harness.remote_runner [all|openvpn|l2tp|pptp|sstp|ikev2]
 Config comes from RR_* env vars (RR_SERVER_IP, RR_PORT, RR_BP, RR_SCHEME, RR_PUSER,
 RR_PPASS, RR_SSH_PASS) so no creds are committed. NOTE: `all` includes pptp; for a
 live box your network may not reach pptp — run protocols individually there.
@@ -32,6 +32,7 @@ from .clients import openvpn as ovpn
 from .clients import l2tp as l2tp_mod
 from .clients import pptp as pptp_mod
 from .clients import sstp as sstp_mod
+from .clients import ikev2 as ikev2_mod
 from .clients.base import Client
 from .model import SubTest, Status
 from .panel import Panel
@@ -62,8 +63,10 @@ CFG = {
     "dns_leak": {"api_base": "https://bash.ws"},
 }
 
-# openvpn 11194/11443, l2tp label 1901 (daemon binds 1701), pptp label 1902 (1723)
-PORTS = {"openvpn": (11194, 11443), "l2tp": (1901, 0), "pptp": (1902, 0), "sstp": (443, 0)}
+# openvpn 11194/11443, l2tp label 1901 (daemon binds 1701), pptp label 1902 (1723),
+# sstp 443, ikev2 label 500 (shared charon binds 500/4500 regardless)
+PORTS = {"openvpn": (11194, 11443), "l2tp": (1901, 0), "pptp": (1902, 0),
+         "sstp": (443, 0), "ikev2": (500, 0)}
 
 RESULTS = []  # (proto, transport, scenario, K, status, detail)
 
@@ -176,6 +179,18 @@ def make_inbound(panel, proto, K):
         inb = panel.add_inbound("rt-sstp", udp, "sstp", settings)  # udp = 443
         return Inbound(protocol="sstp", inbound_id=inb["id"], udp_port=udp, tcp_port=0,
                        accounts={"A": a}, user_limit=K)
+    if proto == "ikev2":
+        cert = panel.generate_ikev2_cert()  # self-signed leaf + CA; client trusts caCert
+        settings = {"dns1": "1.1.1.1", "dns2": "8.8.8.8",
+                    "authMode": "eap-mschapv2", "serverAddr": "", "tlsUseFile": False,
+                    "certificate": cert["certificate"], "key": cert["key"],
+                    "caCert": cert["caCert"],
+                    "clientToClient": True, "crossInbound": True,
+                    "userLimit": K, "clients": [_dict_client(a)]}
+        inb = panel.add_inbound("rt-ikev2", udp, "ikev2", settings)  # udp label = 500
+        return Inbound(protocol="ikev2", inbound_id=inb["id"], udp_port=udp, tcp_port=0,
+                       accounts={"A": a}, user_limit=K,
+                       ca_cert=cert.get("caCert", ""), server_addr="")
     raise ValueError(proto)
 
 
@@ -230,12 +245,15 @@ def connect(client, ib, proto, transport):
         return pptp_mod.connect(client, ib, "A", SERVER_IP)
     if proto == "sstp":
         return sstp_mod.connect(client, ib, "A", server_ip=SERVER_IP)
+    if proto == "ikev2":
+        return ikev2_mod.connect(client, ib, "A", server_ip=SERVER_IP)
     raise ValueError(proto)
 
 
 def disc(client, proto):
     {"openvpn": ovpn.disconnect, "l2tp": l2tp_mod.disconnect,
-     "pptp": pptp_mod.disconnect, "sstp": sstp_mod.disconnect}[proto](client)
+     "pptp": pptp_mod.disconnect, "sstp": sstp_mod.disconnect,
+     "ikev2": ikev2_mod.disconnect}[proto](client)
 
 
 def all_down(clients, proto):
@@ -453,7 +471,7 @@ def run_proto(panel, ib, proto, transport, clients):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
-    protos = ["openvpn", "l2tp", "pptp", "sstp"] if mode == "all" else [mode]
+    protos = ["openvpn", "l2tp", "pptp", "sstp", "ikev2"] if mode == "all" else [mode]
 
     panel = Panel(host=SERVER_IP, port=PORT, base_path=BP, scheme=SCHEME,
                   username=PUSER, password=PPASS, timeout=40)

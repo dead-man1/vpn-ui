@@ -145,6 +145,8 @@ func protocolBase(proto string) int {
 		return 4
 	case "sstp":
 		return 5
+	case "ikev2":
+		return 6
 	default: // l2tp
 		return 0
 	}
@@ -278,7 +280,7 @@ func usedVpnSubnets(excludeId int) map[string]bool {
 		return used
 	}
 	var inbounds []*model.Inbound
-	db.Where("protocol IN ?", []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp"}).Find(&inbounds)
+	db.Where("protocol IN ?", []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2"}).Find(&inbounds)
 	for _, ib := range inbounds {
 		if ib.Id == excludeId {
 			continue
@@ -323,15 +325,18 @@ func NormalizeVpnRanges(inbound *model.Inbound, excludeId int) error {
 // that grew — the auto-expand path for endpoints that change the client count
 // without editing ranges (add/remove client). Append-only, so overlap errors
 // are logged and skipped rather than surfaced.
-func AutoExpandVpnRanges(protocol string) {
+// Returns true if any inbound's ranges were expanded/changed and persisted — the
+// caller must then reload the daemon so the new range takes effect.
+func AutoExpandVpnRanges(protocol string) bool {
 	db := database.GetDB()
 	if db == nil {
-		return
+		return false
 	}
 	var inbounds []*model.Inbound
 	if err := db.Where("protocol = ?", protocol).Find(&inbounds).Error; err != nil {
-		return
+		return false
 	}
+	expanded := false
 	for _, ib := range inbounds {
 		before := ib.Settings
 		if err := normalizeRanges(ib, ib.Id); err != nil {
@@ -342,10 +347,12 @@ func AutoExpandVpnRanges(protocol string) {
 			if err := db.Model(&model.Inbound{}).Where("id = ?", ib.Id).Update("settings", ib.Settings).Error; err != nil {
 				logger.Warningf("range auto-expand persist failed for inbound %d: %v", ib.Id, err)
 			} else {
+				expanded = true
 				logger.Infof("VPN ranges auto-expanded for inbound %d", ib.Id)
 			}
 		}
 	}
+	return expanded
 }
 
 // normalizeRanges validates, assigns, and auto-expands an inbound's IP ranges,
@@ -357,7 +364,7 @@ func AutoExpandVpnRanges(protocol string) {
 // re-allocated rather than rejected on conflict.
 func normalizeRanges(inbound *model.Inbound, excludeId int) error {
 	proto := string(inbound.Protocol)
-	if proto != "l2tp" && proto != "pptp" && proto != "openvpn" && proto != "openconnect" && proto != "sstp" {
+	if proto != "l2tp" && proto != "pptp" && proto != "openvpn" && proto != "openconnect" && proto != "sstp" && proto != "ikev2" {
 		return nil
 	}
 
@@ -385,6 +392,11 @@ func normalizeRanges(inbound *model.Inbound, excludeId int) error {
 		// Same aligned-block model as OpenVPN (single contiguous CIDR) but in the
 		// 10.4 /16 with no TCP mirror.
 		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, userLimit, protocolBase("openconnect"), -1, used)
+	case "ikev2":
+		// Aligned-block model like OpenConnect (single contiguous CIDR, no mirror) in
+		// the 10.6 /16. One shared charon assigns each account its block IP via the
+		// RADIUS Framed-IP-Address, exactly like ocserv.
+		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, userLimit, protocolBase("ikev2"), -1, used)
 	default:
 		normalized, err = normalizePppRanges(proto, ranges, clientCount, userLimit, used)
 	}
@@ -397,7 +409,7 @@ func normalizeRanges(inbound *model.Inbound, excludeId int) error {
 	delete(raw, "ipRange") // superseded by ipRanges
 
 	// L2TP/PPTP: keep localIp in sync with the first range's .1 (the PPP gateway).
-	if proto != "openvpn" && proto != "openconnect" && len(normalized) > 0 {
+	if proto != "openvpn" && proto != "openconnect" && proto != "ikev2" && len(normalized) > 0 {
 		if s, _, ok := parseRange(normalized[0]); ok {
 			lb, _ := json.Marshal(fmt.Sprintf("%d.%d.%d.1", s[0], s[1], s[2]))
 			raw["localIp"] = lb

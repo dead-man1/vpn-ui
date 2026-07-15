@@ -25,7 +25,7 @@
         <a-input v-model.trim="client.email"></a-input>
     </a-form-item>
     <a-form-item
-        v-if="inbound.protocol === Protocols.L2TP || inbound.protocol === Protocols.PPTP || inbound.protocol === Protocols.OPENVPN || inbound.protocol === Protocols.OPENCONNECT || inbound.protocol === Protocols.SSTP"
+        v-if="inbound.protocol === Protocols.L2TP || inbound.protocol === Protocols.PPTP || inbound.protocol === Protocols.OPENVPN || inbound.protocol === Protocols.OPENCONNECT || inbound.protocol === Protocols.SSTP || (inbound.protocol === Protocols.IKEV2 && inbound.settings.authMode !== 'eap-tls' && inbound.settings.authMode !== 'psk')"
     >
         <template slot="label">
             <a-tooltip>
@@ -42,7 +42,7 @@
         <a-input v-model.trim="client.id"></a-input>
     </a-form-item>
     <a-form-item
-        v-if="inbound.protocol === Protocols.TROJAN || inbound.protocol === Protocols.SHADOWSOCKS || inbound.protocol === Protocols.L2TP || inbound.protocol === Protocols.PPTP || inbound.protocol === Protocols.OPENVPN || inbound.protocol === Protocols.OPENCONNECT || inbound.protocol === Protocols.SSTP"
+        v-if="inbound.protocol === Protocols.TROJAN || inbound.protocol === Protocols.SHADOWSOCKS || inbound.protocol === Protocols.L2TP || inbound.protocol === Protocols.PPTP || inbound.protocol === Protocols.OPENVPN || inbound.protocol === Protocols.OPENCONNECT || inbound.protocol === Protocols.SSTP || (inbound.protocol === Protocols.IKEV2 && inbound.settings.authMode !== 'eap-tls' && inbound.settings.authMode !== 'psk')"
     >
         <template slot="label">
             <a-tooltip>
@@ -56,7 +56,7 @@
                     type="sync"
                 ></a-icon>
                 <a-icon
-                    v-if="inbound.protocol === Protocols.TROJAN || inbound.protocol === Protocols.L2TP || inbound.protocol === Protocols.PPTP || inbound.protocol === Protocols.OPENVPN || inbound.protocol === Protocols.OPENCONNECT || inbound.protocol === Protocols.SSTP"
+                    v-if="inbound.protocol === Protocols.TROJAN || inbound.protocol === Protocols.L2TP || inbound.protocol === Protocols.PPTP || inbound.protocol === Protocols.OPENVPN || inbound.protocol === Protocols.OPENCONNECT || inbound.protocol === Protocols.SSTP || inbound.protocol === Protocols.IKEV2"
                     @click="client.password = RandomUtil.randomSeq(10)"
                     type="sync"
                 >

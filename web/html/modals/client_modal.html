@@ -93,6 +93,7 @@
                 case Protocols.OPENVPN:
                 case Protocols.OPENCONNECT:
                 case Protocols.SSTP:
+                case Protocols.IKEV2:
                     return client.password;
                 case Protocols.SHADOWSOCKS:
                     return client.email;
@@ -134,6 +135,10 @@
                 case Protocols.SSTP:
                     return clients.push(
                         new Inbound.SstpSettings.SstpUser(),
+                    );
+                case Protocols.IKEV2:
+                    return clients.push(
+                        new Inbound.Ikev2Settings.Ikev2User(),
                     );
                 case Protocols.HYSTERIA:
                     return clients.push(

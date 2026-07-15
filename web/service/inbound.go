@@ -259,7 +259,7 @@ func (s *InboundService) checkEmailExistForInbound(inbound *model.Inbound) (stri
 // protocols), silently killing the clients' route to the internet. Changes to
 // them are applied by a full Xray restart instead.
 func isVpnProtocol(p model.Protocol) bool {
-	return p == model.L2TP || p == model.PPTP || p == model.OPENVPN || p == model.OPENCONNECT || p == model.SSTP
+	return p == model.L2TP || p == model.PPTP || p == model.OPENVPN || p == model.OPENCONNECT || p == model.SSTP || p == model.IKEV2
 }
 
 // AddInbound creates a new inbound configuration.
@@ -270,6 +270,22 @@ func isVpnProtocol(p model.Protocol) bool {
 // guard, so an API client (or a stale/buggy frontend) can't persist a bad
 // inbound: a sane TCP/UDP port range, and — for OpenVPN — that a server
 // certificate actually exists before the inbound is created.
+// ikev2AuthMode returns an ikev2 inbound's auth mode ("eap-mschapv2" default,
+// "psk", or "eap-tls"). Empty string for non-ikev2 inbounds.
+func ikev2AuthMode(inbound *model.Inbound) string {
+	if inbound == nil || inbound.Protocol != "ikev2" {
+		return ""
+	}
+	var st struct {
+		AuthMode string `json:"authMode"`
+	}
+	_ = json.Unmarshal([]byte(inbound.Settings), &st)
+	if m := strings.TrimSpace(st.AuthMode); m != "" {
+		return m
+	}
+	return "eap-mschapv2"
+}
+
 func (s *InboundService) validateInboundConfig(inbound *model.Inbound) error {
 	validPort := func(p int) bool { return p >= 1 && p <= 65535 }
 
@@ -320,6 +336,30 @@ func (s *InboundService) validateInboundConfig(inbound *model.Inbound) error {
 		hasInline := strings.TrimSpace(st.Certificate) != "" && strings.TrimSpace(st.Key) != ""
 		if !hasFile && !hasInline {
 			return common.NewError("SSTP certificate is required: generate or provide a certificate before saving")
+		}
+		return nil
+	}
+
+	if inbound.Protocol == "ikev2" {
+		var st struct {
+			AuthMode        string `json:"authMode"`
+			TlsUseFile      bool   `json:"tlsUseFile"`
+			CertificateFile string `json:"certificateFile"`
+			KeyFile         string `json:"keyFile"`
+			Certificate     string `json:"certificate"`
+			Key             string `json:"key"`
+		}
+		if err := json.Unmarshal([]byte(inbound.Settings), &st); err != nil {
+			return common.NewError("Invalid IKEv2 settings:", err)
+		}
+		// PSK mode needs no server cert; the EAP-MSCHAPv2 / EAP-TLS modes require one
+		// (charon presents a server cert the client validates). Mirrors the SSTP guard.
+		if strings.TrimSpace(st.AuthMode) != "psk" {
+			hasFile := st.TlsUseFile && strings.TrimSpace(st.CertificateFile) != "" && strings.TrimSpace(st.KeyFile) != ""
+			hasInline := strings.TrimSpace(st.Certificate) != "" && strings.TrimSpace(st.Key) != ""
+			if !hasFile && !hasInline {
+				return common.NewError("IKEv2 certificate is required: generate or provide a server certificate before saving")
+			}
 		}
 		return nil
 	}
@@ -382,7 +422,7 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	// Secure client ID
 	for _, client := range clients {
 		switch inbound.Protocol {
-		case "trojan", "l2tp", "pptp", "sstp":
+		case "trojan", "l2tp", "pptp", "sstp", "ikev2":
 			if client.Password == "" {
 				return inbound, false, common.NewError("empty client ID")
 			}
@@ -402,7 +442,7 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames
-	if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "sstp" {
+	if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" {
 		dupUser, err := s.checkPPPUsernamesForDuplicates(string(inbound.Protocol), clients)
 		if err != nil {
 			return inbound, false, err
@@ -811,6 +851,16 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 		return false, err
 	}
 
+	// IKEv2 auth-mode client-management constraints:
+	//   psk / eap-tls - exactly one email-only account (shared key / client cert)
+	//   eap-mschapv2  - many accounts
+	switch ikev2AuthMode(oldInbound) {
+	case "psk", "eap-tls":
+		if existing, _ := s.GetClients(oldInbound); len(existing) >= 1 {
+			return false, common.NewError("PSK and EAP-TLS IKEv2 inbounds allow only one account")
+		}
+	}
+
 	// Secure client ID
 	for _, client := range clients {
 		switch oldInbound.Protocol {
@@ -834,7 +884,7 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames
-	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" {
+	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" {
 		dupUser, err := s.checkPPPUsernamesForDuplicates(string(oldInbound.Protocol), clients)
 		if err != nil {
 			return false, err
@@ -1261,7 +1311,7 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames (allow keeping the same username)
-	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" {
+	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" {
 		oldUsername := oldClients[clientIndex].ID
 		newUsername := clients[0].ID
 		if newUsername != oldUsername {

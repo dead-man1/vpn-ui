@@ -111,6 +111,7 @@ type Server struct {
 	openvpnService   service.OpenVpnService
 	ocservService    service.OcservService
 	sstpService      service.SstpService
+	ikev2Service     service.Ikev2Service
 	tgbotService     service.Tgbot
 	customGeoService *service.CustomGeoService
 
@@ -319,6 +320,7 @@ func (s *Server) startTask() {
 		s.openvpnService.SetRadius(&s.radiusService, radiusSecret)
 		s.ocservService.SetRadius(&s.radiusService, radiusSecret)
 		s.sstpService.SetRadius(&s.radiusService, radiusSecret)
+		s.ikev2Service.SetRadius(&s.radiusService, radiusSecret)
 	}
 
 	// Initialize L2TP/PPTP/OpenVPN/OpenConnect/SSTP services before Xray so TPROXY/NAT rules are in place
@@ -327,6 +329,7 @@ func (s *Server) startTask() {
 	s.openvpnService.InitOpenVpn()
 	s.ocservService.InitOcserv()
 	s.sstpService.InitSstp()
+	s.ikev2Service.InitIkev2()
 
 	s.customGeoService.EnsureOnStartup()
 	// Reap an orphaned Xray from a previous instance BEFORE starting ours — a panel

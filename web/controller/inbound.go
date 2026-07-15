@@ -25,6 +25,7 @@ type InboundController struct {
 	openvpnService service.OpenVpnService
 	ocservService  service.OcservService
 	sstpService    service.SstpService
+	ikev2Service   service.Ikev2Service
 }
 
 // NewInboundController creates a new InboundController and sets up its routes.
@@ -69,106 +70,161 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/generate-ocserv-cert", a.generateOcservCert)
 	g.POST("/:id/generate-sstp-cert", a.generateSstpCert)
 	g.POST("/generate-sstp-cert", a.generateSstpCert)
+	g.POST("/:id/generate-ikev2-cert", a.generateIkev2Cert)
+	g.POST("/generate-ikev2-cert", a.generateIkev2Cert)
+	g.POST("/check-ikev2-cert", a.checkIkev2Cert)
 }
 
 // onL2tpChanged regenerates L2TP configs and restarts services when an L2TP inbound is modified.
-func (a *InboundController) onL2tpChanged() {
-	service.AutoExpandVpnRanges("l2tp")
+func (a *InboundController) onL2tpChanged()       { a.l2tpChanged(false) }
+func (a *InboundController) onL2tpClientChanged() { a.l2tpChanged(true) }
+func (a *InboundController) l2tpChanged(clientOnly bool) {
+	expanded := service.AutoExpandVpnRanges("l2tp")
 	if err := a.l2tpService.GenerateAllConfigs(); err != nil {
 		logger.Warning("L2TP: config generation failed:", err)
 	}
 	if err := a.l2tpService.SetupAllTproxy(); err != nil {
 		logger.Warning("L2TP: TPROXY setup failed:", err)
 	}
-	if err := a.l2tpService.RestartServices(); err != nil {
-		logger.Warning("L2TP: service restart failed:", err)
+	// A client-only change (add/edit a client, reset traffic) needs no daemon
+	// restart: the in-binary RADIUS reads clients live from the DB and no per-client
+	// data lives in the xl2tpd config, so a restart would only drop connected
+	// tunnels. Restart for inbound-level changes, or when the pool auto-expanded.
+	if !clientOnly || expanded {
+		if err := a.l2tpService.RestartServices(); err != nil {
+			logger.Warning("L2TP: service restart failed:", err)
+		}
+		// Drop cached per-device IP assignments so a changed User Limit / range /
+		// strategy takes effect on reconnect. Skipped on client-only changes so the
+		// idempotent-redial cache isn't cleared mid-session.
+		service.ResetAllocations("l2tp")
 	}
-	// Drop cached per-device IP assignments so a changed User Limit / range / strategy
-	// takes effect on reconnect instead of being pinned to the pre-change layout.
-	service.ResetAllocations("l2tp")
 	a.l2tpService.KillDisabledSessions()
 	a.xrayService.SetToNeedRestart()
 }
 
 // onPptpChanged regenerates PPTP configs and restarts services when a PPTP inbound is modified.
-func (a *InboundController) onPptpChanged() {
-	service.AutoExpandVpnRanges("pptp")
+func (a *InboundController) onPptpChanged()       { a.pptpChanged(false) }
+func (a *InboundController) onPptpClientChanged() { a.pptpChanged(true) }
+func (a *InboundController) pptpChanged(clientOnly bool) {
+	expanded := service.AutoExpandVpnRanges("pptp")
 	if err := a.pptpService.GenerateAllConfigs(); err != nil {
 		logger.Warning("PPTP: config generation failed:", err)
 	}
 	if err := a.pptpService.SetupAllTproxy(); err != nil {
 		logger.Warning("PPTP: TPROXY setup failed:", err)
 	}
-	if err := a.pptpService.RestartServices(); err != nil {
-		logger.Warning("PPTP: service restart failed:", err)
+	// Client-only changes don't restart pptpd (auth is live via RADIUS) — see
+	// l2tpChanged. Restart for inbound-level changes or a pool expansion.
+	if !clientOnly || expanded {
+		if err := a.pptpService.RestartServices(); err != nil {
+			logger.Warning("PPTP: service restart failed:", err)
+		}
+		service.ResetAllocations("pptp")
 	}
-	// Drop cached per-device IP assignments so a changed User Limit / range / strategy
-	// takes effect on reconnect instead of being pinned to the pre-change layout.
-	service.ResetAllocations("pptp")
 	a.pptpService.KillDisabledSessions()
 	a.xrayService.SetToNeedRestart()
 }
 
 // onOpenVpnChanged regenerates OpenVPN configs and restarts services when an OpenVPN inbound is modified.
-func (a *InboundController) onOpenVpnChanged() {
-	service.AutoExpandVpnRanges("openvpn")
-	if err := a.openvpnService.GenerateAllConfigs(); err != nil {
+func (a *InboundController) onOpenVpnChanged()       { a.openVpnChanged(false) }
+func (a *InboundController) onOpenVpnClientChanged() { a.openVpnChanged(true) }
+func (a *InboundController) openVpnChanged(clientOnly bool) {
+	expanded := service.AutoExpandVpnRanges("openvpn")
+	// Keep live per-device leases on a client-only change (unless the pool expanded,
+	// which needs a full regenerate + restart) so connected devices keep their IPs.
+	preserveLeases := clientOnly && !expanded
+	if err := a.openvpnService.GenerateAllConfigs(preserveLeases); err != nil {
 		logger.Warning("OpenVPN: config generation failed:", err)
 	}
 	if err := a.openvpnService.SetupRouting(); err != nil {
 		logger.Warning("OpenVPN: routing setup failed:", err)
 	}
-	if err := a.openvpnService.RestartServices(); err != nil {
-		logger.Warning("OpenVPN: service restart failed:", err)
+	// Adding/editing a client writes its client-config-dir block file without a
+	// restart; the running server reads it on the client's next connect. Restart only
+	// for inbound-level changes or a pool expansion.
+	if !clientOnly || expanded {
+		if err := a.openvpnService.RestartServices(); err != nil {
+			logger.Warning("OpenVPN: service restart failed:", err)
+		}
 	}
 	a.openvpnService.KillDisabledSessions()
-	// OpenVPN now routes through Xray via dokodemo-door, so its config must be
-	// regenerated (and Xray restarted) when an OpenVPN inbound changes.
+	// OpenVPN routes through Xray via dokodemo-door, so Xray routing must refresh.
 	a.xrayService.SetToNeedRestart()
 }
 
 // onOcservChanged regenerates OpenConnect configs and restarts services when an
 // OpenConnect inbound is modified.
-func (a *InboundController) onOcservChanged() {
-	service.AutoExpandVpnRanges("openconnect")
+func (a *InboundController) onOcservChanged()       { a.ocservChanged(false) }
+func (a *InboundController) onOcservClientChanged() { a.ocservChanged(true) }
+func (a *InboundController) ocservChanged(clientOnly bool) {
+	expanded := service.AutoExpandVpnRanges("openconnect")
 	if err := a.ocservService.GenerateAllConfigs(); err != nil {
 		logger.Warning("OpenConnect: config generation failed:", err)
 	}
 	if err := a.ocservService.SetupRouting(); err != nil {
 		logger.Warning("OpenConnect: routing setup failed:", err)
 	}
-	if err := a.ocservService.RestartServices(); err != nil {
-		logger.Warning("OpenConnect: service restart failed:", err)
+	// Client-only changes don't restart ocserv (auth is live via RADIUS) — see
+	// l2tpChanged. Restart for inbound-level changes or a pool expansion.
+	if !clientOnly || expanded {
+		if err := a.ocservService.RestartServices(); err != nil {
+			logger.Warning("OpenConnect: service restart failed:", err)
+		}
+		service.ResetAllocations("openconnect")
 	}
-	// Drop cached per-device IP assignments so a changed User Limit / range / strategy
-	// takes effect on reconnect instead of being pinned to the pre-change layout.
-	service.ResetAllocations("openconnect")
 	a.ocservService.KillDisabledSessions()
-	// OpenConnect routes through Xray via dokodemo-door, so Xray must be restarted
-	// to bind the inbound's dokodemo port when an OpenConnect inbound changes.
 	a.xrayService.SetToNeedRestart()
 }
 
 // onSstpChanged regenerates SSTP (accel-ppp) configs and restarts services when an
 // SSTP inbound is modified. Mirrors onOcservChanged: SSTP is a per-inbound native
 // daemon that routes through Xray via dokodemo-door.
-func (a *InboundController) onSstpChanged() {
-	service.AutoExpandVpnRanges("sstp")
+func (a *InboundController) onSstpChanged()       { a.sstpChanged(false) }
+func (a *InboundController) onSstpClientChanged() { a.sstpChanged(true) }
+func (a *InboundController) sstpChanged(clientOnly bool) {
+	expanded := service.AutoExpandVpnRanges("sstp")
 	if err := a.sstpService.GenerateAllConfigs(); err != nil {
 		logger.Warning("SSTP: config generation failed:", err)
 	}
 	if err := a.sstpService.SetupRouting(); err != nil {
 		logger.Warning("SSTP: routing setup failed:", err)
 	}
-	if err := a.sstpService.RestartServices(); err != nil {
-		logger.Warning("SSTP: service restart failed:", err)
+	// Client-only changes don't restart accel-ppp (auth is live via RADIUS) — see
+	// l2tpChanged. Restart for inbound-level changes or a pool expansion.
+	if !clientOnly || expanded {
+		if err := a.sstpService.RestartServices(); err != nil {
+			logger.Warning("SSTP: service restart failed:", err)
+		}
+		service.ResetAllocations("sstp")
 	}
-	// Drop cached per-device IP assignments so a changed User Limit / range / strategy
-	// takes effect on reconnect instead of being pinned to the pre-change layout.
-	service.ResetAllocations("sstp")
 	a.sstpService.KillDisabledSessions()
-	// SSTP routes through Xray via dokodemo-door, so Xray must be restarted to bind
-	// the inbound's dokodemo port when an SSTP inbound changes.
+	a.xrayService.SetToNeedRestart()
+}
+
+// onIkev2Changed regenerates strongSwan config and reloads the shared charon when an
+// IKEv2 inbound is modified. Like onSstpChanged/onOcservChanged, IKEv2 routes through
+// Xray via dokodemo-door; unlike them there is ONE shared charon for all inbounds.
+func (a *InboundController) onIkev2Changed()       { a.ikev2Changed(false) }
+func (a *InboundController) onIkev2ClientChanged() { a.ikev2Changed(true) }
+func (a *InboundController) ikev2Changed(clientOnly bool) {
+	expanded := service.AutoExpandVpnRanges("ikev2")
+	if err := a.ikev2Service.GenerateAllConfigs(); err != nil {
+		logger.Warning("IKEv2: config generation failed:", err)
+	}
+	if err := a.ikev2Service.SetupRouting(); err != nil {
+		logger.Warning("IKEv2: routing setup failed:", err)
+	}
+	// charon hot-reloads via swanctl --load-all (no tunnel drop) and a new client's
+	// conn/pool must be (re)loaded, so always reload — this never disconnects anyone.
+	if err := a.ikev2Service.RestartServices(); err != nil {
+		logger.Warning("IKEv2: service restart failed:", err)
+	}
+	// Only drop the IP-allocation cache for inbound-level changes or a pool expansion.
+	if !clientOnly || expanded {
+		service.ResetAllocations("ikev2")
+	}
+	a.ikev2Service.KillDisabledSessions()
 	a.xrayService.SetToNeedRestart()
 }
 
@@ -239,7 +295,7 @@ func (a *InboundController) addInbound(c *gin.Context) {
 	// first (kernel modules, daemons, IPsec). Block creation with a clear message
 	// until the operator runs setup from Core Settings. The UI guards this too;
 	// this is defense-in-depth against a direct API call.
-	if inbound.Protocol == model.L2TP || inbound.Protocol == model.PPTP || inbound.Protocol == model.OPENVPN || inbound.Protocol == model.OPENCONNECT || inbound.Protocol == model.SSTP {
+	if inbound.Protocol == model.L2TP || inbound.Protocol == model.PPTP || inbound.Protocol == model.OPENVPN || inbound.Protocol == model.OPENCONNECT || inbound.Protocol == model.SSTP || inbound.Protocol == model.IKEV2 {
 		var coreService service.CoreService
 		if !coreService.IsProvisioned() {
 			pureJsonMsg(c, http.StatusOK, false, I18nWeb(c, "pages.inbounds.toasts.setupRequired"))
@@ -285,6 +341,8 @@ func (a *InboundController) addInbound(c *gin.Context) {
 		a.onOcservChanged()
 	} else if inbound.Protocol == model.SSTP {
 		a.onSstpChanged()
+	} else if inbound.Protocol == model.IKEV2 {
+		a.onIkev2Changed()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -323,6 +381,8 @@ func (a *InboundController) delInbound(c *gin.Context) {
 		a.onOcservChanged()
 	} else if isSstp {
 		a.onSstpChanged()
+	} else if oldInbound != nil && oldInbound.Protocol == model.IKEV2 {
+		a.onIkev2Changed()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -369,6 +429,8 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 		a.onOcservChanged()
 	} else if inbound.Protocol == model.SSTP {
 		a.onSstpChanged()
+	} else if inbound.Protocol == model.IKEV2 {
+		a.onIkev2Changed()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -458,15 +520,17 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 	}
 
 	if data.Protocol == model.L2TP {
-		a.onL2tpChanged()
+		a.onL2tpClientChanged()
 	} else if data.Protocol == model.PPTP {
-		a.onPptpChanged()
+		a.onPptpClientChanged()
 	} else if data.Protocol == model.OPENVPN {
-		a.onOpenVpnChanged()
+		a.onOpenVpnClientChanged()
 	} else if data.Protocol == model.OPENCONNECT {
-		a.onOcservChanged()
+		a.onOcservClientChanged()
 	} else if data.Protocol == model.SSTP {
-		a.onSstpChanged()
+		a.onSstpClientChanged()
+	} else if data.Protocol == model.IKEV2 {
+		a.onIkev2ClientChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -528,6 +592,8 @@ func (a *InboundController) delInboundClient(c *gin.Context) {
 		a.onOcservChanged()
 	} else if oldInbound != nil && oldInbound.Protocol == model.SSTP {
 		a.onSstpChanged()
+	} else if oldInbound != nil && oldInbound.Protocol == model.IKEV2 {
+		a.onIkev2Changed()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -559,15 +625,17 @@ func (a *InboundController) updateInboundClient(c *gin.Context) {
 	}
 
 	if inbound.Protocol == model.L2TP {
-		a.onL2tpChanged()
+		a.onL2tpClientChanged()
 	} else if inbound.Protocol == model.PPTP {
-		a.onPptpChanged()
+		a.onPptpClientChanged()
 	} else if inbound.Protocol == model.OPENVPN {
-		a.onOpenVpnChanged()
+		a.onOpenVpnClientChanged()
 	} else if inbound.Protocol == model.OPENCONNECT {
-		a.onOcservChanged()
+		a.onOcservClientChanged()
 	} else if inbound.Protocol == model.SSTP {
-		a.onSstpChanged()
+		a.onSstpClientChanged()
+	} else if inbound.Protocol == model.IKEV2 {
+		a.onIkev2ClientChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -601,15 +669,17 @@ func (a *InboundController) bulkUpdateClients(c *gin.Context) {
 	for proto := range touched {
 		switch proto {
 		case string(model.L2TP):
-			a.onL2tpChanged()
+			a.onL2tpClientChanged()
 		case string(model.PPTP):
-			a.onPptpChanged()
+			a.onPptpClientChanged()
 		case string(model.OPENVPN):
-			a.onOpenVpnChanged()
+			a.onOpenVpnClientChanged()
 		case string(model.OPENCONNECT):
-			a.onOcservChanged()
+			a.onOcservClientChanged()
 		case string(model.SSTP):
-			a.onSstpChanged()
+			a.onSstpClientChanged()
+		case string(model.IKEV2):
+			a.onIkev2ClientChanged()
 		default:
 			xrayRestart = true
 		}
@@ -637,11 +707,12 @@ func (a *InboundController) resetClientTraffic(c *gin.Context) {
 	if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
-	a.onL2tpChanged()
-	a.onPptpChanged()
-	a.onOpenVpnChanged()
-	a.onOcservChanged()
-	a.onSstpChanged()
+	a.onL2tpClientChanged()
+	a.onPptpClientChanged()
+	a.onOpenVpnClientChanged()
+	a.onOcservClientChanged()
+	a.onSstpClientChanged()
+	a.onIkev2ClientChanged()
 }
 
 // resetAllTraffics resets all traffic counters across all inbounds.
@@ -654,11 +725,12 @@ func (a *InboundController) resetAllTraffics(c *gin.Context) {
 		a.xrayService.SetToNeedRestart()
 	}
 	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.resetAllTrafficSuccess"), nil)
-	a.onL2tpChanged()
-	a.onPptpChanged()
-	a.onOpenVpnChanged()
-	a.onOcservChanged()
-	a.onSstpChanged()
+	a.onL2tpClientChanged()
+	a.onPptpClientChanged()
+	a.onOpenVpnClientChanged()
+	a.onOcservClientChanged()
+	a.onSstpClientChanged()
+	a.onIkev2ClientChanged()
 }
 
 // resetAllClientTraffics resets traffic counters for all clients in a specific inbound.
@@ -677,11 +749,12 @@ func (a *InboundController) resetAllClientTraffics(c *gin.Context) {
 		a.xrayService.SetToNeedRestart()
 	}
 	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.resetAllClientTrafficSuccess"), nil)
-	a.onL2tpChanged()
-	a.onPptpChanged()
-	a.onOpenVpnChanged()
-	a.onOcservChanged()
-	a.onSstpChanged()
+	a.onL2tpClientChanged()
+	a.onPptpClientChanged()
+	a.onOpenVpnClientChanged()
+	a.onOcservClientChanged()
+	a.onSstpClientChanged()
+	a.onIkev2ClientChanged()
 }
 
 // importInbound imports an inbound configuration from provided data.
@@ -930,6 +1003,67 @@ func (a *InboundController) generateSstpCert(c *gin.Context) {
 		"certificate": serverCert,
 		"key":         serverKey,
 	}, nil)
+}
+
+// generateIkev2Cert generates a self-signed RSA CA + server certificate for IKEv2
+// (strongSwan). Unlike SSTP/ocserv it returns a CA too — the client must trust it
+// (import the CA) unless a publicly-trusted cert is used. With a saved inbound the
+// material is persisted (content mode) and applied; otherwise it is returned for the
+// form to hold until save. The native-client self-signed caveat is surfaced in the UI.
+func (a *InboundController) generateIkev2Cert(c *gin.Context) {
+	serverCert, serverKey, caCert, err := a.ikev2Service.GenerateSelfSignedCert("")
+	if err != nil {
+		jsonMsg(c, "Failed to generate certificate", err)
+		return
+	}
+
+	if id, err := strconv.Atoi(c.Param("id")); err == nil && id > 0 {
+		inbound, err := a.inboundService.GetInbound(id)
+		if err != nil {
+			jsonMsg(c, "Inbound not found", err)
+			return
+		}
+		var settings map[string]any
+		if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+			jsonMsg(c, "Failed to parse settings", err)
+			return
+		}
+		settings["tlsUseFile"] = false
+		settings["certificate"] = serverCert
+		settings["key"] = serverKey
+		settings["caCert"] = caCert
+
+		settingsJSON, _ := json.Marshal(settings)
+		inbound.Settings = string(settingsJSON)
+		if _, _, err := a.inboundService.UpdateInbound(inbound); err != nil {
+			jsonMsg(c, "Failed to save certificate", err)
+			return
+		}
+		a.onIkev2Changed()
+	}
+
+	jsonObj(c, map[string]string{
+		"certificate": serverCert,
+		"key":         serverKey,
+		"caCert":      caCert,
+	}, nil)
+}
+
+// checkIkev2Cert inspects the supplied IKEv2 server certificate's public-key type
+// and returns a device-compatibility warning (non-RSA → iOS silently rejects it).
+// Non-blocking: the UI surfaces the warning; it does not prevent saving.
+func (a *InboundController) checkIkev2Cert(c *gin.Context) {
+	data := &model.Inbound{}
+	if err := c.ShouldBind(data); err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	keyType, warning, err := a.ikev2Service.InspectServerCert(data)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	jsonObj(c, map[string]string{"keyType": keyType, "warning": warning}, nil)
 }
 
 // delInboundClientByEmail deletes a client from an inbound by email address.

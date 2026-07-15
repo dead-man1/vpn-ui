@@ -19,10 +19,8 @@ DISTROS=(
 #  fedora-42   # image removed from images: remote (F42 EOL)
   fedora-43
   fedora-44
-#  alma-8
   alma-9
   alma-10
-#  rocky-8
   rocky-9
   rocky-10
   arch
@@ -63,6 +61,7 @@ Tests (ids mirror harness/model.py:ALL_PHASES; always run in this fixed order):
   pptp            connect variants + checks + peer reachability (PPTP)
   openconnect     connect variants + checks + peer reachability (OpenConnect/ocserv)
   sstp            connect + checks + peer reachability (SSTP/accel-ppp, PPP-over-TLS)
+  ikev2           connect + checks + peer reachability (IKEv2/IPsec, strongSwan charon; eap-mschapv2 + psk + eap-tls)
   bulk-ops        bulk client add/sub/enable/disable + TXT/PDF export via API
   backup-restore  DB export + import round-trip
   warp-socks      Cloudflare warp-cli SOCKS install + egress

@@ -346,6 +346,8 @@
                     return new Inbound.OcservSettings.OcservUser();
                 case Protocols.SSTP:
                     return new Inbound.SstpSettings.SstpUser();
+                case Protocols.IKEV2:
+                    return new Inbound.Ikev2Settings.Ikev2User();
                 default:
                     return null;
             }

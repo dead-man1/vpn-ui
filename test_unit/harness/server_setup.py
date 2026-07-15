@@ -17,14 +17,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from . import ikev2_certs
 from .model import JobResult, SubTest, Status, PHASE_SETUP
 from .panel import Panel
 
 # protocol base octet for the 10.<base>.<id>.<host> tunnel address
 BASE = {"l2tp": 0, "pptp": 1, "ovpn-udp": 2, "ovpn-tcp": 3, "openconnect": 4,
-        "sstp": 5}
+        "sstp": 5, "ikev2": 6}
 
 PSK = "TestPSK-9182"  # L2TP/IPsec pre-shared key
+IKEV2_PSK = "TestIkev2PSK-7f3a91"  # IKEv2 psk-mode shared key (single-account inbound)
+# Distinct IKE server identity (IDr) for the eap-tls inbound. The always-present primary
+# eap-mschapv2 inbound presents id=server_ip; two EAP conns with the SAME server id on the
+# ONE shared charon can't be disambiguated (an EAP initiator looks identical until the
+# method is negotiated, so charon picks eap-mschapv2 first and the eap-tls client rejects
+# the MSCHAPv2 offer). Giving eap-tls its own IDr makes charon route to it by identity.
+IKEV2_EAPTLS_ID = "ikev2-eaptls.vpn"
 
 # User Limit (devices per account). All three protocols run at K=2 so the User
 # Limit Strategy test can drive a 3rd device past the cap (needs the 3rd client
@@ -35,6 +43,7 @@ OVPN_USER_LIMIT = 2
 PPTP_USER_LIMIT = 2
 OC_USER_LIMIT = 2
 SSTP_USER_LIMIT = 2
+IKEV2_USER_LIMIT = 2
 
 # Ports for the SECOND same-protocol inbound (protocols.py multi-inbound test).
 # Distinct from the primary ports (openvpn udp 1194 / tcp 1443, l2tp 1701, pptp
@@ -48,7 +57,17 @@ SECOND_PORTS = {
     "pptp":        {"udp": 1798},
     "openconnect": {"udp": 4444},
     "sstp":        {"udp": 8443},
+    # IKEv2 shares ONE strongSwan charon bound to UDP 500/4500 for EVERY inbound, so
+    # this port is only a unique DB label (like l2tp/pptp above); the 2nd inbound is
+    # distinguished by its own /16-block accounts via RADIUS, not by a distinct port.
+    "ikev2":       {"udp": 4500},
 }
+
+# Nominal DB port labels for the EXTRA ikev2 auth-mode inbounds (psk / eap-tls).
+# Like SECOND_PORTS["ikev2"], these are unique labels only — the one shared charon
+# binds 500/4500 for every ikev2 inbound; each is distinguished by its own account
+# block, not by a distinct listener. Distinct from every other inbound's port.
+IKEV2_EXTRA_PORTS = {"psk": 4501, "eap-tls": 4502}
 
 
 def build_second_inbound(panel: Panel, proto: str) -> Inbound:
@@ -129,7 +148,83 @@ def build_second_inbound(panel: Panel, proto: str) -> Inbound:
         return Inbound(
             protocol="sstp", inbound_id=inb["id"], udp_port=ports["udp"],
             tcp_port=0, accounts={"A": acct}, user_limit=1)
+    if proto == "ikev2":
+        # The 2nd inbound is served by the SAME shared charon (bound to 500/4500); its
+        # port is a nominal label. Its own generated cert/CA is captured so the client
+        # can trust it (clients/ikev2.py accumulates every inbound's CA in x509ca/).
+        cert = panel.generate_ikev2_cert()
+        settings = {
+            "dns1": "1.1.1.1", "dns2": "8.8.8.8",
+            "authMode": "eap-mschapv2", "serverAddr": "",
+            "tlsUseFile": False,
+            "certificate": cert["certificate"], "key": cert["key"], "caCert": cert["caCert"],
+            "clientToClient": True, "crossInbound": True,
+            "clients": [_dict_client(acct)],
+        }
+        inb = panel.add_inbound("test-ikev2-2", ports["udp"], "ikev2", settings)
+        return Inbound(
+            protocol="ikev2", inbound_id=inb["id"], udp_port=ports["udp"],
+            tcp_port=0, accounts={"A": acct}, user_limit=1,
+            ca_cert=cert.get("caCert", ""), server_addr="")
     raise ValueError(proto)
+
+
+def build_ikev2_extra(panel: Panel, server_ip: str, mode: str) -> Inbound:
+    """Create an EXTRA ikev2 inbound for a NON-DEFAULT auth mode (psk | eap-tls).
+    Both are SINGLE-account inbounds served by the same shared charon; the backend
+    draws each device a tunnel IP from a whole-block charon pool and a reconcile
+    sweep attributes usage + enforces the User Limit (web/service/ikev2.go). Returns
+    the Inbound carrying whatever client-side credential the mode needs. Raises on
+    panel error (or eap-tls cert-mint failure), which the caller records as a subtest
+    ERROR without sinking the rest of setup.
+
+    Nominal port only (charon owns 500/4500 for all ikev2 inbounds). K=1: the extra
+    modes exercise connect + data-plane, not the User-Limit allocator (the primary
+    eap-mschapv2 inbound covers K=2 / strategy)."""
+    port = IKEV2_EXTRA_PORTS[mode]
+    if mode == "psk":
+        acct = _acct("ik2psk", 0)   # distinct email -> its own routing block
+        settings = {
+            "dns1": "1.1.1.1", "dns2": "8.8.8.8",
+            "authMode": "psk", "psk": IKEV2_PSK, "serverAddr": "",
+            "clientToClient": True, "crossInbound": True,
+            "userLimit": 1,
+            "clients": [_dict_client(acct)],
+        }
+        inb = panel.add_inbound("test-ikev2-psk", port, "ikev2", settings)
+        return Inbound(
+            protocol="ikev2", inbound_id=inb["id"], udp_port=port, tcp_port=0,
+            accounts={"A": acct}, user_limit=1,
+            auth_mode="psk", psk=IKEV2_PSK, server_addr="")
+    if mode == "eap-tls":
+        acct = _acct("ik2tls", 0)
+        # Distinct IKE server identity so the shared charon routes this conn by IDr (not
+        # by auth method) — it co-resides with the primary eap-mschapv2 inbound, another
+        # EAP conn, and both would otherwise present id=server_ip and collide.
+        # One harness CA signs the server leaf (dNSName SAN = that identity, IP SAN =
+        # server_ip) AND the client leaf. inbound.caCert = that CA: charon validates the
+        # client cert against it, and the client trusts the server leaf via the same CA.
+        certs = ikev2_certs.mint(server_ip, acct.email, server_id=IKEV2_EAPTLS_ID)
+        settings = {
+            "dns1": "1.1.1.1", "dns2": "8.8.8.8",
+            "authMode": "eap-tls", "serverAddr": IKEV2_EAPTLS_ID, "tlsUseFile": False,
+            "certificate": certs.server_cert, "key": certs.server_key,
+            "caCert": certs.ca_cert,
+            "clientToClient": True, "crossInbound": True,
+            "userLimit": 1,
+            "clients": [_dict_client(acct)],
+        }
+        inb = panel.add_inbound("test-ikev2-eap-tls", port, "ikev2", settings)
+        return Inbound(
+            protocol="ikev2", inbound_id=inb["id"], udp_port=port, tcp_port=0,
+            accounts={"A": acct}, user_limit=1,
+            auth_mode="eap-tls",
+            server_addr=IKEV2_EAPTLS_ID,    # -> client remote id = IDr (clients/ikev2.py)
+            ca_cert=certs.ca_cert,          # client's server-trust anchor (== inbound caCert)
+            client_cert=certs.client_cert,  # client leaf pushed to the client VM
+            client_key=certs.client_key,
+            client_id=certs.client_id)      # rfc822 SAN the client sets as `local id`
+    raise ValueError(mode)
 
 
 @dataclass
@@ -151,6 +246,12 @@ class Inbound:
     ovpn_udp: str = ""     # exported .ovpn profile text (openvpn)
     ovpn_tcp: str = ""
     user_limit: int = 1    # devices-per-account (User Limit feature); >1 = block mode
+    ca_cert: str = ""      # ikev2: PEM CA the CLIENT must trust (server presents a leaf signed by it)
+    server_addr: str = ""  # ikev2: the cert SAN the client sets as `remote id` ("" -> use server IP)
+    auth_mode: str = "eap-mschapv2"  # ikev2: eap-mschapv2 (default) | psk | eap-tls
+    client_cert: str = ""  # ikev2 eap-tls: client leaf PEM to push to the client VM
+    client_key: str = ""   # ikev2 eap-tls: client leaf key PEM to push to the client VM
+    client_id: str = ""    # ikev2 eap-tls: the client's EAP identity (rfc822 SAN) -> `local id`
 
     def client_ip(self, which: str, transport: str = "udp", device: int = 0) -> str:
         """Tunnel IP for account A/B on this inbound. With user_limit K>1 each
@@ -172,6 +273,11 @@ class Inbound:
 class ServerConfig:
     server_ip: str
     inbounds: dict = field(default_factory=dict)   # protocol -> Inbound
+    # NON-DEFAULT ikev2 auth mode -> its dedicated single-account Inbound (psk / eap-tls).
+    # Kept OUT of `inbounds` on purpose: the primary suite, routing rules + translation
+    # assert, bulk-ops and backup all iterate `inbounds`, so extras stay invisible to
+    # them and only the ikev2 phase's per-mode block (protocols.py) consumes these.
+    ikev2_extra: dict = field(default_factory=dict)
 
 
 def _acct(prefix: str, idx: int) -> Account:
@@ -189,6 +295,19 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
     log = log or (lambda *_: None)
     phase = result.phase(PHASE_SETUP)
     sc = ServerConfig(server_ip=server_ip)
+
+    # IKEv2 (strongSwan charon) and L2TP/IPsec (libreswan pluto) both bind UDP 500/4500 —
+    # only ONE IKE daemon can own those ports on a host. They are mutually exclusive on a
+    # single IP by design. So when the ikev2 phase is explicitly selected, run L2TP raw-only
+    # (no IPsec) so charon can bind 500/4500; otherwise L2TP keeps its raw+IPsec config.
+    _sel = cfg.get("_selected")
+    _ikev2_sel = _sel is not None and "ikev2" in _sel
+
+    # IKEv2 auth modes to exercise (config [ikev2] modes). Absent key -> the historical
+    # single mode, so existing runs are unchanged. eap-mschapv2 is the primary inbound
+    # built below; every OTHER listed mode gets its own extra single-account inbound.
+    _ikev2_modes = (cfg.get("ikev2") or {}).get("modes") or ["eap-mschapv2"]
+    _ikev2_extra_modes = [m for m in _ikev2_modes if m != "eap-mschapv2"]
 
     # ---- OpenVPN inbound ------------------------------------------------
     log("-> creating openvpn inbound (certs + 2 accounts, ciphers=all)...")
@@ -232,11 +351,11 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
     log(f"-> openvpn-inbound [{ov.status.value}] {ov.detail}")
 
     # ---- L2TP inbound ---------------------------------------------------
-    log("-> creating l2tp inbound (raw+ipsec, 2 accounts)...")
+    log("-> creating l2tp inbound (%s, 2 accounts)..." % ("raw-only, ikev2 owns 500/4500" if _ikev2_sel else "raw+ipsec"))
     l2 = phase.add(SubTest("l2tp-inbound"))
     try:
         settings = {
-            "ipsecEnable": True, "ipsecPsk": PSK, "allowRaw": True,
+            "ipsecEnable": not _ikev2_sel, "ipsecPsk": PSK, "allowRaw": True,
             "clientToClient": True, "crossInbound": True,
             "userLimit": L2TP_USER_LIMIT,  # exercise the per-account block allocator
             "dns1": "1.1.1.1", "dns2": "8.8.8.8", "mtu": 1400,
@@ -251,7 +370,7 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
             user_limit=L2TP_USER_LIMIT,
         )
         l2.status = Status.PASS
-        l2.detail = f"inbound {iid}, raw+ipsec, psk set, 2 accounts"
+        l2.detail = f"inbound {iid}, {'raw-only (ikev2 owns 500/4500)' if _ikev2_sel else 'raw+ipsec, psk set'}, 2 accounts"
     except Exception as e:  # noqa: BLE001
         l2.status = Status.ERROR
         l2.detail = str(e)[:300]
@@ -344,6 +463,61 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
         ss.detail = str(e)[:300]
 
     log(f"-> sstp-inbound [{ss.status.value}] {ss.detail}")
+
+    # ---- IKEv2 inbound --------------------------------------------------
+    # IKEv2/IPsec via a SINGLE shared strongSwan charon (bound to UDP 500/4500) that
+    # serves every ikev2 inbound. Auth = EAP-MSCHAPv2 (server-authoritative RADIUS,
+    # like ocserv). The server presents a self-signed leaf; the CLIENT must trust the
+    # returned caCert — capture it on the Inbound so clients/ikev2.py can load it into
+    # swanctl's x509ca dir. serverAddr left empty => leaf SAN = detected server IP, so
+    # the client's `remote id = <server_ip>` matches. Port 500 is a nominal label.
+    log("-> creating ikev2 inbound (shared charon, EAP-MSCHAPv2, self-signed cert+CA, 2 accounts)...")
+    ik = phase.add(SubTest("ikev2-inbound"))
+    try:
+        cert = panel.generate_ikev2_cert()
+        settings = {
+            "dns1": "1.1.1.1", "dns2": "8.8.8.8",
+            "authMode": "eap-mschapv2", "serverAddr": "",
+            "tlsUseFile": False,
+            "certificate": cert["certificate"], "key": cert["key"], "caCert": cert["caCert"],
+            "clientToClient": True, "crossInbound": True,
+            "userLimit": IKEV2_USER_LIMIT,  # exercise the RADIUS per-account block allocator
+            "clients": [_dict_client(_acct("ikev2", 0)),
+                        _dict_client(_acct("ikev2", 1))],
+        }
+        inb = panel.add_inbound("test-ikev2", 500, "ikev2", settings)
+        iid = inb["id"]
+        sc.inbounds["ikev2"] = Inbound(
+            protocol="ikev2", inbound_id=iid, udp_port=500, tcp_port=0,
+            accounts={"A": _acct("ikev2", 0), "B": _acct("ikev2", 1)},
+            user_limit=IKEV2_USER_LIMIT, ca_cert=cert.get("caCert", ""), server_addr="")
+        ik.status = Status.PASS
+        ik.detail = f"inbound {iid}, IKEv2/EAP (charon 500/4500), 2 accounts"
+    except Exception as e:  # noqa: BLE001
+        ik.status = Status.ERROR
+        ik.detail = str(e)[:300]
+
+    log(f"-> ikev2-inbound [{ik.status.value}] {ik.detail}")
+
+    # ---- IKEv2 extra auth-mode inbounds (psk / eap-tls) -----------------
+    # One dedicated single-account inbound per non-default mode, served by the SAME
+    # shared charon. Built only when ikev2 is in play (_ikev2_sel: full run or
+    # --tests ikev2) AND the primary inbound exists AND extra modes are configured.
+    # Stored in sc.ikev2_extra so the primary suite/routing/bulk/backup are untouched;
+    # protocols.py's ikev2 phase runs a per-mode connect + data-plane block on each.
+    if _ikev2_sel and "ikev2" in sc.inbounds and _ikev2_extra_modes:
+        for mode in _ikev2_extra_modes:
+            log(f"-> creating ikev2 {mode} inbound (single account)...")
+            ex = phase.add(SubTest(f"ikev2-{mode}-inbound"))
+            try:
+                extra = build_ikev2_extra(panel, server_ip, mode)
+                sc.ikev2_extra[mode] = extra
+                ex.status = Status.PASS
+                ex.detail = f"inbound {extra.inbound_id}, ikev2/{mode} (port {extra.udp_port}), 1 account"
+            except Exception as e:  # noqa: BLE001
+                ex.status = Status.ERROR
+                ex.detail = str(e)[:300]
+            log(f"-> ikev2-{mode}-inbound [{ex.status.value}] {ex.detail}")
 
     # ---- source-IP routing rules (built-in outbounds, no external link) ----
     # Prove Xray routes by source IP using the two outbounds every config already
@@ -441,7 +615,7 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
         xr.detail = str(e)[:300]
 
     # fatal only if we couldn't build any inbound
-    if all(p not in sc.inbounds for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp")):
+    if all(p not in sc.inbounds for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2")):
         return None
     return sc
 

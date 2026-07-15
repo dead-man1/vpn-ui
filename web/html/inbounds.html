@@ -287,15 +287,16 @@
                             {{ i18n "qrCode" }}
                           </a-menu-item>
                           <template v-if="dbInbound.isMultiUser()">
-                            <a-menu-item key="addClient">
+                            <a-menu-item key="addClient"
+                              v-if="!(dbInbound.isIkev2SingleClient() && (getInboundClients(dbInbound) || []).length >= 1)">
                               <a-icon type="user-add"></a-icon>
                               {{ i18n "pages.client.add"}}
                             </a-menu-item>
-                            <a-menu-item key="addBulkClient">
+                            <a-menu-item key="addBulkClient" v-if="!dbInbound.isIkev2SingleClient()">
                               <a-icon type="usergroup-add"></a-icon>
                               {{ i18n "pages.client.bulk"}}
                             </a-menu-item>
-                            <a-menu-item key="copyClients">
+                            <a-menu-item key="copyClients" v-if="!dbInbound.isIkev2SingleClient()">
                               <a-icon type="copy"></a-icon>
                               {{ i18n "pages.client.copyFromInbound"}}
                             </a-menu-item>
@@ -1365,7 +1366,7 @@
           to_inbound = dbInbound.toInbound()
           this.inbounds.push(to_inbound);
           this.dbInbounds.push(dbInbound);
-          if ([Protocols.VMESS, Protocols.VLESS, Protocols.TROJAN, Protocols.SHADOWSOCKS, Protocols.L2TP, Protocols.PPTP, Protocols.OPENVPN, Protocols.OPENCONNECT, Protocols.SSTP].includes(inbound.protocol)) {
+          if ([Protocols.VMESS, Protocols.VLESS, Protocols.TROJAN, Protocols.SHADOWSOCKS, Protocols.L2TP, Protocols.PPTP, Protocols.OPENVPN, Protocols.OPENCONNECT, Protocols.SSTP, Protocols.IKEV2].includes(inbound.protocol)) {
             if (dbInbound.isSS && (!to_inbound.isSSMultiUser)) {
               continue;
             }
@@ -1941,6 +1942,10 @@
       },
       openAddClient(dbInboundId) {
         dbInbound = this.dbInbounds.find(row => row.id === dbInboundId);
+        if (dbInbound && dbInbound.isIkev2SingleClient() && (this.getInboundClients(dbInbound) || []).length >= 1) {
+          this.$message.warning('This IKEv2 inbound allows only one account.');
+          return;
+        }
         clientModal.show({
           title: '{{ i18n "pages.client.add"}}',
           okText: '{{ i18n "pages.client.submitAdd"}}',
@@ -1994,6 +1999,7 @@
           case Protocols.OPENVPN:
           case Protocols.OPENCONNECT:
           case Protocols.SSTP:
+          case Protocols.IKEV2:
             return clients.findIndex(item => item && item.password === client.password && item.email === client.email);
           default: return clients.findIndex(item => item && item.id === client.id && item.email === client.email);
         }
@@ -2092,6 +2098,7 @@
           case Protocols.OPENVPN: return client.password;
           case Protocols.OPENCONNECT: return client.password;
           case Protocols.SSTP: return client.password;
+          case Protocols.IKEV2: return client.password;
           case Protocols.SHADOWSOCKS: return client.email;
           case Protocols.HYSTERIA: return client.auth;
           default: return client.id;
@@ -2235,7 +2242,7 @@
         // set up; point the user at Core Settings. `data` is a plain object for
         // add/clone and FormData for update, so data.protocol only matches creates.
         if (typeof url === 'string' && url.endsWith('/inbounds/add') &&
-            data && [Protocols.L2TP, Protocols.PPTP, Protocols.OPENVPN, Protocols.OPENCONNECT, Protocols.SSTP].includes(data.protocol)) {
+            data && [Protocols.L2TP, Protocols.PPTP, Protocols.OPENVPN, Protocols.OPENCONNECT, Protocols.SSTP, Protocols.IKEV2].includes(data.protocol)) {
           // Not provisioned at all -> general message; provisioned but this protocol was
           // added by a later update (still in missingProtocols) -> protocol-specific
           // message. Both use the SAME modal (matching the initial setup prompt), not a toast.

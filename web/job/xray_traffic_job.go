@@ -22,6 +22,7 @@ type XrayTrafficJob struct {
 	openvpnService  service.OpenVpnService
 	ocservService   service.OcservService
 	sstpService     service.SstpService
+	ikev2Service    service.Ikev2Service
 	nftService      service.NftService
 	radiusService   *service.RadiusService
 }
@@ -42,6 +43,7 @@ func NewXrayTrafficJob(rs *service.RadiusService) *XrayTrafficJob {
 	j.openvpnService.SetRadius(rs, "")
 	j.ocservService.SetRadius(rs, "")
 	j.sstpService.SetRadius(rs, "")
+	j.ikev2Service.SetRadius(rs, "")
 	return j
 }
 
@@ -62,17 +64,24 @@ func (j *XrayTrafficJob) Run() {
 	// Collect L2TP, PPTP, and OpenVPN per-client traffic from nftables counters (atomic read+reset)
 	// Session maps (IP→email) come from the embedded RADIUS server
 	// This runs regardless of Xray status — VPN traffic is independent
+	// psk/eap-tls ikev2 tunnels authenticate locally at charon (no RADIUS round-trip),
+	// so reconcile their live SAs into the session store + nft counters BEFORE reading
+	// sessions, so this tick bills their traffic and enforces their User Limit.
+	j.ikev2Service.ReconcileLocalAuthSessions()
+
 	l2tpSessions := j.radiusService.GetSessions("l2tp")
 	pptpSessions := j.radiusService.GetSessions("pptp")
 	ovpnSessions := j.radiusService.GetSessions("openvpn")
 	ocservSessions := j.radiusService.GetSessions("openconnect")
 	sstpSessions := j.radiusService.GetSessions("sstp")
-	if l2tpTraffics, pptpTraffics, ovpnTraffics, ocservTraffics, sstpTraffics := j.nftService.CollectAndResetTraffic(l2tpSessions, pptpSessions, ovpnSessions, ocservSessions, sstpSessions); len(l2tpTraffics) > 0 || len(pptpTraffics) > 0 || len(ovpnTraffics) > 0 || len(ocservTraffics) > 0 || len(sstpTraffics) > 0 {
+	ikev2Sessions := j.radiusService.GetSessions("ikev2")
+	if l2tpTraffics, pptpTraffics, ovpnTraffics, ocservTraffics, sstpTraffics, ikev2Traffics := j.nftService.CollectAndResetTraffic(l2tpSessions, pptpSessions, ovpnSessions, ocservSessions, sstpSessions, ikev2Sessions); len(l2tpTraffics) > 0 || len(pptpTraffics) > 0 || len(ovpnTraffics) > 0 || len(ocservTraffics) > 0 || len(sstpTraffics) > 0 || len(ikev2Traffics) > 0 {
 		clientTraffics = append(clientTraffics, l2tpTraffics...)
 		clientTraffics = append(clientTraffics, pptpTraffics...)
 		clientTraffics = append(clientTraffics, ovpnTraffics...)
 		clientTraffics = append(clientTraffics, ocservTraffics...)
 		clientTraffics = append(clientTraffics, sstpTraffics...)
+		clientTraffics = append(clientTraffics, ikev2Traffics...)
 	}
 
 	// Level-triggered enforcement: disconnect any STILL-connected client that is no
@@ -88,6 +97,7 @@ func (j *XrayTrafficJob) Run() {
 	j.openvpnService.KillDisabledSessions()
 	j.ocservService.KillDisabledSessions()
 	j.sstpService.KillDisabledSessions()
+	j.ikev2Service.KillDisabledSessions()
 
 	// Skip DB update if no traffic to process
 	if len(traffics) == 0 && len(clientTraffics) == 0 {

@@ -40,7 +40,7 @@ def _hms() -> str:
 _PHASE_TAG = {
     "core-init": "CORE", "server-setup": "SETUP", "client-prep": "PREP",
     "openvpn": "OPENVPN", "l2tp": "L2TP", "pptp": "PPTP",
-    "openconnect": "OCSERV", "sstp": "SSTP", "bulk-ops": "BULK",
+    "openconnect": "OCSERV", "sstp": "SSTP", "ikev2": "IKEV2", "bulk-ops": "BULK",
     "backup-restore": "BACKUP", "warp-socks": "WARP", "random-cfg": "RANDOM",
     "systemd": "SYSTEMD", "uninstall": "UNINSTALL",
 }
@@ -132,7 +132,7 @@ def run_job(spec: dict, index: int, cfg: dict,
         phase (e.g. only the host-only `export-js` id was passed)."""
         return phase in cfg.get("_selected", ALL_PHASES)
 
-    need_clients = any(_sel(p) for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp"))
+    need_clients = any(_sel(p) for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2"))
     need_setup = (need_clients or _sel(PHASE_SETUP)
                   or _sel(PHASE_BULK) or _sel(PHASE_BACKUP))
 
@@ -237,7 +237,7 @@ def run_job(spec: dict, index: int, cfg: dict,
             return incus.exec(server_vm, cmd, timeout=timeout)
 
         # --- protocol suites (filtered by the --tests selection) ---
-        for proto in [p for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp") if _sel(p)]:
+        for proto in [p for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2") if _sel(p)]:
             if _aborting():
                 break
             log(f":: {proto} — connect variants + checks + peer reachability")

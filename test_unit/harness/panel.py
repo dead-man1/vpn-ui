@@ -279,6 +279,14 @@ class Panel:
         """Returns {certificate, key} — a self-signed server cert for OpenConnect."""
         return self._post("/panel/api/inbounds/generate-ocserv-cert", {}).get("obj", {})
 
+    def generate_ikev2_cert(self) -> dict:
+        """Returns {certificate, key, caCert} — a self-signed server cert + its CA for
+        IKEv2 (strongSwan). The server presents `certificate`; the CLIENT must TRUST
+        `caCert` (load it into swanctl's x509ca dir) to validate the server. With an
+        empty serverAddr the leaf SAN = the server's detected IP, so the client's
+        `remote { id = <server_ip> }` matches."""
+        return self._post("/panel/api/inbounds/generate-ikev2-cert", {}).get("obj", {})
+
     def download_ovpn(self, inbound_id: int, proto: str) -> str:
         """proto in {udp,tcp}. Returns raw .ovpn text."""
         r = self.s.get(self._url(f"/panel/api/inbounds/{inbound_id}/ovpn/{proto}"),

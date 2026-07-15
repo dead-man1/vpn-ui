@@ -166,11 +166,33 @@ class DBInbound {
             case Protocols.OPENCONNECT:
             case Protocols.SSTP:
                 return true;
+            case Protocols.IKEV2:
+                // Every ikev2 mode is account-based. eap-mschapv2 = many accounts;
+                // psk and eap-tls = one email-only account (routing, usage, quota,
+                // and User-Limit attribution). Single-client gating lives in the UI.
+                return true;
             case Protocols.SHADOWSOCKS:
                 return this.toInbound().isSSMultiUser;
             default:
                 return false;
         }
+    }
+
+    // ikev2 auth-mode helpers used to gate per-account UI. The protocol check
+    // short-circuits so toInbound() is only parsed for ikev2 rows.
+    isIkev2Psk() {
+        return this.protocol === Protocols.IKEV2 &&
+            this.toInbound().settings.authMode === 'psk';
+    }
+
+    isIkev2EapTls() {
+        return this.protocol === Protocols.IKEV2 &&
+            this.toInbound().settings.authMode === 'eap-tls';
+    }
+
+    // psk and eap-tls are both single-account modes (one email-only client).
+    isIkev2SingleClient() {
+        return this.isIkev2Psk() || this.isIkev2EapTls();
     }
 
     hasLink() {

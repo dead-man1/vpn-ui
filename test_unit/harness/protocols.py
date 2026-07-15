@@ -16,22 +16,24 @@ from .clients import l2tp as l2tp_mod
 from .clients import pptp as pptp_mod
 from .clients import openconnect as oc_mod
 from .clients import sstp as sstp_mod
+from .clients import ikev2 as ikev2_mod
 from .clients.base import Client
 from .model import Phase, SubTest, Status
-from .model import PHASE_OPENVPN, PHASE_L2TP, PHASE_PPTP, PHASE_OPENCONNECT, PHASE_SSTP
+from .model import (PHASE_OPENVPN, PHASE_L2TP, PHASE_PPTP, PHASE_OPENCONNECT,
+                    PHASE_SSTP, PHASE_IKEV2)
 
 # cross-inbound peer: X's cross test pings a client on peer[X]'s inbound
 PEER = {"openvpn": "l2tp", "l2tp": "pptp", "pptp": "openvpn",
-        "openconnect": "openvpn", "sstp": "openvpn"}
+        "openconnect": "openvpn", "sstp": "openvpn", "ikev2": "openvpn"}
 PHASE = {"openvpn": PHASE_OPENVPN, "l2tp": PHASE_L2TP, "pptp": PHASE_PPTP,
-         "openconnect": PHASE_OPENCONNECT, "sstp": PHASE_SSTP}
+         "openconnect": PHASE_OPENCONNECT, "sstp": PHASE_SSTP, "ikev2": PHASE_IKEV2}
 
 # Connect variant used when dialing the SECOND same-protocol inbound (TEST 1,
 # _multi_inbound_check): l2tp uses RAW (the client's IPsec config is pinned to the
 # primary's 17/1701, so a 2nd l2tp inbound is exercised over raw L2TP), openvpn
-# udp/new, pptp has no variant.
+# udp/new, pptp has no variant. sstp/ikev2 have no variant (single-variant protocols).
 _SECOND_VARIANT = {"openvpn": ("udp", "new"), "l2tp": "raw", "pptp": None,
-                   "openconnect": "dtls", "sstp": None}
+                   "openconnect": "dtls", "sstp": None, "ikev2": None}
 
 
 def _connect(client: Client, sc, proto: str, which: str, variant=None, ib=None):
@@ -52,6 +54,8 @@ def _connect(client: Client, sc, proto: str, which: str, variant=None, ib=None):
                               server_ip=sc.server_ip)
     if proto == "sstp":
         return sstp_mod.connect(client, ib, which, server_ip=sc.server_ip)
+    if proto == "ikev2":
+        return ikev2_mod.connect(client, ib, which, server_ip=sc.server_ip)
     raise ValueError(proto)
 
 
@@ -60,7 +64,8 @@ def _disconnect(client: Client, proto: str):
      "l2tp": l2tp_mod.disconnect,
      "pptp": pptp_mod.disconnect,
      "openconnect": oc_mod.disconnect,
-     "sstp": sstp_mod.disconnect}[proto](client)
+     "sstp": sstp_mod.disconnect,
+     "ikev2": ikev2_mod.disconnect}[proto](client)
 
 
 def _variants(proto: str):
@@ -335,6 +340,19 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
         t = traffic.termination(cA, panel, ib, cfg, connect_A, log)
         log(f"-> {t.name} [{t.status.value}] {t.detail}")
         phase.add(t)
+
+    # ---- IKEv2 extra auth modes (psk / eap-tls): connect + core data-plane ----
+    # Each non-default mode has its OWN single-account inbound (sc.ikev2_extra, built
+    # in setup). Run a tailored connect + dns-resolve + tunnel-egress + internet block
+    # per mode, each its own SubTest under this same ikev2 phase. Independent of the
+    # eap-mschapv2 suite above, so it runs regardless of that result; last, after the
+    # primary account's traffic tests (which touch only the primary inbound/account).
+    if proto == "ikev2":
+        for mode, ib_ex in (getattr(sc, "ikev2_extra", None) or {}).items():
+            try:
+                _ikev2_mode_check(mode, ib_ex, cA, sc, cfg, log, phase)
+            except Exception as e:  # noqa: BLE001
+                phase.add(SubTest(f"{mode}-connect", Status.ERROR, str(e)[:150]))
 
     _disconnect(cA, proto)
 
@@ -631,6 +649,51 @@ def _oc_same_nat_check(cA, sc, ib, log, phase, server_exec=None):
         cA.sh("pkill -f openconnect 2>/dev/null; true")
         time.sleep(1)
     log(f"-> same-nat-limit [{st.status.value}] {st.detail}")
+
+
+def _ikev2_mode_check(mode, ib, cA, sc, cfg, log, phase) -> None:
+    """Extra IKEv2 auth mode (psk / eap-tls): connect account A on its dedicated
+    single-account inbound (built in setup, sc.ikev2_extra[mode]) and run the core
+    data-plane checks. Each is its own SubTest named '<mode>-<check>' under the ikev2
+    phase. Independent of the eap-mschapv2 suite (its own inbound + charon connection),
+    so it runs regardless of the primary result. cA is cleaned before and after."""
+    dns_domain = (cfg.get("dns_resolve") or {}).get("domain", "cloudflare.com")
+    log(f"-> ikev2 {mode}: connect account A on inbound {ib.inbound_id}...")
+    cA.disconnect_all()
+    time.sleep(3)
+    con = phase.add(SubTest(f"{mode}-connect"))
+    ok = False
+    try:
+        ok, ip, clog = ikev2_mod.connect(cA, ib, "A", server_ip=sc.server_ip)
+        con.log = clog
+        con.status = Status.PASS if ok else Status.FAIL
+        con.detail = f"tunnel ip {ip}" if ok else f"{mode} connect failed"
+    except Exception as e:  # noqa: BLE001
+        con.status, con.detail = Status.ERROR, str(e)[:150]
+    log(f"-> {mode}-connect [{con.status.value}] {con.detail}")
+
+    if ok:
+        # DNS resolution through the tunnel (dig +short) — the dns_resolve helper
+        # already takes a custom name.
+        d = checks.dns_resolve(cA, dns_domain, name=f"{mode}-dns-resolve")
+        phase.add(d)
+        log(f"-> {d.name} [{d.status.value}] {d.detail}")
+        # tunnel-egress + internet: reuse the shared checks, renamed per mode (copy
+        # the verdict into a mode-named SubTest, the c2c/routing pattern above).
+        for base_name, fn in (("tunnel-egress", lambda: checks.tunnel_egress(cA)),
+                              ("internet", lambda: checks.internet(cA))):
+            m = SubTest(f"{mode}-{base_name}")
+            try:
+                r = fn()
+                m.status, m.detail, m.log = r.status, r.detail, r.log
+            except Exception as e:  # noqa: BLE001
+                m.status, m.detail = Status.ERROR, str(e)[:150]
+            phase.add(m)
+            log(f"-> {m.name} [{m.status.value}] {m.detail}")
+
+    _disconnect(cA, "ikev2")
+    cA.disconnect_all()
+    time.sleep(2)
 
 
 def _ovpn_status_rows(server_exec, inbound_id, transport):

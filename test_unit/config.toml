@@ -14,10 +14,9 @@ servers = [
   {name = "debian-13", image = "images:debian/13/cloud",     enabled = true},
   {name = "fedora-43", image = "images:fedora/43/cloud",     enabled = true},
   {name = "fedora-44", image = "images:fedora/44/cloud",     enabled = true},
-  {name = "alma-8",    image = "images:almalinux/8/cloud",   enabled = true},
+  # AlmaLinux 8 / Rocky Linux 8 (EL8) dropped: bundled strongSwan (IKEv2) setup fails there.
   {name = "alma-9",    image = "images:almalinux/9/cloud",   enabled = true},
   {name = "alma-10",   image = "images:almalinux/10/cloud",  enabled = true},
-  {name = "rocky-8",   image = "images:rockylinux/8/cloud",  enabled = true},
   {name = "rocky-9",   image = "images:rockylinux/9/cloud",  enabled = true},
   {name = "rocky-10",  image = "images:rockylinux/10/cloud", enabled = true},
   {name = "arch",      image = "images:archlinux/cloud",     enabled = true},
@@ -48,6 +47,14 @@ api_base = "https://bash.ws"
 
 [dns_resolve]
 domain = "cloudflare.com"  # dig +short through the tunnel
+
+# IKEv2 auth modes to exercise in the ikev2 phase. eap-mschapv2 = the full primary
+# suite (connect variants + checks + user-limit/strategy/traffic). Each OTHER listed
+# mode gets its own single-account inbound plus a connect + dns-resolve + tunnel-egress
+# + internet subtest block (named e.g. psk-connect / eap-tls-internet). Remove a mode
+# to skip it; omit this whole section to run only eap-mschapv2 (historical behaviour).
+[ikev2]
+modes = ["eap-mschapv2", "psk", "eap-tls"]
 
 # Traffic accounting on account A; *_mb pulled via HTTP range off a big file.
 [traffic_test]

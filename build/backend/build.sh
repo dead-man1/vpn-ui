@@ -152,6 +152,20 @@ build_arch() {
         -v "$REPO_ROOT/build/backend/accel-ppp-bundle.sh:/accel-ppp-bundle.sh:ro" \
         alpine:3.22 sh -e /accel-ppp-bundle.sh
 
+    # strongswan (IKEv2 server) — HARVESTED from Alpine's musl strongswan package into
+    # a relocatable tree. charon dlopens its features as plugins (libstrongswan-eap-radius.so,
+    # -eap-mschapv2, -eap-tls, -kernel-netlink, -vici, -x509, …), so it can't be one
+    # static binary — same reason as accel-ppp/pppd. Ships charon + swanctl + pki +
+    # /usr/lib/ipsec/plugins/*.so + ldd deps + musl loader as /out/strongswan-bundle.tgz,
+    # consumed by backend/strongswan.go. Separate Alpine 3.22 run so the recipe stays
+    # self-contained, like the bundles above.
+    step "Building strongswan (IKEv2) bundle for $goarch"
+    docker run --rm ${DOCKER_NET:-} --platform "$platform" \
+        -e ARCH="$muslarch" \
+        -v "$outdir:/out" \
+        -v "$REPO_ROOT/build/backend/strongswan-bundle.sh:/strongswan-bundle.sh:ro" \
+        alpine:3.22 sh -e /strongswan-bundle.sh
+
     ok "Done: $(ls -lh "$outdir")"
 }
 

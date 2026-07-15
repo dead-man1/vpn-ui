@@ -383,7 +383,7 @@ func (s *OpenVpnService) InitOpenVpn() {
 
 	logger.Info("OpenVPN: initializing services for", len(inbounds), "inbound(s)")
 
-	if err := s.GenerateAllConfigs(); err != nil {
+	if err := s.GenerateAllConfigs(false); err != nil {
 		logger.Warning("OpenVPN: failed to generate configs:", err)
 		return
 	}
@@ -395,8 +395,10 @@ func (s *OpenVpnService) InitOpenVpn() {
 	}
 }
 
-// GenerateAllConfigs regenerates all OpenVPN-related config files from the database state.
-func (s *OpenVpnService) GenerateAllConfigs() error {
+// GenerateAllConfigs regenerates all OpenVPN-related config files from the database
+// state. preserveLeases keeps live per-device lease files intact (client-only change)
+// so connected devices are not evicted; pass false for a full regenerate + restart.
+func (s *OpenVpnService) GenerateAllConfigs(preserveLeases bool) error {
 	inbounds, err := s.GetOpenVpnInbounds()
 	if err != nil {
 		return err
@@ -406,7 +408,7 @@ func (s *OpenVpnService) GenerateAllConfigs() error {
 	}
 
 	for _, inbound := range inbounds {
-		if err := s.generateServerConfigs(inbound); err != nil {
+		if err := s.generateServerConfigs(inbound, preserveLeases); err != nil {
 			logger.Warning("OpenVPN: skipping inbound", inbound.Id, err)
 			continue
 		}
@@ -419,7 +421,7 @@ func (s *OpenVpnService) GenerateAllConfigs() error {
 }
 
 // generateServerConfigs writes the UDP and TCP server config files for an OpenVPN inbound.
-func (s *OpenVpnService) generateServerConfigs(inbound *model.Inbound) error {
+func (s *OpenVpnService) generateServerConfigs(inbound *model.Inbound, preserveLeases bool) error {
 	settings, err := s.parseSettings(inbound)
 	if err != nil {
 		return err
@@ -454,7 +456,7 @@ func (s *OpenVpnService) generateServerConfigs(inbound *model.Inbound) error {
 		if err := s.writeFile(confPath, conf); err != nil {
 			return err
 		}
-		if err := s.writeClientConfigDir(inbound, settings, proto); err != nil {
+		if err := s.writeClientConfigDir(inbound, settings, proto, preserveLeases); err != nil {
 			logger.Warning("OpenVPN: CCD write failed for inbound", inbound.Id, err)
 		}
 	}
@@ -473,7 +475,7 @@ func ovpnProcName(inboundId int, proto string) string {
 // source-IP rules the dokodemo-door path can match — the same trick L2TP/PPTP
 // use. Lookups are keyed by common-name, which username-as-common-name sets to
 // the authenticated username (client.ID).
-func (s *OpenVpnService) writeClientConfigDir(inbound *model.Inbound, settings *openvpnSettings, proto string) error {
+func (s *OpenVpnService) writeClientConfigDir(inbound *model.Inbound, settings *openvpnSettings, proto string, preserveLeases bool) error {
 	ccdDir := fmt.Sprintf("%s/ccd-%s", s.configDir(inbound.Id), proto)
 	// Rebuild from scratch so deleted/renamed users don't leave stale pins.
 	os.RemoveAll(ccdDir)
@@ -500,7 +502,13 @@ func (s *OpenVpnService) writeClientConfigDir(inbound *model.Inbound, settings *
 	// Fresh lease dir on every (re)gen — a config change restarts the daemon, dropping
 	// all sessions, so no live lease can be lost here.
 	leaseDir := fmt.Sprintf("%s/leases-%s", s.configDir(inbound.Id), proto)
-	os.RemoveAll(leaseDir)
+	// preserveLeases keeps live per-device lease files for a client-only change (add/
+	// edit) so connected devices aren't evicted. A full regenerate (inbound change /
+	// restart) wipes them: the restart drops all sessions, and stale leases would
+	// otherwise make the connect hook treat freed IPs as still taken.
+	if !preserveLeases {
+		os.RemoveAll(leaseDir)
+	}
 	_ = os.MkdirAll(leaseDir, 0755)
 
 	// Publish the User Limit Strategy for the connect hook: "reject" refuses an extra

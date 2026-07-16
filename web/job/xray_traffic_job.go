@@ -24,7 +24,8 @@ type XrayTrafficJob struct {
 	ocservService   service.OcservService
 	sstpService     service.SstpService
 	ikev2Service    service.Ikev2Service
-	wgcService    service.WgcService
+	wgcService      service.WgcService
+	mtprotoService  service.MtprotoService
 	nftService      service.NftService
 	radiusService   *service.RadiusService
 	sweeper         *rbridge.Sweeper
@@ -98,9 +99,16 @@ func (j *XrayTrafficJob) Run() {
 		"openconnect": j.radiusService.GetSessions("openconnect"),
 		"sstp":        j.radiusService.GetSessions("sstp"),
 		"ikev2":       j.radiusService.GetSessions("ikev2"),
-		"wg-c":       j.radiusService.GetSessions("wg-c"),
+		"wg-c":        j.radiusService.GetSessions("wg-c"),
 	}
 	clientTraffics = append(clientTraffics, j.nftService.CollectAndResetTraffic(vpnSessions)...)
+
+	// MTProto bills from telemt's own per-user counters instead of the nft per-IP
+	// path above. It has to: it is a userspace relay, so no client ever gets a
+	// tunnel IP for a counter to be keyed on. Routing it through the nft path
+	// anyway would fail SILENTLY (AddClientAccounting swallows every nft error and
+	// returns nil), leaving mtproto accounts permanently online and billing zero.
+	clientTraffics = append(clientTraffics, j.mtprotoService.CollectTraffic()...)
 
 	// Level-triggered enforcement: disconnect any STILL-connected client that is no
 	// longer allowed (quota/expiry hit, or disabled in settings). The edge-triggered
@@ -116,6 +124,10 @@ func (j *XrayTrafficJob) Run() {
 	j.ocservService.KillDisabledSessions()
 	j.sstpService.KillDisabledSessions()
 	j.ikev2Service.KillDisabledSessions()
+	// MTProto: re-renders [access.user_enabled] from client_traffics. telemt's config
+	// watcher applies it and cancels the disabled accounts' live sessions itself, so
+	// there is no separate kill path and no daemon restart.
+	j.mtprotoService.KillDisabledSessions()
 
 	// Skip DB update if no traffic to process
 	if len(traffics) == 0 && len(clientTraffics) == 0 {
@@ -126,6 +138,14 @@ func (j *XrayTrafficJob) Run() {
 	if err != nil {
 		logger.Warning("add inbound traffic failed:", err)
 	}
+	// AddTraffic is where THIS tick's bytes land and a crossed quota flips the account
+	// to disabled, so the sweep above (which ran before it) could only ever see the
+	// PREVIOUS tick's verdict: an account that blew its quota kept relaying for one
+	// more full interval. Re-run it here so the same tick that detects the overage
+	// also ends the session, halving worst-case overshoot. Idempotent and cheap: it
+	// re-renders the config and generateServerConfig now skips writing when the bytes
+	// are unchanged, so a no-op tick costs a read and no reload.
+	j.mtprotoService.KillDisabledSessions()
 	// Enforce limits on L2TP clients (kill sessions, regenerate chap-secrets)
 	if len(l2tpDisabledEmails) > 0 {
 		j.l2tpService.DisableClients(l2tpDisabledEmails)

@@ -26,7 +26,8 @@ type InboundController struct {
 	ocservService  service.OcservService
 	sstpService    service.SstpService
 	ikev2Service   service.Ikev2Service
-	wgcService   service.WgcService
+	wgcService     service.WgcService
+	mtprotoService service.MtprotoService
 }
 
 // NewInboundController creates a new InboundController and sets up its routes.
@@ -231,6 +232,33 @@ func (a *InboundController) ikev2Changed(clientOnly bool) {
 	a.xrayService.SetToNeedRestart()
 }
 
+// onMtprotoChanged regenerates the telemt config when an MTProto inbound is modified.
+//
+// Unlike its siblings there is no addressing to expand (no tunnel, so no 10.x pool,
+// no AutoExpandVpnRanges/ResetAllocations) and no routing to install (egress reaches
+// Xray through the paired socks inbound, not nftables).
+//
+// Client-only changes do NOT restart telemt: it watches its config file with inotify
+// and applies [access.*] edits live, cancelling only the affected accounts' sessions.
+// Inbound-level changes (port, modes, ad tag, upstream) are restart-only, because
+// they live in sections telemt reads once at startup.
+func (a *InboundController) onMtprotoChanged()       { a.mtprotoChanged(false) }
+func (a *InboundController) onMtprotoClientChanged() { a.mtprotoChanged(true) }
+func (a *InboundController) mtprotoChanged(clientOnly bool) {
+	if err := a.mtprotoService.GenerateAllConfigs(); err != nil {
+		logger.Warning("MTProto: config generation failed:", err)
+	}
+	if !clientOnly {
+		if err := a.mtprotoService.RestartServices(); err != nil {
+			logger.Warning("MTProto: service restart failed:", err)
+		}
+	}
+	a.mtprotoService.KillDisabledSessions()
+	// The paired socks inbound (and thus this inbound's routing tag) is built from
+	// the mtproto settings, so Xray must pick the change up.
+	a.xrayService.SetToNeedRestart()
+}
+
 // onWgcChanged reconciles WireGuard (C) keys + the kernel interface peer set when a
 // wgc inbound is modified. Like IKEv2 it routes through Xray via dokodemo-door, but
 // there is NO daemon: each inbound is a kernel wgc<id> interface driven by wgctrl.
@@ -368,6 +396,8 @@ func (a *InboundController) addInbound(c *gin.Context) {
 		a.onIkev2Changed()
 	} else if inbound.Protocol == model.WGC {
 		a.onWgcChanged()
+	} else if inbound.Protocol == model.MTPROTO {
+		a.onMtprotoChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -410,6 +440,8 @@ func (a *InboundController) delInbound(c *gin.Context) {
 		a.onIkev2Changed()
 	} else if oldInbound != nil && oldInbound.Protocol == model.WGC {
 		a.onWgcChanged()
+	} else if oldInbound != nil && oldInbound.Protocol == model.MTPROTO {
+		a.onMtprotoChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -460,6 +492,8 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 		a.onIkev2Changed()
 	} else if inbound.Protocol == model.WGC {
 		a.onWgcChanged()
+	} else if inbound.Protocol == model.MTPROTO {
+		a.onMtprotoChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -562,6 +596,8 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 		a.onIkev2ClientChanged()
 	} else if data.Protocol == model.WGC {
 		a.onWgcClientChanged()
+	} else if data.Protocol == model.MTPROTO {
+		a.onMtprotoClientChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -627,6 +663,8 @@ func (a *InboundController) delInboundClient(c *gin.Context) {
 		a.onIkev2Changed()
 	} else if oldInbound != nil && oldInbound.Protocol == model.WGC {
 		a.onWgcChanged()
+	} else if oldInbound != nil && oldInbound.Protocol == model.MTPROTO {
+		a.onMtprotoChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -671,6 +709,8 @@ func (a *InboundController) updateInboundClient(c *gin.Context) {
 		a.onIkev2ClientChanged()
 	} else if inbound.Protocol == model.WGC {
 		a.onWgcClientChanged()
+	} else if inbound.Protocol == model.MTPROTO {
+		a.onMtprotoClientChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -717,6 +757,8 @@ func (a *InboundController) bulkUpdateClients(c *gin.Context) {
 			a.onIkev2ClientChanged()
 		case string(model.WGC):
 			a.onWgcClientChanged()
+		case string(model.MTPROTO):
+			a.onMtprotoClientChanged()
 		default:
 			xrayRestart = true
 		}
@@ -751,6 +793,7 @@ func (a *InboundController) resetClientTraffic(c *gin.Context) {
 	a.onSstpClientChanged()
 	a.onIkev2ClientChanged()
 	a.onWgcClientChanged()
+	a.onMtprotoClientChanged()
 }
 
 // resetAllTraffics resets all traffic counters across all inbounds.
@@ -770,6 +813,7 @@ func (a *InboundController) resetAllTraffics(c *gin.Context) {
 	a.onSstpClientChanged()
 	a.onIkev2ClientChanged()
 	a.onWgcClientChanged()
+	a.onMtprotoClientChanged()
 }
 
 // resetAllClientTraffics resets traffic counters for all clients in a specific inbound.
@@ -795,6 +839,7 @@ func (a *InboundController) resetAllClientTraffics(c *gin.Context) {
 	a.onSstpClientChanged()
 	a.onIkev2ClientChanged()
 	a.onWgcClientChanged()
+	a.onMtprotoClientChanged()
 }
 
 // importInbound imports an inbound configuration from provided data.

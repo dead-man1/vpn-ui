@@ -27,7 +27,8 @@ const (
 	OPENCONNECT Protocol = "openconnect"
 	SSTP        Protocol = "sstp"
 	IKEV2       Protocol = "ikev2"
-	WGC       Protocol = "wg-c"
+	WGC         Protocol = "wg-c"
+	MTPROTO     Protocol = "mtproto"
 	// UI stores Hysteria v1 and v2 both as "hysteria" and uses
 	// settings.version to discriminate. Imports from outside the panel
 	// can carry the literal "hysteria2" string, so IsHysteria below
@@ -41,6 +42,15 @@ const (
 // with the literal v2 string would otherwise fall through (#4081).
 func IsHysteria(p Protocol) bool {
 	return p == Hysteria || p == Hysteria2
+}
+
+// ClientExternalProxy is one alternate endpoint rendered into an account's links
+// instead of this server's own address (a relay/CDN in front of the proxy). It
+// affects generated links only: no daemon ever reads it.
+type ClientExternalProxy struct {
+	Dest   string `json:"dest"`
+	Port   int    `json:"port"`
+	Remark string `json:"remark"`
 }
 
 // User represents a user account in the vpn-ui panel.
@@ -152,6 +162,23 @@ type Client struct {
 	SubID      string `json:"subId" form:"subId"`           // Subscription identifier
 	Comment    string `json:"comment" form:"comment"`       // Client comment
 	Reset      int    `json:"reset" form:"reset"`           // Reset period in days
-	CreatedAt  int64  `json:"created_at,omitempty"`         // Creation timestamp
-	UpdatedAt  int64  `json:"updated_at,omitempty"`         // Last update timestamp
+
+	// MTProto Proxy per-account settings. Every client posted to the panel is
+	// normalized through THIS struct, so a field missing here is silently dropped no
+	// matter what the UI sent: which for mtproto means an account with no secret and
+	// no modes, filtered out of the generated config, leaving the daemon refusing to
+	// start with "No users configured". All are omitempty so no other protocol's
+	// client JSON grows a single byte.
+	Secret        string                `json:"secret,omitempty"`        // 32-hex credential (identity is Email)
+	ModeClassic   bool                  `json:"modeClassic,omitempty"`   // accept this account's bare secret
+	ModeSecure    bool                  `json:"modeSecure,omitempty"`    // accept its "dd" secret
+	ModeTls       bool                  `json:"modeTls,omitempty"`       // accept its "ee" (FakeTLS) secret
+	TlsDomain     string                `json:"tlsDomain,omitempty"`     // SNI its FakeTLS link fronts
+	AdtagEnable   bool                  `json:"adtagEnable,omitempty"`   // credit sponsored channels to Adtag
+	Adtag         string                `json:"adtag,omitempty"`         // 32 hex from @MTProxybot
+	UserLimit     *int                  `json:"userLimit,omitempty"`     // max devices (distinct IPs); nil=absent, 0=no limit
+	ExternalProxy []ClientExternalProxy `json:"externalProxy,omitempty"` // alternate link endpoints (links only)
+
+	CreatedAt int64 `json:"created_at,omitempty"` // Creation timestamp
+	UpdatedAt int64 `json:"updated_at,omitempty"` // Last update timestamp
 }

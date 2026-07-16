@@ -47,11 +47,14 @@ const AccountExport = {
           || proto === Protocols.OPENVPN || proto === Protocols.OPENCONNECT
           || proto === Protocols.SSTP || proto === Protocols.IKEV2);
         const isWgc = (proto === Protocols.WGC);
+        const isMtproto = (proto === Protocols.MTPROTO);
+        // MTProto has no username (identity = email, the wg-c model) and no UUID; its
+        // credential is the secret, which is already embedded in each link.
         const username = vpnUserPass ? (client.id || client.email || '') : (client.email || '');
-        const uuid = (!vpnUserPass && !isWgc && client.id
+        const uuid = (!vpnUserPass && !isWgc && !isMtproto && client.id
           && client.id !== client.password && client.id !== client.email) ? client.id : '';
 
-        cards.push({
+        const base = {
           remark: dbInbound.remark || inbound.remark || '',
           protocol: (dbInbound.protocol || '').toUpperCase(),
           network: AccountExport._network(dbInbound, inbound),
@@ -67,7 +70,28 @@ const AccountExport = {
           total: client.totalGB > 0 ? SizeFormatter.sizeFormat(client.totalGB) : '∞',
           enable: !!client.enable,
           link: link,
-        });
+        };
+
+        // MTProto: one account yields one link PER ENABLED MODE (and per external-proxy
+        // endpoint), and each is a separately usable profile. Emit a card each, so the
+        // PDF draws a QR per mode and the TXT lists them individually, rather than
+        // silently exporting only the first link. An account with every mode off
+        // produces no links and so no card, it has nothing to hand out.
+        if (isMtproto) {
+          let mtLinks = [];
+          try { mtLinks = inbound.genAllLinks('', app.remarkModel || '-ieo', client) || []; }
+          catch (e) { mtLinks = []; }
+          for (const l of mtLinks) {
+            cards.push(Object.assign({}, base, {
+              protocol: 'MTPROTO, ' + (l.remark || '').split(app.remarkModel ? app.remarkModel.charAt(0) : '-').pop(),
+              password: client.secret || '',
+              link: l.link,
+            }));
+          }
+          continue;
+        }
+
+        cards.push(base);
       } catch (e) {
         if (typeof console !== 'undefined') console.warn('export: skipped account', t, e);
       }

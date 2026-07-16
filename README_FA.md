@@ -16,6 +16,7 @@
 - SSTP
 - IKEv2
 - WireGuard (C)
+- MTProto Proxy (Telegram)
 
 ## امکانات جدید
 
@@ -79,6 +80,7 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 ```mermaid
 flowchart TB
   Client["VPN Client<br/>(L2TP/IPsec · PPTP · OpenVPN · OpenConnect · SSTP · IKEv2 · WireGuard (C))"]
+  TGC["Telegram Client<br/>(MTProto Proxy)"]
 
   subgraph PANEL["vpn-ui panel — root process"]
     PROC["procmgr<br/>supervises the daemons"]
@@ -90,6 +92,7 @@ flowchart TB
 
   subgraph DAEMON["Bundled VPN daemons (panel children)"]
     D["xl2tpd + strongSwan/charon · pptpd · openvpn · ocserv · accel-ppp<br/>(pppd for L2TP/PPTP · accel-ppp for SSTP · charon for IKEv2)"]
+    MT["telemt (MTProto Proxy)<br/>userspace relay: no tunnel, no pool IP"]
   end
 
   subgraph KERNEL["Linux kernel data plane"]
@@ -100,7 +103,8 @@ flowchart TB
 
   subgraph XRAY["Xray-core (bundled, panel-managed)"]
     DOKO["dokodemo-door inbound<br/>sockopt tproxy, mark 255"]
-    ROUTE{"routing:<br/>match source IP → account"}
+    SOCKS["socks inbound (loopback)<br/>tag = MTProto inbound<br/>username = account"]
+    ROUTE{"routing:<br/>match source IP → account<br/>or socks username → account"}
     OUT["outbound<br/>freedom / proxy / WARP"]
   end
 
@@ -109,6 +113,7 @@ flowchart TB
   %% control plane
   Client -->|"tunnel + credentials"| D
   Client -.->|"WireGuard (C): in-kernel wgc, no daemon"| IFACE
+  TGC -->|"obfuscated2 / dd / FakeTLS secret"| MT
   D -.->|"MS-CHAPv2 Access-Request"| RAD
   RAD -.->|"Accept + pool IP"| D
   D -.->|"user-pass / client-connect"| HOOK
@@ -121,9 +126,12 @@ flowchart TB
   D -->|"decapsulated packets"| IFACE
   IFACE --> NFT --> RULE --> DOKO
   DOKO --> ROUTE --> OUT --> NET
+  MT -->|"relayed TCP, socks user = account"| SOCKS
+  SOCKS --> ROUTE
 
   %% accounting + return
   OUT -.->|"per-account counters"| STAT
+  MT -.->|"per-account octets (Prometheus scrape)"| STAT
   STAT -.->|"disconnect over-limit"| RAD
   NET -.->|"replies (symmetric path back)"| OUT
 ```
@@ -200,6 +208,11 @@ git clone https://github.com/Sir-MmD/vpn-ui.git && cd vpn-ui
 | `sstp` | connect variants + checks + peer reachability (SSTP/accel-ppp, PPP-over-TLS) |
 | `ikev2` | connect + checks + peer reachability (IKEv2/IPsec, strongSwan charon; eap-mschapv2 + psk + eap-tls) |
 | `wg-c` | connect + checks + peer reachability + per-account usage/termination (WireGuard C, in-kernel wgctrl, gateway /29, + preshared-key mode) |
+| `mtproto` | alias: runs every MTProto phase below (MTProto Proxy, telemt) |
+| `mtproto-classic` | handshake + relay to a real Telegram DC + wrong-secret control + usage (obfuscated2) |
+| `mtproto-secure` | same, "dd" random-padding secret |
+| `mtproto-tls` | same + FakeTLS ServerHello HMAC verified, "ee" secret |
+| `mtproto-toggle` | editing an account's modes takes effect on the RUNNING daemon (no restart) |
 | `bulk-ops` | bulk client add/sub/enable/disable + TXT/PDF export via API |
 | `backup-restore` | DB export + import round-trip |
 | `warp-socks` | Cloudflare warp-cli SOCKS install + egress |

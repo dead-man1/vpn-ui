@@ -26,6 +26,9 @@ CLIENT_PKGS_APT = (
     "pptp-linux ppp-mppe openconnect sstp-client vpnc-scripts "
     # WireGuard (C) client: wg + wg-quick (the kernel module is in-kernel on Ubuntu).
     "wireguard-tools "
+    # MTProto Proxy client: the prober speaks the protocol itself (no tunnel, no
+    # client daemon), and needs AES-CTR for the obfuscated2/FakeTLS handshakes.
+    "python3-cryptography "
     "curl iproute2 net-tools dnsutils"
 )
 

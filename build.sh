@@ -71,9 +71,10 @@ fi
 
 # 2. Static VPN daemon bundle (built in Docker/Alpine — pinned + slow, so cached).
 #    Rebuild when the daemons OR the libreswan (ALL_ALGS / MODP1024) OR the
-#    accel-ppp (SSTP) OR the strongswan (IKEv2) bundle are missing, so a checkout that
-#    predates any bundle still picks it up.
-if ! compgen -G "backend/bin/$ARCH/*" > /dev/null 2>&1 || [[ ! -f "backend/bin/$ARCH/libreswan-bundle.tgz" ]] || [[ ! -f "backend/bin/$ARCH/accel-ppp-bundle.tgz" ]] || [[ ! -f "backend/bin/$ARCH/strongswan-bundle.tgz" ]]; then
+#    accel-ppp (SSTP) OR the strongswan (IKEv2) OR the telemt (MTProto Proxy) bundle
+#    are missing, so a checkout that predates any bundle still picks it up.
+#    telemt is a flat binary, not a .tgz tree, so it is checked by its own name.
+if ! compgen -G "backend/bin/$ARCH/*" > /dev/null 2>&1 || [[ ! -f "backend/bin/$ARCH/libreswan-bundle.tgz" ]] || [[ ! -f "backend/bin/$ARCH/accel-ppp-bundle.tgz" ]] || [[ ! -f "backend/bin/$ARCH/strongswan-bundle.tgz" ]] || [[ ! -f "backend/bin/$ARCH/telemt" ]]; then
     step "VPN daemon bundle"
     bash build/backend/build.sh "$ARCH"
 else

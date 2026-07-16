@@ -41,8 +41,8 @@ func TestAllTemplatesParseAndProtocolFormsDefined(t *testing.T) {
 	if walkErr != nil {
 		t.Fatalf("walk htmlFS: %v", walkErr)
 	}
-	// every VPN protocol form must be defined (form/wgc is the new one)
-	for _, name := range []string{"form/wgc", "form/ikev2", "form/sstp", "form/openconnect", "form/openvpn", "form/pptp", "form/l2tp"} {
+	// every VPN protocol form must be defined (form/mtproto is the new one)
+	for _, name := range []string{"form/mtproto", "form/wgc", "form/ikev2", "form/sstp", "form/openconnect", "form/openvpn", "form/pptp", "form/l2tp"} {
 		if tpl.Lookup(name) == nil {
 			t.Errorf("template %q not defined — its protocol form failed to parse or is mis-named", name)
 		}

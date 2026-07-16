@@ -115,7 +115,8 @@ type CoreService struct {
 	ocservService  OcservService
 	sstpService    SstpService
 	ikev2Service   Ikev2Service
-	wgcService   WgcService
+	wgcService     WgcService
+	mtprotoService MtprotoService
 	xrayService    XrayService
 }
 
@@ -313,6 +314,7 @@ func (s *CoreService) GetCoresStatus() []CoreStatus {
 		s.sstpStatus(),
 		s.ikev2Status(),
 		s.wgcStatus(),
+		s.mtprotoStatus(),
 		s.radiusStatus(),
 	}
 }
@@ -531,6 +533,31 @@ func (s *CoreService) wgcStatus() CoreStatus {
 	return cs
 }
 
+// mtprotoStatus reports the MTProto Proxy core. Unlike the tunnel protocols there
+// is no kernel module or interface to probe: telemt is a plain userspace relay, so
+// availability is just "is the bundled binary present" and liveness is "is any
+// per-inbound child running".
+func (s *CoreService) mtprotoStatus() CoreStatus {
+	cs := CoreStatus{Name: "mtproto"}
+	inbounds, _ := s.mtprotoService.GetMtprotoInbounds()
+	cs.Inbounds = len(inbounds)
+	if !s.mtprotoService.Available() {
+		cs.State = CoreNotInstalled
+		cs.Detail = "telemt binary not bundled for this architecture"
+		return cs
+	}
+	cs.Version = daemonVersion("telemt")
+	switch {
+	case cs.Inbounds == 0:
+		cs.State = CoreIdle
+	case procMgr.AnyRunningWithPrefix("mtproto-server-"):
+		cs.State = CoreRunning
+	default:
+		cs.State = CoreStopped
+	}
+	return cs
+}
+
 func (s *CoreService) radiusStatus() CoreStatus {
 	cs := CoreStatus{Name: "radius"}
 	// RADIUS is embedded in the panel binary, so its version is the panel's.
@@ -597,7 +624,7 @@ func (s *CoreService) IsProvisioned() bool {
 // APPEND to this list when adding a new host-dependent protocol. An install that
 // was already provisioned for the older set is then told to re-run setup for the
 // new protocol only (see MissingProtocols), so upgrades don't silently miss it.
-var provisionProtocols = []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc"}
+var provisionProtocols = []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "mtproto"}
 
 // provisionBaseline is FROZEN — the protocol set as of when per-protocol setup
 // tracking was introduced. Do NOT add to it; new protocols go in provisionProtocols
@@ -679,6 +706,8 @@ func (s *CoreService) RestartCore(name string) error {
 		return s.ikev2Service.RestartServices()
 	case "wgc":
 		return s.wgcService.RestartServices()
+	case "mtproto":
+		return s.mtprotoService.RestartServices()
 	case "radius":
 		return RestartRadius()
 	case "ipsec":
@@ -693,7 +722,7 @@ func (s *CoreService) RestartCore(name string) error {
 // one failing core doesn't abort the rest.
 func (s *CoreService) RestartAll() error {
 	var errs []string
-	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "radius"} {
+	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "mtproto", "radius"} {
 		if err := s.RestartCore(name); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 		}
@@ -728,6 +757,8 @@ func (s *CoreService) StopCore(name string) error {
 		return s.ikev2Service.StopServices()
 	case "wgc":
 		return s.wgcService.StopServices()
+	case "mtproto":
+		return s.mtprotoService.StopServices()
 	case "radius":
 		return StopRadius()
 	case "ipsec":
@@ -763,6 +794,8 @@ func (s *CoreService) CoreLogs(name string) string {
 			up = "yes"
 		}
 		return fmt.Sprintf("WireGuard (C) runs in-kernel via wgctrl (no daemon log).\nModule version: %s\nInterface(s) up: %s", wireguardModuleVersion(), up)
+	case "mtproto":
+		return procMgr.LogsByPrefix("mtproto-server-")
 	case "xray":
 		out := filterLogs("xray")
 		if out == "" {

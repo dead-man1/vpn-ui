@@ -19,6 +19,7 @@ import (
 	"time"
 	_ "unsafe"
 
+	"github.com/mhsanaei/3x-ui/v2/backend"
 	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/corebundle"
 	"github.com/mhsanaei/3x-ui/v2/database"
@@ -193,6 +194,28 @@ func runWebServer() {
 		logger.Warning("could not extract bundled geo files:", exErr)
 	} else if len(geo) > 0 {
 		logger.Info("extracted bundled geo files:", geo)
+	}
+
+	// Same deal for the bundled VPN daemons, and for the same reason: what runs must
+	// be what this binary ships. They used to be extracted ONLY by the panel's
+	// one-time provisioning (runProvisionSteps, gated by vpnProvisioned), so an
+	// already-provisioned host kept its original daemons forever and a panel upgrade
+	// could never deliver a daemon fix. The symptom is brutal to diagnose, because
+	// the panel is new and writes correct config while an OLD daemon reads it and
+	// silently ignores whatever it does not understand (telemt drops unknown keys,
+	// so per-account modes just stopped being enforced). Fresh installs never see
+	// it, which is exactly why the E2E cannot catch it: a new VM has no bin/ yet.
+	//
+	// Extract before the web server starts the daemons, so they exec the new files.
+	// A daemon somehow still running keeps its old inode (writeExecutable renames
+	// rather than overwrites, to dodge ETXTBSY) and picks the new one up on its next
+	// restart.
+	if backend.Available() {
+		if files, exErr := backend.Extract(); exErr != nil {
+			logger.Warning("could not extract bundled VPN daemons:", exErr)
+		} else if len(files) > 0 {
+			logger.Info("extracted bundled VPN daemons:", len(files), "files to", backend.BinDir())
+		}
 	}
 
 	var server *web.Server
@@ -1240,7 +1263,7 @@ func ovpnSpawnEvict(inboundId int, proto, ip, raddr string) {
 	}
 	cmd := exec.Command(exe, "openvpn-evict", strconv.Itoa(inboundId), proto, ip, raddr)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // survive the hook exiting
-	_ = cmd.Start()                                       // no Wait — detached
+	_ = cmd.Start()                                      // no Wait: detached
 }
 
 // openvpnEvict runs detached from the (synchronous, management-blocking) client-

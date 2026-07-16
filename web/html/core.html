@@ -626,11 +626,11 @@
         this.reconnectTimer = setTimeout(probe, 20000);
       },
       coreTitle(name) {
-        return ({ xray: 'Xray', l2tp: 'L2TP', ipsec: 'IPsec', pptp: 'PPTP', openvpn: 'OpenVPN', openconnect: 'OpenConnect (cisco)', sstp: 'SSTP', ikev2: 'IKEv2', wgc: 'WireGuard (C)', radius: 'RADIUS' })[name] || name;
+        return ({ xray: 'Xray', l2tp: 'L2TP', ipsec: 'IPsec', pptp: 'PPTP', openvpn: 'OpenVPN', openconnect: 'OpenConnect (cisco)', sstp: 'SSTP', ikev2: 'IKEv2', wgc: 'WireGuard (C)', mtproto: 'MTProto Proxy', radius: 'RADIUS' })[name] || name;
       },
       coreBackend(name) {
         // The actual software powering each core (shown in the Backend row).
-        return ({ xray: 'Xray-core', l2tp: 'xl2tpd', ipsec: 'strongSwan (charon)', pptp: 'pptpd', openvpn: 'OpenVPN', openconnect: 'ocserv', sstp: 'accel-ppp', ikev2: 'strongSwan (charon)', wgc: 'WireGuard (kernel)', radius: 'Built-in (vpn-ui)' })[name] || '—';
+        return ({ xray: 'Xray-core', l2tp: 'xl2tpd', ipsec: 'strongSwan (charon)', pptp: 'pptpd', openvpn: 'OpenVPN', openconnect: 'ocserv', sstp: 'accel-ppp', ikev2: 'strongSwan (charon)', wgc: 'WireGuard (kernel)', mtproto: 'telemt', radius: 'Built-in (vpn-ui)' })[name] || '-';
       },
       coreIcon(name) {
         // A single lock icon represents every core (Xray + all VPN daemons).

@@ -51,6 +51,54 @@ IKEV2_USER_LIMIT = 2
 # (one keypair can't split into distinct simultaneous device IPs — the /29 IS the block).
 WGC_USER_LIMIT = 6
 
+# ---- MTProto Proxy -----------------------------------------------------------
+# 8443, not 443: the panel itself may hold 443, and MTProto needs a real TCP port
+# of its own (there is no tunnel to share). FakeTLS plausibility does not matter to
+# the prober, which checks the ServerHello HMAC rather than a browser's opinion.
+MTPROTO_PORT = 8443
+MTPROTO_TLS_DOMAIN = "www.google.com"
+# 3 distinct client IPs per account. telemt enforces this itself (user_max_unique_ips)
+# by refusing the excess device: there is no evict-oldest strategy to choose.
+MTPROTO_USER_LIMIT = 3
+# Fixed per-account secrets so the harness can build the client-facing shapes without
+# reading them back. Real deployments have the panel mint these.
+_MT_SECRET = ["00112233445566778899aabbccddeeff",
+              "ffeeddccbbaa99887766554433221100"]
+
+
+def _mt_client(acct: Account, idx: int, modes=("classic", "secure", "tls")) -> dict:
+    """An mtproto client as the panel API expects it.
+
+    Identity is the EMAIL (there is no username: the wg-c model); the credential is
+    `secret`. Modes / FakeTLS domain / User Limit / ad tag / external proxy are all
+    PER CLIENT, so they live here rather than on the inbound.
+
+    `id` is still sent because the panel's shared client plumbing is id-keyed; it
+    mirrors the email exactly, the way wg-c does it.
+    """
+    return {"id": acct.email, "email": acct.email, "secret": _MT_SECRET[idx],
+            "enable": True,
+            "modeClassic": "classic" in modes,
+            "modeSecure": "secure" in modes,
+            "modeTls": "tls" in modes,
+            "tlsDomain": MTPROTO_TLS_DOMAIN,
+            "adtagEnable": False, "adtag": "",
+            "userLimit": MTPROTO_USER_LIMIT,
+            "externalProxy": [],
+            "expiryTime": 0, "totalGB": 0, "limitIp": 0,
+            "tgId": "", "subId": "", "comment": "", "reset": 0}
+
+
+def _mt_secret_shapes(base: str) -> dict:
+    """The same 16-byte secret in each client-facing shape. The prefix is what tells
+    the client (and telemt) which transport to speak:
+      classic -> bare, secure -> "dd"+secret, tls -> "ee"+secret+hex(domain)."""
+    return {
+        "classic": base,
+        "secure": "dd" + base,
+        "tls": "ee" + base + MTPROTO_TLS_DOMAIN.encode().hex(),
+    }
+
 # Ports for the SECOND same-protocol inbound (protocols.py multi-inbound test).
 # Distinct from the primary ports (openvpn udp 1194 / tcp 1443, l2tp 1701, pptp
 # 1723) and from each other so the panel's port-uniqueness check passes. NOTE:
@@ -285,10 +333,26 @@ class Inbound:
     # per-device client configs, fetched from the wgc-configs endpoint after build.
     wg_configs: dict = field(default_factory=dict)
 
+    # mtproto: {which: {mode: secret_hex}}, the per-account secret in each of the
+    # three client-facing shapes (bare / dd… / ee…+domain), built at inbound
+    # creation. MTProto has no config file to fetch: the secret IS the credential.
+    mt_secrets: dict = field(default_factory=dict)
+
+    # mtproto: {which: [mode, ...]}, the modes each account is ALLOWED, which the
+    # proxy enforces per account via [access.user_modes]. Accounts deliberately
+    # differ so the suite can tell per-account enforcement from per-inbound.
+    mt_modes: dict = field(default_factory=dict)
+
     def client_ip(self, which: str, transport: str = "udp", device: int = 0) -> str:
         """Tunnel IP for account A/B on this inbound. With user_limit K>1 each
         account owns an aligned K-block: host base = (index+1)*K, device d = base+d
         (mirrors Go vpnAccountDeviceIP). K==1 keeps the legacy 2+index host."""
+        if self.protocol == "mtproto":
+            # MTProto is a relay: the panel assigns no address, and the client keeps
+            # its own IP. Returning a plausible-looking 10.x here would be a lie the
+            # routing/dns-leak checks would then act on, so fail loudly instead.
+            raise AssertionError(
+                "mtproto has no tunnel IP: client_ip() must not be called for it")
         acct = self.accounts[which]
         if self.protocol == "openvpn":
             base = BASE["ovpn-tcp"] if transport == "tcp" else BASE["ovpn-udp"]
@@ -592,6 +656,52 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
 
     log(f"-> wgc-inbound [{wgs.status.value}] {wgs.detail}")
 
+    # ---- MTProto Proxy inbound ------------------------------------------
+    # telemt (protocol id `mtproto`). The ODD ONE: a userspace relay, so there is NO
+    # tunnel, NO 10.x block, NO BASE entry and NO RADIUS. All three connection modes
+    # are served at once by the single inbound: the client picks by its secret's
+    # prefix: so one inbound covers the classic/secure/tls phases. Ad tag stays OFF
+    # so this inbound egresses through Xray (the two are mutually exclusive; with the
+    # tag on, middle-proxy mode pins egress to a direct path).
+    log("-> creating mtproto inbound (telemt, all 3 modes, 2 accounts, user-limit 3)...")
+    mts = phase.add(SubTest("mtproto-inbound"))
+    try:
+        # A: all three modes. B: SECURE ONLY: deliberately different, so the suite can
+        # prove per-account enforcement rather than just per-inbound. The listener ends
+        # up allowing all three (the union), so B being refused on classic/tls can only
+        # come from [access.user_modes]; if that patch ever stopped working, B would
+        # start passing modes it does not hold and the mode-restriction subtest fails.
+        settings = {
+            "clients": [_mt_client(_acct("mtproto", 0), 0),
+                        _mt_client(_acct("mtproto", 1), 1, modes=("secure",))],
+        }
+        inb = panel.add_inbound("test-mtproto", MTPROTO_PORT, "mtproto", settings)
+        iid = inb["id"]
+        mt_ib = Inbound(
+            protocol="mtproto", inbound_id=iid, udp_port=0, tcp_port=MTPROTO_PORT,
+            accounts={"A": _acct("mtproto", 0), "B": _acct("mtproto", 1)},
+            user_limit=MTPROTO_USER_LIMIT)
+        # The panel does not mint these: we supplied them above, so build the
+        # client-facing shapes locally rather than fetching them back.
+        mt_ib.mt_secrets = {
+            "A": _mt_secret_shapes(_MT_SECRET[0]),
+            "B": _mt_secret_shapes(_MT_SECRET[1]),
+        }
+        # Which modes each account HOLDS, so the suite can assert both directions:
+        # an allowed mode must work, and a mode the account does not hold must be
+        # refused even though the listener accepts it for the other account.
+        mt_ib.mt_modes = {"A": ["classic", "secure", "tls"], "B": ["secure"]}
+        sc.inbounds["mtproto"] = mt_ib
+        mts.status = Status.PASS
+        mts.detail = (f"inbound {iid}, tcp {MTPROTO_PORT}, 2 accounts "
+                      f"(A: classic+secure+tls, B: secure-only: per-client modes), "
+                      f"tls_domain {MTPROTO_TLS_DOMAIN}")
+    except Exception as e:  # noqa: BLE001
+        mts.status = Status.ERROR
+        mts.detail = str(e)[:300]
+
+    log(f"-> mtproto-inbound [{mts.status.value}] {mts.detail}")
+
     # ---- source-IP routing rules (built-in outbounds, no external link) ----
     # Prove Xray routes by source IP using the two outbounds every config already
     # ships: `direct` (freedom) and `blocked` (blackhole). Author by email (the
@@ -607,8 +717,13 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
         tmpl = panel.get_xray_template()
         routing = tmpl.setdefault("routing", {})
         rules = routing.setdefault("rules", [])
-        a_emails = [ib.accounts["A"].email for ib in sc.inbounds.values()]
-        b_emails = [ib.accounts["B"].email for ib in sc.inbounds.values()]
+        # mtproto is excluded on purpose: these rules are email->source-IP, and the
+        # panel can only translate an email whose account owns a tunnel IP. MTProto
+        # assigns none (it is a relay), so its emails would stay as un-matchable
+        # `user` rules: routing for it is per-INBOUND, via its socks inbound's tag.
+        _routable = [ib for p, ib in sc.inbounds.items() if p != "mtproto"]
+        a_emails = [ib.accounts["A"].email for ib in _routable]
+        b_emails = [ib.accounts["B"].email for ib in _routable]
         # insert at the front so these win over the default catch-all / geoip rules
         rules.insert(0, {"type": "field", "outboundTag": "direct", "user": a_emails})
         rules.insert(1, {"type": "field", "outboundTag": "blocked", "user": b_emails})
@@ -632,6 +747,8 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
     try:
         want_ips = set()
         for ib in sc.inbounds.values():
+            if ib.protocol == "mtproto":
+                continue  # no tunnel IP to translate: excluded from these rules above
             if ib.protocol == "openvpn":
                 want_ips.add(ib.client_ip("B", "udp"))
                 want_ips.add(ib.client_ip("B", "tcp"))
@@ -687,8 +804,12 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
         xr.status = Status.ERROR
         xr.detail = str(e)[:300]
 
-    # fatal only if we couldn't build any inbound
-    if all(p not in sc.inbounds for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2")):
+    # Fatal only if we couldn't build any inbound. Every protocol must be listed:
+    # a protocol missing here is invisible to this check, so a run where only IT
+    # succeeded would still be declared a total failure and throw the good inbound
+    # away. ("wg-c" was missing until now: mtproto would have hit the same trap.)
+    if all(p not in sc.inbounds for p in ("openvpn", "l2tp", "pptp", "openconnect",
+                                          "sstp", "ikev2", "wg-c", "mtproto")):
         return None
     return sc
 

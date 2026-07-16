@@ -174,6 +174,10 @@ class DBInbound {
             case Protocols.WGC:
                 // WireGuard (C) is account-based (email identity, one keypair per account).
                 return true;
+            case Protocols.MTPROTO:
+                // MTProto Proxy is account-based: one secret per account, many
+                // accounts per inbound (the proxy matches the presented secret).
+                return true;
             case Protocols.SHADOWSOCKS:
                 return this.toInbound().isSSMultiUser;
             default:
@@ -205,6 +209,11 @@ class DBInbound {
             case Protocols.TROJAN:
             case Protocols.SHADOWSOCKS:
             case Protocols.HYSTERIA:
+                return true;
+            case Protocols.MTPROTO:
+                // MTProto accounts have real tg:// links (one per enabled mode), so
+                // they use the shared QR modal. Whether a GIVEN account has any is a
+                // per-client question the caller gates on, see aClientTable.
                 return true;
             default:
                 return false;

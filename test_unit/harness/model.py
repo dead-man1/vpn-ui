@@ -126,6 +126,24 @@ IKEV2_MODE_PHASES = [PHASE_IKEV2_EAPMSCHAP, PHASE_IKEV2_PSK, PHASE_IKEV2_EAPTLS]
 IKEV2_PHASE_BY_MODE = {"eap-mschapv2": PHASE_IKEV2_EAPMSCHAP,
                        "psk": PHASE_IKEV2_PSK, "eap-tls": PHASE_IKEV2_EAPTLS}
 PHASE_WGC = "wg-c"                        # WireGuard (C) — kernel wireguard via wgctrl
+PHASE_MTPROTO = "mtproto"                 # selection alias -> the per-mode phases below
+PHASE_MTPROTO_CLASSIC = "mtproto-classic"
+PHASE_MTPROTO_SECURE = "mtproto-secure"
+PHASE_MTPROTO_TLS = "mtproto-tls"
+# Each MTProto connection mode is its own phase/column. Unlike IKEv2's auth modes
+# (which are mutually exclusive per inbound), all three MTProto modes are served by
+# ONE inbound simultaneously: the client picks by its secret's prefix. So the modes
+# differ only in how the client dials, and they share a single inbound.
+MTPROTO_MODE_PHASES = [PHASE_MTPROTO_CLASSIC, PHASE_MTPROTO_SECURE, PHASE_MTPROTO_TLS]
+MTPROTO_PHASE_BY_MODE = {"classic": PHASE_MTPROTO_CLASSIC,
+                         "secure": PHASE_MTPROTO_SECURE, "tls": PHASE_MTPROTO_TLS}
+# Editing an account's modes, which the three phases above cannot cover: they read a
+# mode set that was fixed at inbound creation. telemt takes modes from TWO places -
+# [general.modes] (process-wide, the UNION over accounts) and [access.user_modes]
+# (per account), and the union only MOVES when an edit adds a mode no other account
+# had. Miss the hot-reload on either and the toggle silently does nothing until the
+# next restart, which is exactly what a user sees as "the backend ignores my toggle".
+PHASE_MTPROTO_TOGGLE = "mtproto-toggle"
 PHASE_BULK = "bulk-ops"
 PHASE_BACKUP = "backup-restore"
 PHASE_WARP = "warp-socks"
@@ -137,5 +155,7 @@ ALL_PHASES = [PHASE_CORE, PHASE_SETUP, PHASE_OPENVPN, PHASE_L2TP, PHASE_PPTP,
               PHASE_OPENCONNECT, PHASE_SSTP,
               PHASE_IKEV2_EAPMSCHAP, PHASE_IKEV2_PSK, PHASE_IKEV2_EAPTLS,
               PHASE_WGC,
+              PHASE_MTPROTO_CLASSIC, PHASE_MTPROTO_SECURE, PHASE_MTPROTO_TLS,
+              PHASE_MTPROTO_TOGGLE,
               PHASE_BULK, PHASE_BACKUP,
               PHASE_WARP, PHASE_RANDOM, PHASE_SYSTEMD, PHASE_UNINSTALL]

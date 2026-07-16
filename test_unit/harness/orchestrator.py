@@ -25,7 +25,9 @@ from .incus import Incus, image_exists, IncusError
 from .model import (JobResult, SubTest, Status, ALL_PHASES, PHASE_CORE, PHASE_SETUP,
                     PHASE_OPENVPN, PHASE_BULK, PHASE_BACKUP, PHASE_WARP, PHASE_RANDOM,
                     PHASE_SYSTEMD, PHASE_UNINSTALL,
-                    IKEV2_MODE_PHASES, IKEV2_PHASE_BY_MODE)
+                    IKEV2_MODE_PHASES, IKEV2_PHASE_BY_MODE,
+                    MTPROTO_MODE_PHASES, MTPROTO_PHASE_BY_MODE,
+                    PHASE_MTPROTO_TOGGLE)
 from .panel import Panel
 from ..report.report import write_reports
 
@@ -44,6 +46,9 @@ _PHASE_TAG = {
     "openconnect": "OCSERV", "sstp": "SSTP", "ikev2": "IKEV2",
     "ikev2-eap-mschapv2": "IKE-EAP", "ikev2-psk": "IKE-PSK", "ikev2-eap-tls": "IKE-TLS",
     "wg-c": "WGC",
+    "mtproto": "MTPROTO",
+    "mtproto-classic": "MT-CLAS", "mtproto-secure": "MT-DD", "mtproto-tls": "MT-TLS",
+    "mtproto-toggle": "MT-TOGL",
     "bulk-ops": "BULK",
     "backup-restore": "BACKUP", "warp-socks": "WARP", "random-cfg": "RANDOM",
     "systemd": "SYSTEMD", "uninstall": "UNINSTALL",
@@ -136,7 +141,9 @@ def run_job(spec: dict, index: int, cfg: dict,
         phase (e.g. only the host-only `export-js` id was passed)."""
         return phase in cfg.get("_selected", ALL_PHASES)
 
-    need_clients = any(_sel(p) for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2", "wg-c"))
+    need_clients = any(_sel(p) for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2", "wg-c",
+                                         "mtproto", "mtproto-classic", "mtproto-secure", "mtproto-tls",
+                                         "mtproto-toggle"))
     need_setup = (need_clients or _sel(PHASE_SETUP)
                   or _sel(PHASE_BULK) or _sel(PHASE_BACKUP))
 
@@ -280,6 +287,46 @@ def run_job(spec: dict, index: int, cfg: dict,
                 cB.disconnect_all()
                 cC.disconnect_all()
 
+        # --- mtproto: one phase per connection mode --------------------
+        # Unlike ikev2's auth modes (mutually exclusive per inbound), all three
+        # MTProto modes are served by the SAME inbound at once: the client picks by
+        # its secret's prefix. So these phases differ only in how the prober dials,
+        # and they share one inbound rather than rebuilding it per mode.
+        for mode in ("classic", "secure", "tls"):
+            ph_name = MTPROTO_PHASE_BY_MODE[mode]
+            if not _sel(ph_name):
+                continue
+            if _aborting():
+                break
+            log(f":: {ph_name}, handshake + relay to a real DC + accounting")
+            try:
+                protocols.run("mtproto", cA, cB, cC, sc, cfg, result, panel=panel,
+                              server_exec=server_exec, mode=mode)
+            except Exception as e:  # noqa: BLE001
+                result.phase(ph_name).add(
+                    SubTest(f"mtproto-{mode}-driver", Status.ERROR,
+                            str(e)[:200], traceback.format_exc()[-1500:]))
+            finally:
+                cA.disconnect_all()
+                cB.disconnect_all()
+                cC.disconnect_all()
+
+        # --- mtproto: editing an account's modes takes effect LIVE ------
+        # Runs after the per-mode phases because it rewrites account A's modes; it
+        # restores them at the end, but a failure mid-way must not decide another
+        # phase's result.
+        if _sel(PHASE_MTPROTO_TOGGLE) and not _aborting():
+            log(f":: {PHASE_MTPROTO_TOGGLE}, mode toggles reach the running daemon")
+            try:
+                protocols.run("mtproto-toggle", cA, cB, cC, sc, cfg, result,
+                              panel=panel, server_exec=server_exec)
+            except Exception as e:  # noqa: BLE001
+                result.phase(PHASE_MTPROTO_TOGGLE).add(
+                    SubTest("mtproto-toggle-driver", Status.ERROR,
+                            str(e)[:200], traceback.format_exc()[-1500:]))
+            finally:
+                cA.disconnect_all()
+
         # --- bulk client operations (pure panel API; once, after protocols so
         #     the bulk regen's daemon restarts can't race a live protocol test) ---
         if not _aborting() and _sel(PHASE_BULK):
@@ -421,7 +468,7 @@ def main(argv=None):
     #     phase; substrate phases always run. A bare "ikev2" in _selected is a MARKER
     #     (not a report column, not in ALL_PHASES) kept so the l2tp/charon port
     #     arbitration and need_clients still see ikev2 as active. ---
-    valid_ids = ALL_PHASES + ["ikev2", "export-js", "all"]
+    valid_ids = ALL_PHASES + ["ikev2", "mtproto", "export-js", "all"]
     tests = [t.strip() for t in args.tests.split(",") if t.strip()]
     unknown = [t for t in tests if t not in valid_ids]
     if unknown:
@@ -434,8 +481,13 @@ def main(argv=None):
         selected = {t for t in tests if t in ALL_PHASES}
         if "ikev2" in tests:                      # alias -> every ikev2 auth-mode phase
             selected.update(IKEV2_MODE_PHASES)
+        if "mtproto" in tests:                    # alias -> every mtproto mode phase
+            selected.update(MTPROTO_MODE_PHASES)
+            selected.add(PHASE_MTPROTO_TOGGLE)
     if selected & set(IKEV2_MODE_PHASES):         # marker: any ikev2 mode active
         selected.add("ikev2")
+    if selected & (set(MTPROTO_MODE_PHASES) | {PHASE_MTPROTO_TOGGLE}):
+        selected.add("mtproto")                   # marker: any mtproto phase active
     cfg["_selected"] = selected
 
     # Resolve a relative binary path against the config's dir (test_unit/), so the

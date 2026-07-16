@@ -1,0 +1,24 @@
+{{define "form/mtproto"}}
+<a-form
+    :colon="false"
+    :label-col="{ md: {span:8} }"
+    :wrapper-col="{ md: {span:14} }"
+>
+    <a-alert
+        type="info"
+        show-icon
+        :style="{ marginBottom: '16px' }"
+        message="Settings live on each account"
+        description="Connection modes, FakeTLS domain, User Limit, Ad Tag and External Proxy are set per client, so one inbound can serve accounts with different modes and links. Add or edit a client to configure them."
+    ></a-alert>
+
+    <a-alert
+        v-if="inbound.settings.clients && inbound.settings.clients.some(c => c.adtagEnable && c.adtag)"
+        type="warning"
+        show-icon
+        :style="{ marginBottom: '16px' }"
+        message="An account on this inbound has an Ad Tag, so Xray routing is off for the whole inbound"
+        description="Ad tags are per account, but the middle-proxy path they require is a property of the proxy process, not of one account. While any account here carries a tag, every account on this inbound egresses directly from this server and your outbound routing rules do not apply to any of them. Telegram derives the middle-proxy session key from this server's own outgoing IP and port, so sending that traffic through Xray would change the port and break the handshake. Clear the Ad Tag on every account to route this inbound through Xray."
+    ></a-alert>
+</a-form>
+{{end}}

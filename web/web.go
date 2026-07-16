@@ -112,7 +112,8 @@ type Server struct {
 	ocservService    service.OcservService
 	sstpService      service.SstpService
 	ikev2Service     service.Ikev2Service
-	wgcService     service.WgcService
+	wgcService       service.WgcService
+	mtprotoService   service.MtprotoService
 	tgbotService     service.Tgbot
 	customGeoService *service.CustomGeoService
 
@@ -332,6 +333,7 @@ func (s *Server) startTask() {
 	s.sstpService.InitSstp()
 	s.ikev2Service.InitIkev2()
 	s.wgcService.InitWgc()
+	s.mtprotoService.InitMtproto()
 
 	s.customGeoService.EnsureOnStartup()
 	// Reap an orphaned Xray from a previous instance BEFORE starting ours — a panel

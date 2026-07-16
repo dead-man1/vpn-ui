@@ -386,6 +386,10 @@
                     }
                 } else if (protocol === 'wg-c') {
                     inModal.inbound.port = 51820;
+                } else if (protocol === 'mtproto') {
+                    // 443 is what MTProto clients expect and what FakeTLS needs to be
+                    // plausible (an "HTTPS" session on a non-443 port is a giveaway).
+                    inModal.inbound.port = 443;
                 }
             },
             streamNetworkChange() {

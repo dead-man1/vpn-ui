@@ -66,6 +66,11 @@ Tests (ids mirror harness/model.py:ALL_PHASES; always run in this fixed order):
   ikev2-psk           full suite, rbridge-sweep path (1 account, K=2) - IKEv2 + PSK
   ikev2-eap-tls       full suite, rbridge-sweep path (1 account, K=2) - IKEv2 + EAP-TLS
   wg-c            full suite, rbridge-sweep path (kernel WireGuard via wgctrl, gateway /29, +psk-mode) - WireGuard (C)
+  mtproto         alias: runs every MTProto phase below (telemt)
+  mtproto-classic   handshake + relay to a real Telegram DC + wrong-secret control + usage - obfuscated2
+  mtproto-secure    same, "dd" random-padding secret - MTProto Proxy (secure)
+  mtproto-tls       same + FakeTLS ServerHello HMAC verified, "ee" secret - MTProto Proxy (FakeTLS)
+  mtproto-toggle    editing an account's modes takes effect on the RUNNING daemon (no restart)
   bulk-ops        bulk client add/sub/enable/disable + TXT/PDF export via API
   backup-restore  DB export + import round-trip
   warp-socks      Cloudflare warp-cli SOCKS install + egress
@@ -169,8 +174,16 @@ if [[ -z "$TESTS_SEL" || ",$TESTS_SEL," == *",export-js,"* || ",$TESTS_SEL," == 
       echo "FATAL: export.js TXT/PDF test failed (see output above)." >&2
       exit 1
     fi
+    # Client-model invariants. Host-side for the same reason as the export test, but
+    # it also covers a blind spot the VM suite CANNOT see: the E2E posts client JSON
+    # to the API directly, so nothing in it ever loads the panel's own JS model.
+    echo "[run] inbound.js client-model test..."
+    if ! node "$SCRIPT_DIR/export_test/model.test.js"; then
+      echo "FATAL: inbound.js client-model test failed (see output above)." >&2
+      exit 1
+    fi
   else
-    echo "[run] node not found — skipping export.js TXT/PDF test (install node to enable)." >&2
+    echo "[run] node not found: skipping host-side JS tests (install node to enable)." >&2
   fi
 else
   echo "[run] export-js not selected — skipping"

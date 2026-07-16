@@ -41,6 +41,23 @@
         </template>
         <a-input v-model.trim="client.id"></a-input>
     </a-form-item>
+    <!-- MTProto authenticates on a 32-hex secret, not a password: it is the whole
+         credential and it is what the tg:// link carries. -->
+    <a-form-item v-if="inbound.protocol === Protocols.MTPROTO">
+        <template slot="label">
+            <a-tooltip>
+                <template slot="title">
+                    <span>{{ i18n "reset" }}</span>
+                </template>
+                Secret
+                <a-icon
+                    @click="client.secret = RandomUtil.randomSeq(32, { type: 'hex' })"
+                    type="sync"
+                ></a-icon>
+            </a-tooltip>
+        </template>
+        <a-input v-model.trim="client.secret"></a-input>
+    </a-form-item>
     <a-form-item
         v-if="inbound.protocol === Protocols.TROJAN || inbound.protocol === Protocols.SHADOWSOCKS || inbound.protocol === Protocols.L2TP || inbound.protocol === Protocols.PPTP || inbound.protocol === Protocols.OPENVPN || inbound.protocol === Protocols.OPENCONNECT || inbound.protocol === Protocols.SSTP || (inbound.protocol === Protocols.IKEV2 && inbound.settings.authMode !== 'eap-tls' && inbound.settings.authMode !== 'psk')"
     >
@@ -293,5 +310,213 @@
         </template>
         <a-input-number v-model.number="client.reset" :min="0"></a-input-number>
     </a-form-item>
+
+    <!-- MTProto Proxy: per-account settings. These are per CLIENT, not per inbound,
+         because the proxy keys them off the authenticated secret rather than the
+         socket, so one inbound can serve accounts with different modes and links. -->
+    <template v-if="inbound.protocol === Protocols.MTPROTO">
+        <a-divider>MTProto Proxy</a-divider>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        The original obfuscated transport (no secret prefix). Widely
+                        supported but the easiest for DPI to fingerprint. Off means the
+                        proxy refuses this account's plain secret.
+                    </template>
+                    Classic Mode
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <!--
+                Guarded rather than v-model: an account with every mode off cannot be
+                dialed by anything, so the backend drops it from the proxy config
+                entirely. Refusing the last one here (instead of warning after the
+                fact) keeps that state unreachable. See the sibling switches.
+            -->
+            <a-switch
+                :checked="client.modeClassic"
+                @change="v => v || client.modeSecure || client.modeTls
+                    ? client.modeClassic = v
+                    : $message.warning(MTPROTO_LAST_MODE_WARNING)"
+            ></a-switch>
+        </a-form-item>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        Random-padding mode ("dd" secret prefix). Hides packet-length
+                        patterns from DPI.
+                    </template>
+                    Secure Mode (dd)
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-switch
+                :checked="client.modeSecure"
+                @change="v => v || client.modeClassic || client.modeTls
+                    ? client.modeSecure = v
+                    : $message.warning(MTPROTO_LAST_MODE_WARNING)"
+            ></a-switch>
+        </a-form-item>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        FakeTLS ("ee" secret prefix): traffic looks like an ordinary
+                        HTTPS session to the domain below. The most censorship-resistant
+                        mode.
+                    </template>
+                    FakeTLS Mode (ee)
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-switch
+                :checked="client.modeTls"
+                @change="v => v || client.modeClassic || client.modeSecure
+                    ? client.modeTls = v
+                    : $message.warning(MTPROTO_LAST_MODE_WARNING)"
+            ></a-switch>
+        </a-form-item>
+
+        <a-form-item v-if="client.modeTls">
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        The domain this account's FakeTLS link impersonates, encoded into
+                        its ee secret. Pick a real, reachable HTTPS site that is plausible
+                        for the user and not itself blocked. Changing it invalidates the
+                        ee link already handed out.
+                    </template>
+                    FakeTLS Domain
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input
+                v-model.trim="client.tlsDomain"
+                placeholder="www.google.com"
+            ></a-input>
+        </a-form-item>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        Max simultaneous devices for this account, counted as distinct
+                        client IPs and enforced by the proxy itself (the excess device is
+                        refused). 0 means no practical limit.
+                    </template>
+                    User Limit
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input-number
+                v-model.number="client.userLimit"
+                :min="0"
+                :max="64"
+            ></a-input-number>
+        </a-form-item>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        Promote a sponsored channel for this account with a tag from
+                        @MTProxybot. Read the warning before enabling: it turns Xray
+                        routing off for every account on this inbound.
+                    </template>
+                    Ad Tag
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-switch v-model="client.adtagEnable"></a-switch>
+        </a-form-item>
+
+        <a-alert
+            v-if="client.adtagEnable"
+            type="warning"
+            show-icon
+            :style="{ marginBottom: '16px' }"
+            message="Ad Tag turns off Xray routing for the WHOLE inbound"
+            description="An ad tag only counts if traffic goes through Telegram's middle-proxy relays, and that path is a property of the proxy process, not of one account. So enabling it here also stops every OTHER account on this inbound from being routed through Xray: they all egress directly from this server instead. Telegram derives the middle-proxy key from this server's own outgoing IP and port, which any proxied egress would change. Everything else (usage, quota, User Limit, per-account modes) works the same either way."
+        ></a-alert>
+
+        <a-form-item v-if="client.adtagEnable" label="Ad Tag">
+            <a-input
+                v-model.trim="client.adtag"
+                placeholder="32 hex characters from @MTProxybot"
+            ></a-input>
+        </a-form-item>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        Hand out links pointing at a relay/CDN host:port instead of this
+                        server's own address. Affects this account's links only; the proxy
+                        itself is unchanged.
+                    </template>
+                    External Proxy
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-switch
+                :checked="Array.isArray(client.externalProxy) && client.externalProxy.length > 0"
+                @change="v => client.externalProxy = v ? [{ dest: window.location.hostname, port: inbound.port, remark: '' }] : []"
+            ></a-switch>
+            <a-button
+                icon="plus"
+                v-if="Array.isArray(client.externalProxy) && client.externalProxy.length > 0"
+                type="primary"
+                size="small"
+                :style="{ marginLeft: '10px' }"
+                @click="client.externalProxy.push({ dest: '', port: inbound.port, remark: '' })"
+            ></a-button>
+        </a-form-item>
+
+        <!--
+            Rows sit OUTSIDE a-form-item on purpose: this form is label-col 8 /
+            wrapper-col 14, so a labelled row would squeeze three controls into 14/24
+            of the modal. Mirrors form/stream/external_proxy.html, including the minus
+            button in addonAfter: a bare a-button is not a valid a-input-group compact
+            child in antd-vue 1.7.8 and renders at the wrong height, unaligned.
+        -->
+        <a-input-group
+            compact
+            :style="{ margin: '8px 0' }"
+            v-for="(row, index) in (client.externalProxy || [])"
+            :key="index"
+        >
+            <a-input
+                :style="{ width: '40%' }"
+                v-model.trim="row.dest"
+                placeholder='{{ i18n "host" }}'
+            ></a-input>
+            <a-tooltip title='{{ i18n "pages.inbounds.port" }}'>
+                <a-input-number
+                    :style="{ width: '20%' }"
+                    v-model.number="row.port"
+                    min="1"
+                    max="65535"
+                ></a-input-number>
+            </a-tooltip>
+            <a-input
+                :style="{ width: '35%', top: '0' }"
+                v-model.trim="row.remark"
+                placeholder='{{ i18n "remark" }}'
+            >
+                <template slot="addonAfter">
+                    <a-button
+                        icon="minus"
+                        size="small"
+                        @click="client.externalProxy.splice(index, 1)"
+                    ></a-button>
+                </template>
+            </a-input>
+        </a-input-group>
+    </template>
 </a-form>
 {{end}}

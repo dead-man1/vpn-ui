@@ -369,6 +369,11 @@
     {{template "form/wgc"}}
 </template>
 
+<!-- mtproto (MTProto Proxy) -->
+<template v-if="inbound.protocol === Protocols.MTPROTO">
+    {{template "form/mtproto"}}
+</template>
+
 <!-- hysteria -->
 <template v-if="inbound.protocol === Protocols.HYSTERIA">
     {{template "form/hysteria"}}

@@ -41,6 +41,10 @@ var Daemons = []Daemon{
 	{Name: "ocserv"},
 	{Name: "ocserv-worker"},
 	{Name: "occtl"},
+	// telemt (MTProto Proxy) is a single fully-static musl binary with no plugins to
+	// dlopen and no fixed install path, so it belongs in this flat manifest rather
+	// than needing a relocatable tree bundle like accel-ppp/strongSwan.
+	{Name: "telemt"},
 }
 
 // PptpCtrlLink is the fixed path pptpd was compiled to exec pptpctrl from

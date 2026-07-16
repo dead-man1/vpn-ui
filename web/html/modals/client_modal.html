@@ -144,6 +144,10 @@
                     return clients.push(
                         new Inbound.WgcSettings.WgUser(),
                     );
+                case Protocols.MTPROTO:
+                    return clients.push(
+                        new Inbound.MtprotoSettings.MtprotoUser(),
+                    );
                 case Protocols.HYSTERIA:
                     return clients.push(
                         new Inbound.HysteriaSettings.Hysteria(),

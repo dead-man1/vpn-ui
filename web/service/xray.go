@@ -34,7 +34,8 @@ type XrayService struct {
 	ocservService  OcservService
 	sstpService    SstpService
 	ikev2Service   Ikev2Service
-	wgcService   WgcService
+	wgcService     WgcService
+	mtprotoService MtprotoService
 	xrayAPI        xray.XrayAPI
 }
 
@@ -111,9 +112,15 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		if !inbound.Enable {
 			continue
 		}
-		// Skip L2TP/PPTP/OpenVPN/OpenConnect/SSTP/IKEv2/WireGuard inbounds — they are not
-		// native Xray protocols. All route through paired dokodemo-door inbounds injected below.
-		if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "openconnect" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" {
+		// Skip L2TP/PPTP/OpenVPN/OpenConnect/SSTP/IKEv2/WireGuard/MTProto inbounds, they
+		// are not native Xray protocols. The tunnel ones route through paired
+		// dokodemo-door inbounds injected below; mtproto instead gets a paired socks
+		// inbound it egresses THROUGH (GetSocksConfig).
+		//
+		// Omitting a protocol here is not a no-op: its raw settings would be handed to
+		// Xray as a native inbound, Xray would reject the unknown protocol, and the
+		// WHOLE core would fail to start, taking every other inbound down with it.
+		if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "openconnect" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" || inbound.Protocol == "mtproto" {
 			continue
 		}
 		// get settings clients
@@ -271,9 +278,30 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *dokodemoConfig)
 	}
 
+	// Inject the loopback socks inbound each MTProto Proxy inbound egresses through.
+	// This is the mtproto analogue of the dokodemo-door blocks above, but a socks
+	// listener rather than TPROXY capture: telemt is a userspace relay with no tunnel
+	// to intercept, so it dials OUT through Xray instead of having packets pushed in.
+	// The inbound carries inbound.Tag, so operator routing rules target it like any
+	// other. Returns nil when adtag is on, middle-proxy mode must egress directly,
+	// because its RPC key is derived from the proxy's own egress IP AND port.
+	mtprotoInbounds, _ := s.mtprotoService.GetMtprotoInbounds()
+	for _, mtInbound := range mtprotoInbounds {
+		if !mtInbound.Enable {
+			continue
+		}
+		if socksConfig := s.mtprotoService.GetSocksConfig(mtInbound); socksConfig != nil {
+			xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *socksConfig)
+		}
+	}
+
 	// Translate email-based routing rules for L2TP/PPTP clients to source-IP rules.
 	// Dokodemo-door doesn't support per-user identification, so we use deterministic
 	// IP assignment and match on source IP instead.
+	//
+	// MTProto is deliberately absent from this translation: it assigns no per-client
+	// IP, so a per-CLIENT rule has nothing to match on. Its routing is per-INBOUND,
+	// via the socks inbound's tag above.
 	s.translateVpnRoutingRules(xrayConfig)
 
 	return xrayConfig, nil
@@ -281,6 +309,15 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 
 // translateVpnRoutingRules rewrites routing rules so that "user" (email) matches
 // for L2TP/PPTP clients are translated to "source" (IP) matches.
+//
+// Emails absent from the map are left as "user" rules on purpose, and two very
+// different protocol families rely on that: Xray-native ones (vless/vmess), which
+// match the user natively, and mtproto, whose account arrives as the socks username
+// (see MtprotoService.GetSocksConfig). So an operator writes the same
+// user:[email] rule for every protocol and this decides the carrier. Do NOT add
+// mtproto to BuildVpnEmailToIPMap to "complete" it: a relay has no per-client IP,
+// so it would translate the rule into a source match on an IP that never exists
+// and the rule would silently stop matching anything.
 func (s *XrayService) translateVpnRoutingRules(config *xray.Config) {
 	if len(config.RouterConfig) == 0 {
 		return

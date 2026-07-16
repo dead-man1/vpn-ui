@@ -166,6 +166,25 @@ build_arch() {
         -v "$REPO_ROOT/build/backend/strongswan-bundle.sh:/strongswan-bundle.sh:ro" \
         alpine:3.22 sh -e /strongswan-bundle.sh
 
+    # telemt (MTProto Proxy), built from the PINNED third_party/telemt submodule
+    # (the Sir-MmD fork: upstream 3.4.23 + our [access.user_modes] patch), exactly
+    # like build/core/build.sh does for the patched Xray-core. The SIMPLEST bundle
+    # here: no plugins to dlopen (so no relocatable tree like accel-ppp/strongSwan),
+    # no OpenSSL (rustls/ring is pure Rust), no runtime data files in direct mode.
+    # Emits /out/telemt. Uses rust:alpine rather than alpine:3.22 because it needs a
+    # Rust toolchain whose host triple is already *-unknown-linux-musl.
+    if [[ ! -f "$REPO_ROOT/third_party/telemt/Cargo.toml" ]]; then
+        echo "third_party/telemt is not initialised: run: git submodule update --init --recursive" >&2
+        exit 1
+    fi
+    step "Building telemt (MTProto Proxy) static binary for $goarch"
+    docker run --rm ${DOCKER_NET:-} --platform "$platform" \
+        -e ARCH="$muslarch" \
+        -v "$outdir:/out" \
+        -v "$REPO_ROOT/build/backend/telemt-bundle.sh:/telemt-bundle.sh:ro" \
+        -v "$REPO_ROOT/third_party/telemt:/src:ro" \
+        rust:alpine sh -e /telemt-bundle.sh
+
     ok "Done: $(ls -lh "$outdir")"
 }
 

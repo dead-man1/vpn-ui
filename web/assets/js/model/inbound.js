@@ -16,6 +16,7 @@ const Protocols = {
     SSTP: 'sstp',
     IKEV2: 'ikev2',
     WGC: 'wg-c',
+    MTPROTO: 'mtproto',
 };
 
 // Display labels for the protocol picker. The Add/Edit inbound dropdown shows
@@ -39,6 +40,7 @@ const ProtocolLabels = {
     sstp: 'SSTP',
     ikev2: 'IKEv2',
     'wg-c': 'WireGuard (C)',
+    mtproto: 'MTProto Proxy',
 };
 
 const SSMethods = {
@@ -1670,6 +1672,7 @@ class Inbound extends XrayCommonClass {
             case Protocols.SSTP: return this.settings.sstpUsers;
             case Protocols.IKEV2: return this.settings.ikev2Users;
             case Protocols.WGC: return this.settings.wgcUsers;
+            case Protocols.MTPROTO: return this.settings.mtprotoUsers;
             default: return null;
         }
     }
@@ -2303,6 +2306,19 @@ class Inbound extends XrayCommonClass {
         let email = client ? client.email : '';
         let addr = !ObjectUtil.isEmpty(this.listen) && this.listen !== "0.0.0.0" ? this.listen : location.hostname;
         let port = this.port;
+        // MTProto: one link per mode the ACCOUNT has enabled, not one per inbound.
+        // The same 16-byte secret is reused across modes (only the prefix differs),
+        // so a disabled mode must not be offered here, the proxy would refuse it
+        // ([access.user_modes]) and the user would be handed a link that cannot work.
+        // External Proxy endpoints are per-account too, so they are applied inside
+        // links() rather than from this.stream.externalProxy.
+        if (this.protocol === Protocols.MTPROTO) {
+            if (!client || typeof client.links !== 'function') return result;
+            return client.links(addr, port).map(l => ({
+                remark: [remark, email, l.label].filter(x => x && x.length > 0).join(remarkModel.charAt(0)),
+                link: l.link,
+            }));
+        }
         const separationChar = remarkModel.charAt(0);
         const orderChars = remarkModel.slice(1);
         let orders = {
@@ -2404,6 +2420,7 @@ Inbound.Settings = class extends XrayCommonClass {
             case Protocols.SSTP: return new Inbound.SstpSettings(protocol);
             case Protocols.IKEV2: return new Inbound.Ikev2Settings(protocol);
             case Protocols.WGC: return new Inbound.WgcSettings(protocol);
+            case Protocols.MTPROTO: return new Inbound.MtprotoSettings(protocol);
             default: return null;
         }
     }
@@ -2427,6 +2444,7 @@ Inbound.Settings = class extends XrayCommonClass {
             case Protocols.SSTP: return Inbound.SstpSettings.fromJson(json);
             case Protocols.IKEV2: return Inbound.Ikev2Settings.fromJson(json);
             case Protocols.WGC: return Inbound.WgcSettings.fromJson(json);
+            case Protocols.MTPROTO: return Inbound.MtprotoSettings.fromJson(json);
             default: return null;
         }
     }
@@ -4294,6 +4312,13 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
     this.updated_at = updated_at;
   }
 
+  // See MtprotoUser.id: same email-as-identity model, same reason. toJson() writes
+  // id=email but fromJson() cannot restore it through the constructor, so the live
+  // object needs this or every id-keyed path (edit, row-key) sees undefined.
+  get id() {
+    return this.email;
+  }
+
   static fromJson(json = []) {
     if (!Array.isArray(json))
       return [new Inbound.WgcSettings.WgUser()];
@@ -4330,6 +4355,259 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
       privKey: this.privKey,
       pubKey: this.pubKey,
       psk: this.psk,
+      expiryTime: this.expiryTime,
+      tgId: this.tgId,
+      subId: this.subId,
+      comment: this.comment,
+      totalGB: this.totalGB,
+      limitIp: this.limitIp,
+      reset: this.reset,
+      created_at: this.created_at,
+      updated_at: this.updated_at,
+    };
+  }
+
+  get _expiryTime() {
+    if (this.expiryTime === 0) {
+      return null;
+    }
+    if (this.expiryTime < 0) {
+      return this.expiryTime / -86400000;
+    }
+    return moment(this.expiryTime);
+  }
+
+  set _expiryTime(t) {
+    if (t == null || t === "") {
+      this.expiryTime = 0;
+    } else {
+      this.expiryTime = t.valueOf();
+    }
+  }
+
+  get _totalGB() {
+    return NumberFormatter.toFixed(this.totalGB / SizeFormatter.ONE_GB, 2);
+  }
+
+  set _totalGB(gb) {
+    this.totalGB = NumberFormatter.toFixed(gb * SizeFormatter.ONE_GB, 0);
+  }
+};
+
+// MTProto Proxy (Telegram) inbound settings.
+//
+// Unlike every other VPN protocol here there is NO addressing block: MTProto is a
+// userspace relay, so clients keep their own IP and the backend assigns nothing.
+// Hence no ipRanges/dns/mtu/localIp, just which connection modes this inbound
+// honours, the FakeTLS domain, the device cap, and the optional ad tag.
+//
+// userLimitStrategy is deliberately absent: the proxy enforces the device cap
+// itself by refusing the excess connection, so there is no "evict the oldest"
+// choice to make (the panel never sees the admission).
+// Shown when the client form refuses to turn off an account's LAST connection mode.
+// Not merely advisory: with every mode off, no secret can dial the account, so the
+// backend drops it from the proxy config (activeClients) rather than render an entry
+// telemt would read as "unrestricted": the exact opposite of what was asked.
+const MTPROTO_LAST_MODE_WARNING =
+  "At least one connection mode must stay enabled: an account with none has no usable link.";
+
+Inbound.MtprotoSettings = class extends Inbound.Settings {
+  constructor(
+    protocol,
+    mtprotoUsers = [new Inbound.MtprotoSettings.MtprotoUser()],
+  ) {
+    super(protocol);
+    // The inbound owns nothing but its port: modes, FakeTLS domain, User Limit,
+    // ad tag and external proxy are all per-account, because the proxy keys them
+    // off the authenticated secret rather than the socket.
+    this.mtprotoUsers = mtprotoUsers;
+  }
+
+  static fromJson(json = {}) {
+    return new Inbound.MtprotoSettings(
+      Protocols.MTPROTO,
+      Inbound.MtprotoSettings.MtprotoUser.fromJson(json.clients),
+    );
+  }
+
+  toJson() {
+    return {
+      clients: Inbound.MtprotoSettings.MtprotoUser.toJsonArray(this.mtprotoUsers),
+    };
+  }
+};
+
+// An MTProto Proxy account. Identity is `email`, there is NO username (the
+// WireGuard (C) model); the credential is `secret` (32 hex). The secret is minted
+// client-side because, unlike a WireGuard keypair, it is just random bytes, and
+// having it immediately lets the tg:// links render on add; the backend re-mints
+// any account whose secret is blank.
+//
+// Modes / FakeTLS domain / User Limit / ad tag / external proxy live HERE rather
+// than on the inbound: the proxy keys them off the authenticated secret, so one
+// inbound can serve accounts with entirely different modes and links.
+Inbound.MtprotoSettings.MtprotoUser = class extends XrayCommonClass {
+  constructor(
+    email = RandomUtil.randomLowerAndNum(9),
+    secret = RandomUtil.randomSeq(32, { type: "hex" }),
+    enable = true,
+    modeClassic = true,
+    modeSecure = true,
+    modeTls = true,
+    tlsDomain = "www.google.com",
+    adtagEnable = false,
+    adtag = "",
+    userLimit = 0,
+    externalProxy = [],
+    expiryTime = 0,
+    tgId = "",
+    subId = "",
+    comment = "",
+    totalGB = 0,
+    limitIp = 0,
+    reset = 0,
+    created_at = undefined,
+    updated_at = undefined,
+  ) {
+    super();
+    this.email = email;
+    this.secret = secret;
+    this.enable = enable;
+    this.modeClassic = modeClassic;
+    this.modeSecure = modeSecure;
+    this.modeTls = modeTls;
+    this.tlsDomain = tlsDomain;
+    this.adtagEnable = adtagEnable;
+    this.adtag = adtag;
+    this.userLimit = userLimit;
+    this.externalProxy = externalProxy;
+    this.expiryTime = expiryTime;
+    this.tgId = tgId;
+    this.subId = subId;
+    this.comment = comment;
+    this.totalGB = totalGB;
+    this.limitIp = limitIp;
+    this.reset = reset;
+    this.created_at = created_at;
+    this.updated_at = updated_at;
+  }
+
+  // Identity is the email (no username), but the panel's shared client plumbing is
+  // id-keyed: the client modal's oldClientId, findIndexOfClient, and the client
+  // table's row-key all read client.id. toJson() writes id=email, so the STORED
+  // client has one, but fromJson() rehydrates through the constructor, which never
+  // takes an id. Without this getter the live object's id is undefined, the edit
+  // POSTs to /updateClient/undefined, and the backend cannot find the account
+  // ("empty client ID"). A getter cannot drift out of sync with email the way a
+  // copied field would.
+  get id() {
+    return this.email;
+  }
+
+  static fromJson(json = []) {
+    if (!json) return [];
+    return json.map((client) =>
+      new Inbound.MtprotoSettings.MtprotoUser(
+        client.email ?? "",
+        client.secret ?? RandomUtil.randomSeq(32, { type: "hex" }),
+        client.enable ?? true,
+        client.modeClassic ?? true,
+        client.modeSecure ?? true,
+        client.modeTls ?? true,
+        client.tlsDomain ?? "www.google.com",
+        client.adtagEnable ?? false,
+        client.adtag ?? "",
+        client.userLimit ?? 0,
+        Array.isArray(client.externalProxy) ? client.externalProxy : [],
+        client.expiryTime ?? 0,
+        client.tgId ?? "",
+        client.subId ?? "",
+        client.comment ?? "",
+        client.totalGB ?? 0,
+        client.limitIp ?? 0,
+        client.reset ?? 0,
+        client.created_at,
+        client.updated_at,
+      ),
+    );
+  }
+
+  // The client-facing secret for one mode. The 16-byte secret is the same in all
+  // three; the prefix is what tells the Telegram client (and the proxy) which
+  // transport to speak. FakeTLS additionally carries the hex-encoded domain.
+  secretFor(mode) {
+    if (mode === "secure") return "dd" + this.secret;
+    if (mode === "tls") {
+      const domain = (this.tlsDomain || "www.google.com").trim();
+      const hex = Array.from(new TextEncoder().encode(domain))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+      return "ee" + this.secret + hex;
+    }
+    return this.secret;
+  }
+
+  // Which modes this account may actually use, the same set the backend enforces
+  // via [access.user_modes]. Drives which links/QRs are offered, so a disabled mode
+  // is never handed out as a working link.
+  enabledModes() {
+    const out = [];
+    if (this.modeClassic) out.push("classic");
+    if (this.modeSecure) out.push("secure");
+    if (this.modeTls) out.push("tls");
+    return out;
+  }
+
+  // One tg:// link per enabled mode, per endpoint. External Proxy endpoints replace
+  // this server's address (a relay/CDN in front); with none set, the panel's own
+  // host:port is used.
+  links(host, port) {
+    const endpoints =
+      Array.isArray(this.externalProxy) && this.externalProxy.length > 0
+        ? this.externalProxy.map((p) => ({
+            host: p.dest,
+            port: p.port,
+            remark: p.remark || "",
+          }))
+        : [{ host: host, port: port, remark: "" }];
+    const labels = { classic: "Classic", secure: "Secure (dd)", tls: "FakeTLS (ee)" };
+    const out = [];
+    for (const ep of endpoints) {
+      for (const mode of this.enabledModes()) {
+        out.push({
+          mode: mode,
+          label: labels[mode] + (ep.remark ? `, ${ep.remark}` : ""),
+          link:
+            "tg://proxy?server=" +
+            encodeURIComponent(ep.host) +
+            "&port=" +
+            ep.port +
+            "&secret=" +
+            this.secretFor(mode),
+        });
+      }
+    }
+    return out;
+  }
+
+  static toJsonArray(clients) {
+    return clients.map((client) => client.toJson());
+  }
+
+  toJson() {
+    return {
+      id: this.email, // identity = email (no username); keeps shared id-based client logic working
+      email: this.email,
+      secret: this.secret,
+      enable: this.enable,
+      modeClassic: this.modeClassic,
+      modeSecure: this.modeSecure,
+      modeTls: this.modeTls,
+      tlsDomain: this.tlsDomain,
+      adtagEnable: this.adtagEnable,
+      adtag: this.adtag,
+      userLimit: this.userLimit,
+      externalProxy: this.externalProxy || [],
       expiryTime: this.expiryTime,
       tgId: this.tgId,
       subId: this.subId,

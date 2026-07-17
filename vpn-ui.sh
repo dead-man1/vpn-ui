@@ -126,15 +126,34 @@ obtain_letsencrypt_cert() {
         if command -v acme.sh >/dev/null 2>&1; then
             ACME="$(command -v acme.sh)"
         else
-            msg "Installing acme.sh"
-            if command -v curl >/dev/null 2>&1; then
-                curl -fsSL https://get.acme.sh | sh -s email="${EMAIL:-admin@$DOMAIN}" >/dev/null 2>&1 \
-                    || { warn "acme.sh install failed, skipping real SSL."; return 1; }
-            else
-                wget -qO- https://get.acme.sh | sh -s email="${EMAIL:-admin@$DOMAIN}" >/dev/null 2>&1 \
-                    || { warn "acme.sh install failed, skipping real SSL."; return 1; }
+            # Install acme.sh from the copy BUNDLED in the panel binary. This is the
+            # offline path: `curl https://get.acme.sh | sh` fails on a box with no or
+            # blocked egress to get.acme.sh, which is exactly why real SSL was silently
+            # skipped. The binary writes the pinned client into a scratch dir; running
+            # it there as `--install` sets up $HOME/.acme.sh (account.conf, renew cron,
+            # shell alias) with NO network fetch. Only `--issue` below needs the net,
+            # and that reaches Let's Encrypt, not get.acme.sh. `--install` must run from
+            # the dir holding the file literally named acme.sh: it does `cp acme.sh ...`.
+            msg "Installing bundled acme.sh"
+            local acmedir; acmedir="$(mktemp -d)"
+            if "$BIN" install-acme "$acmedir/acme.sh" >/dev/null 2>&1 && [[ -s "$acmedir/acme.sh" ]]; then
+                ( cd "$acmedir" && sh ./acme.sh --install -m "${EMAIL:-admin@$DOMAIN}" ) >/dev/null 2>&1 || true
             fi
+            rm -rf "$acmedir"
             ACME="$HOME/.acme.sh/acme.sh"
+
+            # Network fallback ONLY if the bundled install did not land (older binary
+            # without `install-acme`, or a broken $HOME). Best-effort; issuance still
+            # needs curl/wget, so requiring one here costs nothing extra.
+            if ! [[ -x "$ACME" ]]; then
+                msg "Bundled acme.sh unavailable, falling back to get.acme.sh"
+                if command -v curl >/dev/null 2>&1; then
+                    curl -fsSL https://get.acme.sh | sh -s email="${EMAIL:-admin@$DOMAIN}" >/dev/null 2>&1 || true
+                elif command -v wget >/dev/null 2>&1; then
+                    wget -qO- https://get.acme.sh | sh -s email="${EMAIL:-admin@$DOMAIN}" >/dev/null 2>&1 || true
+                fi
+                ACME="$HOME/.acme.sh/acme.sh"
+            fi
         fi
     fi
     [[ -x "$ACME" ]] || { warn "acme.sh not found after install, skipping real SSL."; return 1; }

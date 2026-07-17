@@ -1203,6 +1203,31 @@ func backupPanelDBForUpdate(fromVersion string) (string, error) {
 //go:embed vpn-ui.sh
 var menuScript []byte
 
+// The Let's Encrypt / ACME client (pinned acme.sh, see build/acme/README.md),
+// baked into the binary so real SSL works OFFLINE. obtain_letsencrypt_cert in
+// vpn-ui.sh used to acquire it with `curl https://get.acme.sh | sh`, which fails on
+// a box with no/blocked egress to get.acme.sh and left the panel on plain HTTP with
+// only "acme.sh not found after install, skipping real SSL." The menu now extracts
+// THIS copy and runs its --install locally; only the final --issue needs network.
+//
+//go:embed build/acme/acme.sh
+var acmeScript []byte
+
+// installAcmeScript implements `vpn-ui install-acme <path>`: write the embedded
+// acme.sh client (0755) to <path>. The management menu extracts it to a scratch dir
+// and runs it as `--install`, so Let's Encrypt issuance no longer depends on
+// fetching the client from the internet at deploy time.
+func installAcmeScript(args []string) {
+	if len(args) == 0 || args[0] == "" {
+		fmt.Fprintln(os.Stderr, "usage: vpn-ui install-acme <path>")
+		os.Exit(1)
+	}
+	if err := backend.WriteFileAtomic(args[0], acmeScript, 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to write the bundled acme.sh:", err)
+		os.Exit(1)
+	}
+}
+
 // installMenuScript implements `vpn-ui install-menu [path]`: write the embedded
 // menu to /usr/bin/vpn-ui (0755). deploy.sh runs it on both fresh install and
 // update; `update` runs it again from the newly installed binary.
@@ -2412,6 +2437,8 @@ func main() {
 		runUpdate()
 	case "install-menu":
 		installMenuScript(os.Args[2:])
+	case "install-acme":
+		installAcmeScript(os.Args[2:])
 	case "openvpn-auth":
 		openvpnAuth()
 	case "openvpn-connect":

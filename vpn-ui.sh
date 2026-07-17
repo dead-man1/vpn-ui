@@ -121,6 +121,17 @@ obtain_letsencrypt_cert() {
         warn "TCP :80 is in use, acme.sh standalone may fail to bind it."
     fi
 
+    # Ensure acme.sh's host prerequisites BEFORE touching it. Its `--install`
+    # pre-check HARD-FAILS on a box with no cron daemon (minimal Fedora ships no
+    # cronie), so the client never installs and real SSL silently drops to HTTP with
+    # "acme.sh not found after install" — even though the box had internet. It also
+    # needs socat or python for the standalone HTTP-01 server. The panel binary
+    # installs both cross-distro (see EnsureAcmeDeps). No-op when already present;
+    # best-effort, since --install --force below still issues without cron (only
+    # auto-renew is lost). Guarded so a failure never aborts under the caller's set -e.
+    msg "Ensuring acme.sh dependencies (cron + standalone server)"
+    "$BIN" acme-deps 2>&1 | sed 's/^/  /' || true
+
     local ACME="$HOME/.acme.sh/acme.sh"
     if ! [[ -x "$ACME" ]]; then
         if command -v acme.sh >/dev/null 2>&1; then
@@ -134,10 +145,13 @@ obtain_letsencrypt_cert() {
             # shell alias) with NO network fetch. Only `--issue` below needs the net,
             # and that reaches Let's Encrypt, not get.acme.sh. `--install` must run from
             # the dir holding the file literally named acme.sh: it does `cp acme.sh ...`.
+            # --force: install even when no cron daemon is present (EnsureAcmeDeps could
+            # not add one) so a locked-down host still gets its certificate; without it
+            # the pre-check fails and issuance is skipped entirely.
             msg "Installing bundled acme.sh"
             local acmedir; acmedir="$(mktemp -d)"
             if "$BIN" install-acme "$acmedir/acme.sh" >/dev/null 2>&1 && [[ -s "$acmedir/acme.sh" ]]; then
-                ( cd "$acmedir" && sh ./acme.sh --install -m "${EMAIL:-admin@$DOMAIN}" ) >/dev/null 2>&1 || true
+                ( cd "$acmedir" && sh ./acme.sh --install --force -m "${EMAIL:-admin@$DOMAIN}" ) >/dev/null 2>&1 || true
             fi
             rm -rf "$acmedir"
             ACME="$HOME/.acme.sh/acme.sh"

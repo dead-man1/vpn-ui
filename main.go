@@ -2439,6 +2439,8 @@ func main() {
 		installMenuScript(os.Args[2:])
 	case "install-acme":
 		installAcmeScript(os.Args[2:])
+	case "acme-deps":
+		fmt.Println(service.EnsureAcmeDeps())
 	case "openvpn-auth":
 		openvpnAuth()
 	case "openvpn-connect":

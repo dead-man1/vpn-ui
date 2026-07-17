@@ -410,6 +410,18 @@
 "trafficMultiplierFromStart" = "= Apply to all traffic. (unit: GB)"
 "trafficMultiplierValue" = "Multiplier"
 "trafficMultiplierValueDesc" = "How many times traffic past the threshold counts against the client's quota. For example, 2 counts 10 MB of usage as 20 MB."
+"speedLimitTitle" = "Speed Limit"
+"speedLimitDesc" = "Throttle each account on this inbound to a fixed rate. The limit is per account: every client gets its own allowance at this rate, it is not a pool shared between them."
+"speedLimitSeparateTitle" = "Separate Directions"
+"speedLimitSeparateDesc" = "Set download and upload rates separately. When off, one rate caps each direction on its own (it is not a combined total)."
+"speedLimitValue" = "Rate"
+"speedLimitValueDesc" = "Rate per account, in KB/s. Caps download and upload separately, each at this rate. 0 = unlimited."
+"speedLimitDown" = "Download"
+"speedLimitDownDesc" = "Download rate per account, in KB/s. 0 = unlimited."
+"speedLimitUp" = "Upload"
+"speedLimitUpDesc" = "Upload rate per account, in KB/s. 0 = unlimited."
+"speedLimitApplyAfter" = "Apply After"
+"speedLimitFromStart" = "= Limit from the start. (unit: GB)"
 "lastReset" = "Last Reset"
 
 [pages.client]

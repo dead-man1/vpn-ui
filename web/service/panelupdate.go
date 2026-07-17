@@ -44,11 +44,20 @@ var (
 // Panel self-update. The panel binary ships as a single GitHub release asset
 // (Sir-MmD/vpn-ui, "vpn-ui-amd64") — the same source deploy.sh installs from — so
 // the overview can both check for and apply updates in place.
+//
+// PanelAsset and PanelDownloadURL are exported because `vpn-ui-amd64 update` (the
+// CLI/menu updater in main.go) installs from the very same release asset. It
+// reuses these plus DownloadPanelBinary/IsCompatibleBinary rather than reaching
+// for UpdatePanel: that path ends in restartPanel, whose no-systemd branch
+// syscall.Exec's os.Args back into itself. That is harmless for the panel, but from
+// a CLI process it would re-exec the CLI with its own `update` arguments, in a loop.
 const (
-	panelRepo        = "Sir-MmD/vpn-ui"
-	panelAsset       = "vpn-ui-amd64"
-	panelLatestAPI   = "https://api.github.com/repos/" + panelRepo + "/releases/latest"
-	panelDownloadURL = "https://github.com/" + panelRepo + "/releases/latest/download/" + panelAsset
+	panelRepo      = "Sir-MmD/vpn-ui"
+	PanelAsset     = "vpn-ui-amd64"
+	panelLatestAPI = "https://api.github.com/repos/" + panelRepo + "/releases/latest"
+	// PanelDownloadURL is the release asset both the in-panel updater and the CLI
+	// `update` subcommand download.
+	PanelDownloadURL = "https://github.com/" + panelRepo + "/releases/latest/download/" + PanelAsset
 )
 
 // PanelUpdateInfo reports the running version vs. the latest published release.
@@ -261,8 +270,8 @@ func (s *ServerService) UpdatePanel() error {
 	}
 
 	tmp := exe + ".new"
-	logger.Infof("panel update: downloading %s", panelDownloadURL)
-	if err := downloadPanelBinary(ctx, tmp, panelDownloadURL); err != nil {
+	logger.Infof("panel update: downloading %s", PanelDownloadURL)
+	if err := DownloadPanelBinary(ctx, tmp, PanelDownloadURL); err != nil {
 		_ = os.Remove(tmp)
 		// A cancelled download surfaces as a transport error; ctx is what says the
 		// user asked for it rather than the network failing.
@@ -276,9 +285,9 @@ func (s *ServerService) UpdatePanel() error {
 	// Validate it's an ELF for THIS architecture — a 404 HTML page, a truncated
 	// file, or a wrong-arch asset would otherwise be renamed over the running binary
 	// and brick the panel (the restart would fail with exec-format-error).
-	if !isCompatibleBinary(tmp) {
+	if !IsCompatibleBinary(tmp) {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("downloaded file is not a %s Linux binary (no valid '%s' asset?)", runtime.GOARCH, panelAsset)
+		return fmt.Errorf("downloaded file is not a %s Linux binary (no valid '%s' asset?)", runtime.GOARCH, PanelAsset)
 	}
 	if err := os.Chmod(tmp, 0o755); err != nil {
 		_ = os.Remove(tmp)
@@ -286,7 +295,7 @@ func (s *ServerService) UpdatePanel() error {
 	}
 
 	// A cancel can land between the download returning and the hook being dropped
-	// below. ctx is not consulted anywhere after downloadPanelBinary, so without
+	// below. ctx is not consulted anywhere after DownloadPanelBinary, so without
 	// this the user would get an HTTP success for their cancel and be updated
 	// anyway. Checked before the install starts, which is the last moment aborting
 	// is free.
@@ -308,7 +317,7 @@ func (s *ServerService) UpdatePanel() error {
 
 	// Keep a copy of the current binary next to it so a bad update can be rolled
 	// back manually (mv vpn-ui.bak vpn-ui): once renamed, the old inode is gone.
-	if err := copyFileBestEffort(exe, exe+".bak"); err == nil {
+	if err := CopyFile(exe, exe+".bak"); err == nil {
 		_ = os.Chmod(exe+".bak", 0o755)
 	} else {
 		logger.Warning("panel update: binary backup failed (continuing):", err)
@@ -353,8 +362,8 @@ func (s *ServerService) CancelPanelUpdate() error {
 	return nil
 }
 
-// downloadPanelBinary streams url into dst (0755), aborting if ctx is cancelled.
-func downloadPanelBinary(ctx context.Context, dst, url string) error {
+// DownloadPanelBinary streams url into dst (0755), aborting if ctx is cancelled.
+func DownloadPanelBinary(ctx context.Context, dst, url string) error {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -399,10 +408,10 @@ func elfMachineFor(goarch string) (uint16, bool) {
 	return 0, false
 }
 
-// isCompatibleBinary reports whether path is an ELF whose architecture matches the
+// IsCompatibleBinary reports whether path is an ELF whose architecture matches the
 // running panel. Guards against installing an HTML error page, a truncated file, or
 // a wrong-architecture asset over the live binary (which would brick the restart).
-func isCompatibleBinary(path string) bool {
+func IsCompatibleBinary(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
@@ -445,17 +454,17 @@ func backupPanelDB() {
 	}
 	base := fmt.Sprintf("vpn-ui_%s.db", config.GetVersion())
 	dst := filepath.Join(dir, base)
-	if err := copyFileBestEffort(db, dst); err != nil {
+	if err := CopyFile(db, dst); err != nil {
 		logger.Warning("panel update: DB backup failed:", err)
 		return
 	}
 	for _, side := range []string{"-wal", "-shm"} {
-		_ = copyFileBestEffort(db+side, dst+side)
+		_ = CopyFile(db+side, dst+side)
 	}
 	logger.Infof("panel update: backed up DB -> %s", dst)
 }
 
-func copyFileBestEffort(src, dst string) error {
+func CopyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err

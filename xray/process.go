@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -30,6 +31,17 @@ func GetBinaryPath() string {
 // GetConfigPath returns the path to the Xray configuration file in the binary folder.
 func GetConfigPath() string {
 	return config.GetBinFolderPath() + "/config.json"
+}
+
+// GetSpeedLimitPath returns the path to the per-account speed limit sidecar file.
+//
+// The rates live BESIDE config.json rather than in it: they change whenever an
+// account crosses its "Limit After" threshold, and anything inside the Config graph
+// makes Config.Equals report a change, which restarts Xray and drops every live
+// connection on the box. The patched core watches this file's mtime instead, so a
+// rate change costs a reload of one small JSON document.
+func GetSpeedLimitPath() string {
+	return config.GetBinFolderPath() + "/speedlimits.json"
 }
 
 // GetGeositePath returns the path to the geosite data file used by Xray.
@@ -264,6 +276,21 @@ func (p *process) Start() (err error) {
 
 	cmd := exec.Command(GetBinaryPath(), "-c", configPath)
 	p.cmd = cmd
+
+	// Hand the speed limit sidecar to the patched core out of band. An env var is used
+	// rather than a config section because Xray's app configs are protobuf Any values,
+	// so a plain JSON side-channel there would drag infra/conf and codegen into the
+	// fork patch, and because anything in the config restarts Xray on every change.
+	//
+	// Resolve to an absolute path: cmd.Dir is never set, so Xray inherits whatever cwd
+	// the panel was started with, and GetBinFolderPath is RELATIVE ("bin") unless
+	// VPNUI_BIN_FOLDER overrides it. Resolving here pins the path to the cwd the panel
+	// itself resolves "bin" against, instead of trusting Xray to resolve it the same way.
+	speedLimitPath := GetSpeedLimitPath()
+	if abs, absErr := filepath.Abs(speedLimitPath); absErr == nil {
+		speedLimitPath = abs
+	}
+	cmd.Env = append(os.Environ(), "XRAY_SPEEDLIMIT_FILE="+speedLimitPath)
 
 	cmd.Stdout = p.logWriter
 	cmd.Stderr = p.logWriter

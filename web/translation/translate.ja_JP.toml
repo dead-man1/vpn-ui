@@ -327,6 +327,18 @@
 "trafficMultiplierFromStart" = "= すべてのトラフィックに適用。(単位: GB)"
 "trafficMultiplierValue" = "倍率"
 "trafficMultiplierValueDesc" = "しきい値を超えたトラフィックをクライアントの割り当てから何倍で差し引くか。例えば 2 の場合、10 MB の使用量が 20 MB として計上されます。"
+"speedLimitTitle" = "速度制限"
+"speedLimitDesc" = "このインバウンドの各アカウントを一定の速度に制限します。制限はアカウントごとです。各クライアントがこの速度をそれぞれ利用でき、共有の上限ではありません。"
+"speedLimitSeparateTitle" = "方向ごとに設定"
+"speedLimitSeparateDesc" = "ダウンロードとアップロードの速度を個別に設定します。オフの場合、1 つの速度が各方向をそれぞれ制限します (合計ではありません)。"
+"speedLimitValue" = "速度"
+"speedLimitValueDesc" = "アカウントごとの速度 (単位: KB/s)。ダウンロードとアップロードをそれぞれこの速度で制限します。0 = 無制限。"
+"speedLimitDown" = "ダウンロード"
+"speedLimitDownDesc" = "アカウントごとのダウンロード速度 (単位: KB/s)。0 = 無制限。"
+"speedLimitUp" = "アップロード"
+"speedLimitUpDesc" = "アカウントごとのアップロード速度 (単位: KB/s)。0 = 無制限。"
+"speedLimitApplyAfter" = "適用開始"
+"speedLimitFromStart" = "= 最初から制限。(単位: GB)"
 "lastReset" = "最後のリセット"
 
 [pages.client]

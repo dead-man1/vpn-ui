@@ -14,6 +14,12 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/logger"
 )
 
+// MenuScriptPath is where the `vpn-ui` management menu is installed, by
+// `vpn-ui-amd64 install-menu` (which deploy.sh runs on every install and update).
+// Declared here, in the package that must REMOVE it, so the installer in main.go
+// and this teardown can never drift apart on the path.
+const MenuScriptPath = "/usr/bin/vpn-ui"
+
 // UninstallOptions configures a host teardown.
 type UninstallOptions struct {
 	// ExePath is the running panel binary, used to kill any *other* panel
@@ -55,6 +61,16 @@ func Uninstall(opts UninstallOptions) *UninstallReport {
 	} else {
 		r.Removed = append(r.Removed, unitPath(name))
 	}
+
+	// 1b. The `vpn-ui` management menu. Unlinking it while it is the very script
+	//     running this uninstall is safe on Linux: bash holds an open fd on it, so
+	//     the inode outlives the directory entry (same reason main.runUninstall can
+	//     remove the running binary).
+	removePath(r, MenuScriptPath)
+	// The panel's control socket, now that step 1 stopped the panel that served it.
+	// A leftover socket file is what StartControlSocket's stale-socket check exists
+	// to clear, but an uninstall should not leave one behind at all.
+	removePath(r, ControlSocketPath())
 
 	// 2. Stop/kill the daemons a live panel supervised (our fresh process's
 	//    procMgr is empty, so fall back to pkill by resolved binary path).

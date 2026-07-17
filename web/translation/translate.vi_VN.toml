@@ -327,6 +327,18 @@
 "trafficMultiplierFromStart" = "= Áp dụng cho toàn bộ lưu lượng. (đơn vị: GB)"
 "trafficMultiplierValue" = "Hệ số nhân"
 "trafficMultiplierValueDesc" = "Lưu lượng vượt ngưỡng bị trừ vào hạn mức của người dùng gấp bao nhiêu lần. Ví dụ, 2 sẽ tính 10 MB sử dụng thành 20 MB."
+"speedLimitTitle" = "Giới hạn tốc độ"
+"speedLimitDesc" = "Giới hạn mỗi tài khoản trên inbound này ở một tốc độ cố định. Giới hạn áp dụng cho từng tài khoản: mỗi người dùng có mức riêng ở tốc độ này, không phải hạn mức dùng chung."
+"speedLimitSeparateTitle" = "Tách riêng hai chiều"
+"speedLimitSeparateDesc" = "Đặt tốc độ tải xuống và tải lên riêng biệt. Khi tắt, một tốc độ sẽ giới hạn từng chiều riêng rẽ (không phải tổng gộp)."
+"speedLimitValue" = "Tốc độ"
+"speedLimitValueDesc" = "Tốc độ cho mỗi tài khoản, đơn vị KB/s. Giới hạn tải xuống và tải lên riêng biệt, mỗi chiều ở tốc độ này. 0 = không giới hạn."
+"speedLimitDown" = "Tải xuống"
+"speedLimitDownDesc" = "Tốc độ tải xuống cho mỗi tài khoản, đơn vị KB/s. 0 = không giới hạn."
+"speedLimitUp" = "Tải lên"
+"speedLimitUpDesc" = "Tốc độ tải lên cho mỗi tài khoản, đơn vị KB/s. 0 = không giới hạn."
+"speedLimitApplyAfter" = "Áp dụng sau"
+"speedLimitFromStart" = "= Giới hạn ngay từ đầu. (đơn vị: GB)"
 "lastReset" = "Đặt lại lần cuối"
 
 [pages.client]

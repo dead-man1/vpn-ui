@@ -327,6 +327,18 @@
 "trafficMultiplierFromStart" = "= Terapkan ke semua trafik. (satuan: GB)"
 "trafficMultiplierValue" = "Pengali"
 "trafficMultiplierValueDesc" = "Berapa kali lipat trafik di atas ambang batas dihitung terhadap kuota klien. Misalnya, 2 menghitung penggunaan 10 MB sebagai 20 MB."
+"speedLimitTitle" = "Batas Kecepatan"
+"speedLimitDesc" = "Batasi setiap akun pada inbound ini ke laju tetap. Batas berlaku per akun: setiap klien mendapat jatah sendiri pada laju ini, bukan kuota bersama."
+"speedLimitSeparateTitle" = "Pisahkan Arah"
+"speedLimitSeparateDesc" = "Atur laju unduh dan unggah secara terpisah. Jika mati, satu laju membatasi tiap arah sendiri-sendiri (bukan gabungan)."
+"speedLimitValue" = "Laju"
+"speedLimitValueDesc" = "Laju per akun, dalam KB/s. Membatasi unduh dan unggah secara terpisah, masing-masing pada laju ini. 0 = tanpa batas."
+"speedLimitDown" = "Unduh"
+"speedLimitDownDesc" = "Laju unduh per akun, dalam KB/s. 0 = tanpa batas."
+"speedLimitUp" = "Unggah"
+"speedLimitUpDesc" = "Laju unggah per akun, dalam KB/s. 0 = tanpa batas."
+"speedLimitApplyAfter" = "Terapkan Setelah"
+"speedLimitFromStart" = "= Batasi sejak awal. (satuan: GB)"
 "lastReset" = "Reset Terakhir"
 
 [pages.client]

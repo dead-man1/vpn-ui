@@ -327,6 +327,18 @@
 "trafficMultiplierFromStart" = "= اعمال روی تمام ترافیک. (واحد: GB)"
 "trafficMultiplierValue" = "ضریب"
 "trafficMultiplierValueDesc" = "ترافیک بعد از آستانه چند برابر از سهمیه کاربر کم می‌شود. برای مثال، 2 یعنی 10 MB مصرف به‌عنوان 20 MB حساب می‌شود."
+"speedLimitTitle" = "محدودیت سرعت"
+"speedLimitDesc" = "سرعت هر حساب روی این ورودی را به مقدار ثابتی محدود می‌کند. محدودیت برای هر حساب جداگانه است: هر کاربر سهم خودش را با این سرعت دارد و سهمیه مشترک نیست."
+"speedLimitSeparateTitle" = "تفکیک جهت‌ها"
+"speedLimitSeparateDesc" = "سرعت دانلود و آپلود را جداگانه تنظیم کنید. وقتی خاموش باشد، یک سرعت هر جهت را به‌صورت مستقل محدود می‌کند (مجموع دو جهت نیست)."
+"speedLimitValue" = "سرعت"
+"speedLimitValueDesc" = "سرعت هر حساب، بر حسب KB/s. دانلود و آپلود را جداگانه و هرکدام با همین سرعت محدود می‌کند. 0 = بدون محدودیت."
+"speedLimitDown" = "دانلود"
+"speedLimitDownDesc" = "سرعت دانلود هر حساب، بر حسب KB/s. 0 = بدون محدودیت."
+"speedLimitUp" = "آپلود"
+"speedLimitUpDesc" = "سرعت آپلود هر حساب، بر حسب KB/s. 0 = بدون محدودیت."
+"speedLimitApplyAfter" = "اعمال پس از"
+"speedLimitFromStart" = "= محدودسازی از ابتدا. (واحد: GB)"
 "lastReset" = "آخرین بازنشانی"
 
 [pages.client]

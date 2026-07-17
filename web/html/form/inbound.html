@@ -257,6 +257,114 @@
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
+                    {{ i18n "pages.inbounds.speedLimitDesc" }}
+                </template>
+                {{ i18n "pages.inbounds.speedLimitTitle" }}
+                <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+        </template>
+        <a-switch v-model="dbInbound.speedLimitEnable"></a-switch>
+    </a-form-item>
+
+    <template v-if="dbInbound.speedLimitEnable">
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        {{ i18n "pages.inbounds.speedLimitSeparateDesc" }}
+                    </template>
+                    {{ i18n "pages.inbounds.speedLimitSeparateTitle" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <!--
+              Seed Up from Down when switching to separate boxes. Without this, an
+              operator who capped both directions at one value and then flips this on
+              silently gets an UNLIMITED upload, because 0 means unlimited and Up has
+              never been set. Carrying the value over keeps the toggle from loosening
+              a limit. Only seeds when Up is still unset, so it never clobbers a real
+              value on a second toggle. $event is the NEW checked state, so this does
+              not depend on running before or after v-model's own handler.
+            -->
+            <a-switch
+                v-model="dbInbound.speedLimitSeparate"
+                @change="if ($event && !dbInbound.speedLimitUp) { dbInbound.speedLimitUp = dbInbound.speedLimitDown }"
+            ></a-switch>
+        </a-form-item>
+
+        <template v-if="dbInbound.speedLimitSeparate">
+            <a-form-item>
+                <template slot="label">
+                    <a-tooltip>
+                        <template slot="title">
+                            {{ i18n "pages.inbounds.speedLimitDownDesc" }}
+                        </template>
+                        {{ i18n "pages.inbounds.speedLimitDown" }}
+                        <a-icon type="question-circle"></a-icon>
+                    </a-tooltip>
+                </template>
+                <a-input-number
+                    v-model.number="dbInbound.speedLimitDown"
+                    :min="0"
+                ></a-input-number>
+            </a-form-item>
+
+            <a-form-item>
+                <template slot="label">
+                    <a-tooltip>
+                        <template slot="title">
+                            {{ i18n "pages.inbounds.speedLimitUpDesc" }}
+                        </template>
+                        {{ i18n "pages.inbounds.speedLimitUp" }}
+                        <a-icon type="question-circle"></a-icon>
+                    </a-tooltip>
+                </template>
+                <a-input-number
+                    v-model.number="dbInbound.speedLimitUp"
+                    :min="0"
+                ></a-input-number>
+            </a-form-item>
+        </template>
+
+        <template v-else>
+            <a-form-item>
+                <template slot="label">
+                    <a-tooltip>
+                        <template slot="title">
+                            {{ i18n "pages.inbounds.speedLimitValueDesc" }}
+                        </template>
+                        {{ i18n "pages.inbounds.speedLimitValue" }}
+                        <a-icon type="question-circle"></a-icon>
+                    </a-tooltip>
+                </template>
+                <a-input-number
+                    v-model.number="dbInbound.speedLimitDown"
+                    :min="0"
+                ></a-input-number>
+            </a-form-item>
+        </template>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        0 <span>{{ i18n "pages.inbounds.speedLimitFromStart" }}</span>
+                    </template>
+                    {{ i18n "pages.inbounds.speedLimitApplyAfter" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input-number
+                v-model.number="dbInbound.speedLimitAfterGB"
+                :min="0"
+            ></a-input-number>
+        </a-form-item>
+    </template>
+
+    <a-form-item>
+        <template slot="label">
+            <a-tooltip>
+                <template slot="title">
                     <span
                         >{{ i18n "pages.inbounds.periodicTrafficResetDesc"
                         }}</span

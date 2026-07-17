@@ -327,6 +327,18 @@
 "trafficMultiplierFromStart" = "= Aplicar a todo el tráfico. (unidad: GB)"
 "trafficMultiplierValue" = "Multiplicador"
 "trafficMultiplierValueDesc" = "Cuántas veces cuenta el tráfico que supera el umbral en la cuota del cliente. Por ejemplo, 2 contabiliza 10 MB de uso como 20 MB."
+"speedLimitTitle" = "Límite de velocidad"
+"speedLimitDesc" = "Limita cada cuenta de esta entrada a una velocidad fija. El límite es por cuenta: cada cliente dispone de esa velocidad por separado, no es un total compartido."
+"speedLimitSeparateTitle" = "Separar direcciones"
+"speedLimitSeparateDesc" = "Define las velocidades de bajada y subida por separado. Si está desactivado, una sola velocidad limita cada dirección por su cuenta (no es un total combinado)."
+"speedLimitValue" = "Velocidad"
+"speedLimitValueDesc" = "Velocidad por cuenta, en KB/s. Limita la bajada y la subida por separado, cada una a esta velocidad. 0 = sin límite."
+"speedLimitDown" = "Bajada"
+"speedLimitDownDesc" = "Velocidad de bajada por cuenta, en KB/s. 0 = sin límite."
+"speedLimitUp" = "Subida"
+"speedLimitUpDesc" = "Velocidad de subida por cuenta, en KB/s. 0 = sin límite."
+"speedLimitApplyAfter" = "Aplicar después de"
+"speedLimitFromStart" = "= Limitar desde el principio. (unidad: GB)"
 "lastReset" = "Último reinicio"
 
 [pages.client]

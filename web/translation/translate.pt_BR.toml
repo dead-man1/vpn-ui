@@ -327,6 +327,18 @@
 "trafficMultiplierFromStart" = "= Aplicar a todo o tráfego. (unidade: GB)"
 "trafficMultiplierValue" = "Multiplicador"
 "trafficMultiplierValueDesc" = "Quantas vezes o tráfego acima do limite conta na cota do cliente. Por exemplo, 2 conta 10 MB de uso como 20 MB."
+"speedLimitTitle" = "Limite de Velocidade"
+"speedLimitDesc" = "Limita cada conta deste inbound a uma taxa fixa. O limite é por conta: cada cliente recebe sua própria cota nessa taxa, não é um total compartilhado."
+"speedLimitSeparateTitle" = "Separar Direções"
+"speedLimitSeparateDesc" = "Define as taxas de download e upload separadamente. Quando desligado, uma taxa limita cada direção por si só (não é um total combinado)."
+"speedLimitValue" = "Taxa"
+"speedLimitValueDesc" = "Taxa por conta, em KB/s. Limita download e upload separadamente, cada um nessa taxa. 0 = sem limite."
+"speedLimitDown" = "Download"
+"speedLimitDownDesc" = "Taxa de download por conta, em KB/s. 0 = sem limite."
+"speedLimitUp" = "Upload"
+"speedLimitUpDesc" = "Taxa de upload por conta, em KB/s. 0 = sem limite."
+"speedLimitApplyAfter" = "Aplicar Após"
+"speedLimitFromStart" = "= Limitar desde o início. (unidade: GB)"
 "lastReset" = "Último Reset"
 
 [pages.client]

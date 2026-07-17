@@ -122,6 +122,28 @@ type Inbound struct {
 	TrafficMultiplierAfter  int64   `json:"trafficMultiplierAfter" form:"trafficMultiplierAfter" gorm:"default:0"`   // Threshold in bytes, counted on up+down
 	TrafficMultiplier       float64 `json:"trafficMultiplier" form:"trafficMultiplier" gorm:"default:1"`             // Weight applied past the threshold
 
+	// Speed Limit: throttle each account on this inbound to a fixed rate. Configured
+	// per inbound but ENFORCED PER EMAIL: every account gets its OWN bucket at this
+	// rate, so this is not a shared pool for the inbound. Applies to every protocol
+	// (native Xray and the VPN ones alike) because the enforcement point is Xray's
+	// dispatcher, which sits downstream of every inbound.
+	//
+	// These are columns rather than keys in Settings on purpose. Settings is passed
+	// VERBATIM to Xray for native protocols (see GenXrayInboundConfig below), and only
+	// settings["clients"] is rewritten on the way out, so a top-level key here would
+	// leak into Xray's own config. Columns also give every protocol one shared form
+	// instead of a copy per protocol.
+	//
+	// Rates are KB/s (1 KB = 1024 B) to match the UI. They are converted to bytes/s in
+	// exactly one place, where the limiter sidecar is written, so the 1024-vs-1000
+	// question lives there and nowhere else. 0 in a direction means that direction is
+	// unlimited.
+	SpeedLimitEnable   bool  `json:"speedLimitEnable" form:"speedLimitEnable" gorm:"default:0"`     // Whether the limiter applies
+	SpeedLimitSeparate bool  `json:"speedLimitSeparate" form:"speedLimitSeparate" gorm:"default:0"` // false = SpeedLimitDown caps BOTH directions
+	SpeedLimitDown     int   `json:"speedLimitDown" form:"speedLimitDown" gorm:"default:0"`         // KB/s, 0 = unlimited
+	SpeedLimitUp       int   `json:"speedLimitUp" form:"speedLimitUp" gorm:"default:0"`             // KB/s, 0 = unlimited; unused when SpeedLimitSeparate is false
+	SpeedLimitAfter    int64 `json:"speedLimitAfter" form:"speedLimitAfter" gorm:"default:0"`       // Threshold in bytes on up+down; 0 = apply immediately
+
 	// Xray configuration fields
 	Listen         string   `json:"listen" form:"listen"`
 	Port           int      `json:"port" form:"port"`

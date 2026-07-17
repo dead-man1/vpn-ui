@@ -5,6 +5,8 @@ package main
 import (
 	"bufio"
 	"context"
+	_ "embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +15,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,6 +35,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/web"
 	"github.com/mhsanaei/3x-ui/v2/web/global"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
+	"github.com/mhsanaei/3x-ui/v2/xray"
 
 	"github.com/joho/godotenv"
 	"github.com/op/go-logging"
@@ -216,6 +221,15 @@ func runWebServer() {
 		} else if len(files) > 0 {
 			logger.Info("extracted bundled VPN daemons:", len(files), "files to", backend.BinDir())
 		}
+	}
+
+	// The root-only control socket the `vpn-ui-amd64 ctl` CLI (and the vpn-ui menu)
+	// drives Xray and the daemons through. Started before the servers, so it is
+	// already answering by the time the panel is up, and NON-FATAL on failure: it is
+	// a convenience for the CLI, and a panel carrying VPN traffic without it beats a
+	// panel that refused to boot over it.
+	if err := service.StartControlSocket(); err != nil {
+		logger.Warning("control socket unavailable (the vpn-ui menu's Xray/cores items will not work):", err)
 	}
 
 	var server *web.Server
@@ -472,16 +486,7 @@ func randomizeSetting() error {
 	if normPath == "" {
 		normPath = "/"
 	}
-	// Resolve the server's public IPv4 the same way the dashboard does, then
-	// assemble the one-click panel URL. The scheme follows the TLS setting: a
-	// configured web cert (e.g. deploy.sh's self-signed option) means the panel
-	// serves HTTPS, so the printed link must match or it won't connect.
-	ip := service.GetServerIPv4()
-	scheme := "http"
-	if certFile, _ := settingService.GetCertFile(); certFile != "" {
-		scheme = "https"
-	}
-	url := fmt.Sprintf("%s://%s:%d%s", scheme, ip, port, normPath)
+	ip, url := panelAccessURL(&settingService, port, normPath)
 
 	fmt.Println(ansiVpnUI())
 	fmt.Println("Randomized panel settings:")
@@ -560,12 +565,7 @@ func applyExplicitSetting(username, password string, port int, webBasePath strin
 	if u, err := userService.GetFirstUser(); err == nil && u != nil {
 		curUser = u.Username
 	}
-	ip := service.GetServerIPv4()
-	scheme := "http"
-	if certFile, _ := settingService.GetCertFile(); certFile != "" {
-		scheme = "https"
-	}
-	url := fmt.Sprintf("%s://%s:%d%s", scheme, ip, curPort, normPath)
+	ip, url := panelAccessURL(&settingService, curPort, normPath)
 	fmt.Println("Applied panel settings:")
 	fmt.Printf("  Port:     %d\n", curPort)
 	fmt.Printf("  Username: %s\n", curUser)
@@ -581,6 +581,597 @@ func applyExplicitSetting(username, password string, port int, webBasePath strin
 		_ = exec.Command("systemctl", "start", unit).Run()
 	}
 	return nil
+}
+
+// panelAccessURL resolves the server's public IPv4 the same way the dashboard does
+// and assembles the one-click panel URL from it. The scheme follows the TLS
+// setting: a configured web cert (e.g. deploy.sh's self-signed / Let's Encrypt
+// options) means the panel serves HTTPS, so the printed link must match or it
+// won't connect. Shared by --random, --user/--pass/--port/--path and `info` so the
+// three can never print different links for the same panel.
+//
+// The public-IP lookup is an HTTP call to an external service, so callers that do
+// not display the URL should not call this at all (see collectPanelInfo).
+func panelAccessURL(settingService *service.SettingService, port int, normPath string) (ip, url string) {
+	ip = service.GetServerIPv4()
+	scheme := "http"
+	if certFile, _ := settingService.GetCertFile(); certFile != "" {
+		scheme = "https"
+	}
+	return ip, fmt.Sprintf("%s://%s:%d%s", scheme, ip, port, normPath)
+}
+
+// panelInfo is the panel's login/access + service state, as printed by
+// `vpn-ui info`. The JSON field names are a CONTRACT with the vpn-ui menu script:
+// they are what `--json` emits and what `--get <field>` looks up, so the script
+// never greps human output. That coupling (upstream's
+// `x-ui setting -show true | grep -Eo 'port: .+' | awk '{print $2}'`) breaks the
+// moment a printed line is reworded. Keep these names stable; add, don't rename.
+type panelInfo struct {
+	Version              string `json:"version"`
+	Username             string `json:"username"`
+	Port                 int    `json:"port"`
+	WebBasePath          string `json:"webBasePath"`
+	ListenIP             string `json:"listenIP"`
+	SSL                  bool   `json:"ssl"`
+	CertFile             string `json:"certFile"`
+	KeyFile              string `json:"keyFile"`
+	HasDefaultCredential bool   `json:"hasDefaultCredential"`
+	IP                   string `json:"ip"`
+	URL                  string `json:"url"`
+
+	SystemdAvailable bool   `json:"systemdAvailable"`
+	SystemdUnit      string `json:"systemdUnit"`
+	SystemdInstalled bool   `json:"systemdInstalled"`
+	SystemdEnabled   bool   `json:"systemdEnabled"`
+	SystemdActive    bool   `json:"systemdActive"`
+	SystemdState     string `json:"systemdState"` // no-systemd | not-installed | active | inactive
+
+	// PanelRunning is the only trustworthy answer to "is the panel up?": it is true
+	// when a live panel answers on the control socket. The systemd fields above
+	// cannot answer it, because the panel may be running OUTSIDE systemd (the
+	// production box starts it by hand via setsid, unit inactive-but-enabled), in
+	// which case SystemdActive is false while the panel serves happily.
+	PanelRunning bool   `json:"panelRunning"`
+	SocketPath   string `json:"socketPath"`
+	ExePath      string `json:"exePath"`
+
+	// XrayAccessLog is the file the panel's own Xray Logs page reads
+	// (xray.GetAccessLogPath: the `log.access` path out of the Xray config), so the
+	// menu tails exactly what the dashboard shows. Empty means Xray's access log is
+	// disabled: the shipped default is literally "none", which the panel's log page
+	// renders as nothing at all. XrayAccessLogArchive is the rotated copy the IP-limit
+	// job keeps (3xipl-ap.log); it only has content when the access log was enabled.
+	XrayAccessLog        string `json:"xrayAccessLog"`
+	XrayAccessLogArchive string `json:"xrayAccessLogArchive"`
+}
+
+// collectPanelInfo reads the panel's current settings and service state. The DB
+// must already be open (see runInfo).
+//
+// resolvePublicIP gates the IP/URL lookup because it is an HTTP round-trip to an
+// external service with a 3s timeout PER provider: on a box with no outbound
+// internet the menu would stall for many seconds on every single field it reads.
+// Callers that only want, say, systemdUnit pass false.
+func collectPanelInfo(resolvePublicIP bool) panelInfo {
+	settingService := service.SettingService{}
+	userService := service.UserService{}
+
+	info := panelInfo{Version: config.GetVersion()}
+
+	info.Port, _ = settingService.GetPort()
+	info.WebBasePath, _ = settingService.GetBasePath()
+	if info.WebBasePath == "" {
+		info.WebBasePath = "/"
+	}
+	info.ListenIP, _ = settingService.GetListen()
+	info.CertFile, _ = settingService.GetCertFile()
+	info.KeyFile, _ = settingService.GetKeyFile()
+	// The web server serves HTTPS only with BOTH files set, so report SSL the same
+	// way it decides, not on the cert alone.
+	info.SSL = info.CertFile != "" && info.KeyFile != ""
+
+	if u, err := userService.GetFirstUser(); err == nil && u != nil {
+		info.Username = u.Username
+		info.HasDefaultCredential = u.Username == "admin" && crypto.CheckPasswordHash(u.Password, "admin")
+	}
+
+	if resolvePublicIP {
+		info.IP, info.URL = panelAccessURL(&settingService, info.Port, info.WebBasePath)
+	}
+
+	// Never hardcode "vpn-ui": the unit name is operator-configurable (settings key
+	// systemdServiceName), and ServiceState resolves it the same way the panel's own
+	// Settings page does.
+	sd := service.SystemdService{}
+	st := sd.ServiceState()
+	info.SystemdAvailable = st.Available
+	info.SystemdUnit = st.Name
+	info.SystemdInstalled = st.Installed
+	info.SystemdEnabled = st.Enabled
+	info.SystemdActive = st.Active
+	switch {
+	case !st.Available:
+		info.SystemdState = "no-systemd"
+	case !st.Installed:
+		info.SystemdState = "not-installed"
+	case st.Active:
+		info.SystemdState = "active"
+	default:
+		info.SystemdState = "inactive"
+	}
+
+	info.SocketPath = service.ControlSocketPath()
+	info.PanelRunning = ctlPing()
+	info.ExePath, _ = os.Executable()
+
+	if p, err := xray.GetAccessLogPath(); err == nil {
+		// "none" is Xray's own way of spelling "disabled" and is the shipped default
+		// (web/service/config.json). Normalize it to empty so the one rule a consumer
+		// needs is "empty means no access log", rather than knowing Xray's sentinel.
+		if p != "none" {
+			info.XrayAccessLog = p
+		}
+	}
+	info.XrayAccessLogArchive = xray.GetAccessPersistentLogPath()
+
+	return info
+}
+
+// runInfo implements `vpn-ui info [--json|--get <field>]`: the panel's login,
+// access URL and service state in one place. Menu item "View current login info"
+// is just this.
+//
+// It opens the DB ITSELF. Every reader below (SettingService, UserService,
+// SystemdService.GetServiceName) is gorm-backed, and calling one before InitDB
+// nil-derefs gorm and SIGSEGVs. The legacy `setting -show` path only survives
+// because updateSetting happens to run InitDB first in the same invocation.
+func runInfo(args []string) {
+	// Services here log through the logger package (xray.GetAccessLogPath warns when
+	// the Xray config is unreadable), which panics on a nil logger.
+	initLogger()
+	if err := database.InitDB(config.GetDBPath()); err != nil {
+		fmt.Fprintln(os.Stderr, "Database initialization failed:", err)
+		os.Exit(1)
+	}
+
+	asJSON, field := false, ""
+	for i := 0; i < len(args); i++ {
+		key := strings.TrimPrefix(strings.TrimPrefix(args[i], "-"), "-")
+		if eq := strings.IndexByte(key, '='); eq >= 0 {
+			if key[:eq] == "get" {
+				field = key[eq+1:]
+				continue
+			}
+		}
+		switch key {
+		case "json":
+			asJSON = true
+		case "get":
+			if i+1 < len(args) {
+				i++
+				field = args[i]
+			}
+		default:
+			fmt.Fprintf(os.Stderr, "unknown argument for info: %q (use --json or --get <field>)\n", args[i])
+			os.Exit(2)
+		}
+	}
+
+	if field != "" {
+		emitInfoField(field)
+		return
+	}
+	info := collectPanelInfo(true)
+	if asJSON {
+		out, err := json.MarshalIndent(info, "", "  ")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "encoding info failed:", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+		return
+	}
+	printPanelInfo(info)
+}
+
+// emitInfoField prints ONE field's raw value, so a shell can branch on it without
+// jq and without ever parsing prose. The lookup goes through the marshalled JSON
+// rather than a hand-written switch, which is what guarantees `--get` accepts
+// exactly the keys `--json` emits, forever.
+func emitInfoField(field string) {
+	// Only the two fields that need it pay for the public-IP lookup.
+	info := collectPanelInfo(field == "ip" || field == "url")
+	raw, err := json.Marshal(info)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "encoding info failed:", err)
+		os.Exit(1)
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber() // keep Port an integer instead of float64's "8443" -> "8443.000000"
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		fmt.Fprintln(os.Stderr, "decoding info failed:", err)
+		os.Exit(1)
+	}
+	v, ok := m[field]
+	if !ok {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		fmt.Fprintf(os.Stderr, "unknown info field %q\nknown fields: %s\n", field, strings.Join(keys, ", "))
+		os.Exit(1)
+	}
+	fmt.Println(v)
+}
+
+// printPanelInfo renders the human view, in the same shape as --random's printout.
+func printPanelInfo(info panelInfo) {
+	fmt.Println(ansiVpnUI())
+	fmt.Println("Panel:")
+	fmt.Printf("  Version:  %s\n", info.Version)
+	fmt.Printf("  Username: %s\n", info.Username)
+	fmt.Printf("  Port:     %d\n", info.Port)
+	fmt.Printf("  WebPath:  %s\n", info.WebBasePath)
+	listen := info.ListenIP
+	if listen == "" {
+		listen = "(all interfaces)"
+	}
+	fmt.Printf("  Listen:   %s\n", listen)
+	if info.SSL {
+		fmt.Printf("  SSL:      on\n")
+		fmt.Printf("  Cert:     %s\n", info.CertFile)
+		fmt.Printf("  Key:      %s\n", info.KeyFile)
+	} else {
+		fmt.Printf("  SSL:      off (the panel is served over plain HTTP)\n")
+	}
+	fmt.Printf("  IP:       %s\n", info.IP)
+	fmt.Printf("  URL:      %s\n", info.URL)
+	if info.IP == "N/A" {
+		fmt.Println("  (could not detect public IP, substitute the server's address in the URL)")
+	}
+	if info.HasDefaultCredential {
+		fmt.Println("  WARNING:  the default admin/admin credential is still in use. Change it.")
+	}
+
+	fmt.Println("Service:")
+	fmt.Printf("  Unit:     %s (%s)\n", info.SystemdUnit, info.SystemdState)
+	if info.SystemdAvailable && info.SystemdInstalled {
+		fmt.Printf("  OnBoot:   %v\n", info.SystemdEnabled)
+	}
+	if info.PanelRunning {
+		fmt.Printf("  Panel:    running (its control socket answers)\n")
+	} else {
+		fmt.Printf("  Panel:    not running (no answer on %s)\n", info.SocketPath)
+	}
+	// The live box runs the panel by hand under setsid with the unit inactive: say so
+	// plainly, because every systemctl-based conclusion an operator would draw from
+	// the line above is wrong in that state.
+	if info.PanelRunning && !info.SystemdActive {
+		fmt.Println("  NOTE:     the panel is running OUTSIDE systemd, so 'systemctl stop' would")
+		fmt.Printf("            report success and stop nothing. Stop it by PID instead.\n")
+	}
+}
+
+// ctlDial connects to the LIVE panel's control socket.
+func ctlDial() (net.Conn, error) {
+	return net.DialTimeout("unix", service.ControlSocketPath(), 3*time.Second)
+}
+
+// ctlSend sends one command over conn and returns the panel's reply.
+func ctlSend(conn net.Conn, cmd string) (service.ControlResponse, error) {
+	var resp service.ControlResponse
+	req, err := json.Marshal(service.ControlRequest{Cmd: cmd})
+	if err != nil {
+		return resp, err
+	}
+	if _, err := conn.Write(append(req, '\n')); err != nil {
+		return resp, err
+	}
+	// No read deadline: cores.restart-all restarts every core and legitimately takes
+	// tens of seconds. The panel closes the connection if it dies, which unblocks us.
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		return resp, err
+	}
+	if jerr := json.Unmarshal([]byte(line), &resp); jerr != nil {
+		return resp, fmt.Errorf("malformed reply from the panel: %v", jerr)
+	}
+	return resp, nil
+}
+
+// ctlPing reports whether a LIVE panel answers on the control socket. This is what
+// lets `info` (and the menu) tell "the panel is up" from "the unit is active":
+// two different things on a box where the panel was started by hand.
+func ctlPing() bool {
+	conn, err := ctlDial()
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	resp, err := ctlSend(conn, "ping")
+	return err == nil && resp.OK
+}
+
+// runCtl implements `vpn-ui ctl <cmd> [--json]`: hand one command to the RUNNING
+// panel over its control socket and print the reply.
+//
+// When the socket is absent or refuses, this reports that the panel is not running
+// and exits non-zero. It NEVER falls back to doing the work locally, and that is
+// the entire point: Xray and the daemons are children of the live panel tracked by
+// its in-process state, so a local fallback would report a running Xray as stopped
+// and "restart" it into a second, port-colliding copy (see web/service/control.go).
+func runCtl(args []string) {
+	asJSON := false
+	var cmd string
+	for _, a := range args {
+		if strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-") == "json" {
+			asJSON = true
+			continue
+		}
+		if cmd == "" {
+			cmd = a
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "unexpected argument: %q\n", a)
+		os.Exit(2)
+	}
+	if cmd == "" {
+		fmt.Fprintf(os.Stderr, "usage: vpn-ui ctl <command> [--json]\ncommands: %s\n",
+			strings.Join(service.ControlCommands, ", "))
+		os.Exit(2)
+	}
+
+	conn, err := ctlDial()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "the vpn-ui panel is not running: no answer on %s (%v)\n",
+			service.ControlSocketPath(), err)
+		fmt.Fprintln(os.Stderr, "Xray and the VPN daemons are children of the running panel, so they can only")
+		fmt.Fprintln(os.Stderr, "be controlled through it. Start the panel first, then retry.")
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	resp, err := ctlSend(conn, cmd)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "control socket error:", err)
+		os.Exit(1)
+	}
+	if asJSON {
+		out, _ := json.MarshalIndent(resp, "", "  ")
+		fmt.Println(string(out))
+	} else if !resp.OK {
+		fmt.Fprintln(os.Stderr, "error:", resp.Error)
+	} else {
+		if resp.Msg != "" {
+			fmt.Println(resp.Msg)
+		}
+		printCoreStatus(resp.Cores)
+	}
+	if !resp.OK {
+		os.Exit(1)
+	}
+}
+
+// printCoreStatus renders `ctl cores.status` as an aligned table.
+func printCoreStatus(cores []service.CoreStatus) {
+	for _, c := range cores {
+		detail := c.Detail
+		if detail == "" && c.Inbounds > 0 {
+			detail = fmt.Sprintf("%d inbound(s)", c.Inbounds)
+		}
+		if c.Version != "" {
+			detail = strings.TrimSpace(c.Version + " " + detail)
+		}
+		fmt.Printf("  %-12s %-14s %s\n", c.Name, c.State, detail)
+	}
+}
+
+// runUpdate implements `vpn-ui update`: install the latest published release over
+// this binary.
+//
+// It deliberately does NOT call ServerService.UpdatePanel(). That path ends in
+// restartPanel, which without an active systemd unit does
+// syscall.Exec(exe, os.Args). That is correct for the panel process, but from the CLI it
+// would re-exec the CLI with its own `update` arguments and loop. So this reuses
+// the pieces (DownloadPanelBinary, IsCompatibleBinary, the same release asset) and
+// owns the ordering itself: DB backup, swap, restart.
+func runUpdate() {
+	initLogger()
+	if err := database.InitDB(config.GetDBPath()); err != nil {
+		fmt.Fprintln(os.Stderr, "Database initialization failed:", err)
+		os.Exit(1)
+	}
+
+	var serverService service.ServerService
+	fmt.Println(ansiVpnUI())
+	upd, err := serverService.CheckPanelUpdate()
+	if err != nil {
+		// Refuse rather than guess: without the latest tag there is nothing to compare
+		// against, and downloading blind could reinstall the same build for no reason.
+		fmt.Fprintln(os.Stderr, "Could not check for updates:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  Current: %s\n", upd.Current)
+	fmt.Printf("  Latest:  %s\n", upd.Latest)
+	if !upd.Available {
+		fmt.Println("Already up to date, nothing to do.")
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Cannot resolve own path:", err)
+		os.Exit(1)
+	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		exe = resolved
+	}
+
+	tmp := exe + ".new"
+	fmt.Printf("Downloading %s ...\n", service.PanelDownloadURL)
+	if err := service.DownloadPanelBinary(context.Background(), tmp, service.PanelDownloadURL); err != nil {
+		_ = os.Remove(tmp)
+		fmt.Fprintln(os.Stderr, "Download failed:", err)
+		os.Exit(1)
+	}
+	// An HTML 404 page, a truncated transfer or a wrong-arch asset would otherwise be
+	// renamed over the running binary and brick the panel on its next start.
+	if !service.IsCompatibleBinary(tmp) {
+		_ = os.Remove(tmp)
+		fmt.Fprintf(os.Stderr, "Downloaded file is not a %s Linux binary (no valid '%s' asset?)\n",
+			runtime.GOARCH, service.PanelAsset)
+		os.Exit(1)
+	}
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		_ = os.Remove(tmp)
+		fmt.Fprintln(os.Stderr, "Could not make the downloaded binary executable:", err)
+		os.Exit(1)
+	}
+
+	// The DB comes FIRST, before the swap, so the restore point predates any
+	// migration the new binary may run on its first start.
+	backup, err := backupPanelDBForUpdate(upd.Current)
+	if err != nil {
+		_ = os.Remove(tmp)
+		fmt.Fprintln(os.Stderr, "DB backup failed:", err)
+		fmt.Fprintln(os.Stderr, "Aborting before replacing the binary: an update without a good backup is not worth it.")
+		os.Exit(1)
+	}
+	fmt.Printf("Backed up DB -> %s\n", backup)
+
+	// Keep the outgoing binary next to the new one: once renamed over, its inode is
+	// gone, and this is the only way back from a bad release (mv the .bak over it).
+	if err := service.CopyFile(exe, exe+".bak"); err == nil {
+		_ = os.Chmod(exe+".bak", 0o755)
+	} else {
+		fmt.Fprintln(os.Stderr, "warning: could not keep a backup of the current binary:", err)
+	}
+
+	if err := os.Rename(tmp, exe); err != nil {
+		_ = os.Remove(tmp)
+		fmt.Fprintln(os.Stderr, "Replacing the binary failed:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Installed %s -> %s\n", upd.Latest, exe)
+
+	// Refresh /usr/bin/vpn-ui from the NEW binary, not from this (outgoing) one: the
+	// menu script ships inside the binary precisely so the two always match, and a
+	// menu from the old release driving the new binary is the version skew this
+	// design exists to prevent. Best-effort: a failed menu refresh must not make a
+	// successful binary update look failed.
+	if err := exec.Command(exe, "install-menu").Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not refresh the %s menu script: %v\n", service.MenuScriptPath, err)
+	}
+
+	var sd service.SystemdService
+	unit := sd.GetServiceName()
+	if exec.Command("systemctl", "is-active", "--quiet", unit).Run() == nil {
+		fmt.Printf("Restarting %s ...\n", unit)
+		if err := exec.Command("systemctl", "restart", unit).Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Restart failed: %v\nRestart it yourself: systemctl restart %s\n", err, unit)
+			os.Exit(1)
+		}
+		fmt.Println("Done. The panel now runs the new binary.")
+		return
+	}
+
+	// No active unit. Do not pretend the update took effect: the swapped file only
+	// runs on the next start, and on a box where the panel was launched by hand
+	// (setsid ./vpn-ui-amd64 &) the OLD binary keeps serving until someone kills it.
+	fmt.Printf("The new binary is installed, but the unit %q is not active, so nothing was restarted.\n", unit)
+	if ctlPing() {
+		fmt.Println("A panel IS running outside systemd (its control socket answers): it keeps serving")
+		fmt.Println("the OLD binary until you stop that process and start the new one.")
+	} else {
+		fmt.Printf("Start the panel when ready: systemctl start %s\n", unit)
+	}
+}
+
+// backupPanelDBForUpdate snapshots the DB next to itself, timestamped and tagged
+// with the OUTGOING version, and returns the backup's path. deploy.sh:198-217 is
+// the model: several updates each keep their own restore point, and a failed copy
+// aborts the update rather than replacing the binary on a hope.
+//
+// service.backupPanelDB (the in-panel updater's) is not reused: it is best-effort
+// and single-slot (vpn-ui_<version>.db), so a second update from the same version
+// silently overwrites the only copy of the DB you would want back.
+//
+// Unlike deploy.sh we do not stop the panel first. Swapping the binary does not
+// need it, and taking every VPN down for a file rename that only takes effect on
+// the next restart would be a poor trade. That does mean a live panel may be
+// writing: checkpointing the WAL into the main file and copying the sidecars
+// alongside keeps the copied SET recoverable, which is the same bargain deploy.sh
+// makes with its own sidecar copies.
+func backupPanelDBForUpdate(fromVersion string) (string, error) {
+	db := config.GetDBPath()
+	if _, err := os.Stat(db); err != nil {
+		return "", fmt.Errorf("database %s: %w", db, err)
+	}
+	dir := filepath.Join(filepath.Dir(db), "backups")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	// Fold the WAL into the main DB so the copy is as close to a point-in-time
+	// snapshot as a plain file copy can be.
+	if gdb := database.GetDB(); gdb != nil {
+		if sqlDB, err := gdb.DB(); err == nil {
+			_, _ = sqlDB.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+		}
+	}
+	if fromVersion == "" {
+		fromVersion = "unknown"
+	}
+	dst := filepath.Join(dir, fmt.Sprintf("vpn-ui_%s_%s.db", fromVersion, time.Now().Format("20060102-150405")))
+	if err := service.CopyFile(db, dst); err != nil {
+		return "", fmt.Errorf("%s -> %s: %w", db, dst, err)
+	}
+	for _, side := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(db + side); err != nil {
+			continue // checkpointed away or never created: nothing to copy
+		}
+		if err := service.CopyFile(db+side, dst+side); err != nil {
+			return "", fmt.Errorf("%s -> %s: %w", db+side, dst+side, err)
+		}
+	}
+	return dst, nil
+}
+
+// menuScript is the `vpn-ui` management menu, shipped INSIDE the binary it drives.
+//
+// Upstream installs its menu by curling raw.githubusercontent at `main`, which
+// pins the tip of the default branch even when the box is running a tagged
+// release, so an old install self-updates into a menu whose numbering does not
+// match its own binary. Embedding removes the possibility: the script and the
+// binary are one artifact, and `update` reinstalls the menu by running
+// `install-menu` on the NEW binary. It also means deploy.sh can install the menu
+// while piped from curl, with no second download.
+//
+//go:embed vpn-ui.sh
+var menuScript []byte
+
+// installMenuScript implements `vpn-ui install-menu [path]`: write the embedded
+// menu to /usr/bin/vpn-ui (0755). deploy.sh runs it on both fresh install and
+// update; `update` runs it again from the newly installed binary.
+func installMenuScript(args []string) {
+	dest := service.MenuScriptPath
+	if len(args) > 0 && args[0] != "" {
+		dest = args[0]
+	}
+	// WriteFileAtomic (temp file + rename) rather than a plain write, because the
+	// target may be THE SCRIPT CURRENTLY RUNNING: the menu's own Update item calls
+	// this via `vpn-ui-amd64 update`. bash reads a script lazily by offset from an
+	// open fd, so overwriting it in place would feed the running shell the tail of a
+	// different file. Renaming leaves the old inode intact for as long as bash holds
+	// it open.
+	if err := backend.WriteFileAtomic(dest, menuScript, 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to install the management menu:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Installed the vpn-ui management menu -> %s (run: %s)\n", dest, filepath.Base(dest))
 }
 
 // applyCredential updates the first user's login from the CLI: both fields set both;
@@ -649,7 +1240,13 @@ func showSetting(show bool) {
 			fmt.Println("get current user info failed, error info:", err)
 		}
 
-		if userModel.Username == "" || userModel.Password == "" {
+		// GetFirstUser returns a NIL model together with that error (and on an empty
+		// user table), so every dereference below has to be guarded. The unguarded
+		// userModel.Username here panicked on exactly the failure the line above just
+		// reported.
+		if userModel == nil {
+			fmt.Println("current username or password is empty")
+		} else if userModel.Username == "" || userModel.Password == "" {
 			fmt.Println("current username or password is empty")
 		}
 
@@ -660,9 +1257,8 @@ func showSetting(show bool) {
 			fmt.Println("Panel is secure with SSL")
 		}
 
-		hasDefaultCredential := func() bool {
-			return userModel.Username == "admin" && crypto.CheckPasswordHash(userModel.Password, "admin")
-		}()
+		hasDefaultCredential := userModel != nil &&
+			userModel.Username == "admin" && crypto.CheckPasswordHash(userModel.Password, "admin")
 
 		fmt.Println("hasDefaultCredential:", hasDefaultCredential)
 		fmt.Println("port:", port)
@@ -1654,6 +2250,12 @@ func main() {
 		fmt.Println("    run            run web panel")
 		fmt.Println("    migrate        migrate form other/old vpn-ui")
 		fmt.Println("    setting        set settings")
+		fmt.Println("    info           show the panel login, access URL and service state")
+		fmt.Println("                   (--json for scripts, --get <field> for one raw value)")
+		fmt.Println("    ctl <cmd>      control the RUNNING panel over its socket:")
+		fmt.Println("                   " + strings.Join(service.ControlCommands, ", "))
+		fmt.Println("    update         install the latest release (backs the DB up first)")
+		fmt.Println("    install-menu   install the 'vpn-ui' management menu to " + service.MenuScriptPath)
 		fmt.Println("    --systemd      install+enable+start the panel as a systemd service")
 		fmt.Println("    --random       randomize panel port + username + password + web path")
 		fmt.Println("                   (combinable, e.g. --random --systemd)")
@@ -1728,6 +2330,14 @@ func main() {
 		} else {
 			updateCert(webCertFile, webKeyFile)
 		}
+	case "info":
+		runInfo(os.Args[2:])
+	case "ctl":
+		runCtl(os.Args[2:])
+	case "update":
+		runUpdate()
+	case "install-menu":
+		installMenuScript(os.Args[2:])
 	case "openvpn-auth":
 		openvpnAuth()
 	case "openvpn-connect":

@@ -327,6 +327,18 @@
 "trafficMultiplierFromStart" = "= 對全部流量生效。(單位: GB)"
 "trafficMultiplierValue" = "倍率"
 "trafficMultiplierValueDesc" = "超過閾值的流量以幾倍計入客戶配額。例如，2 表示 10 MB 用量以 20 MB 計算。"
+"speedLimitTitle" = "速度限制"
+"speedLimitDesc" = "將此入站的每個帳戶限制在固定速率。限制以帳戶為單位：每個客戶各自享有該速率，而不是共用一個總額。"
+"speedLimitSeparateTitle" = "分別設定方向"
+"speedLimitSeparateDesc" = "分別設定下載和上傳速率。關閉時，同一速率分別限制每個方向 (不是合計總量)。"
+"speedLimitValue" = "速率"
+"speedLimitValueDesc" = "每個帳戶的速率，單位 KB/s。下載和上傳分別以此速率限制。0 = 不限制。"
+"speedLimitDown" = "下載"
+"speedLimitDownDesc" = "每個帳戶的下載速率，單位 KB/s。0 = 不限制。"
+"speedLimitUp" = "上傳"
+"speedLimitUpDesc" = "每個帳戶的上傳速率，單位 KB/s。0 = 不限制。"
+"speedLimitApplyAfter" = "生效閾值"
+"speedLimitFromStart" = "= 從一開始就限制。(單位: GB)"
 "lastReset" = "上次重置"
 
 [pages.client]

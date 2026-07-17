@@ -327,6 +327,18 @@
 "trafficMultiplierFromStart" = "= Tüm trafiğe uygula. (birim: GB)"
 "trafficMultiplierValue" = "Çarpan"
 "trafficMultiplierValueDesc" = "Eşiği aşan trafiğin müşterinin kotasından kaç katı düşüleceği. Örneğin 2, 10 MB kullanımı 20 MB olarak sayar."
+"speedLimitTitle" = "Hız Sınırı"
+"speedLimitDesc" = "Bu gelen bağlantıdaki her hesabı sabit bir hızla sınırla. Sınır hesap başınadır: her müşteri bu hızda kendi payını alır, ortak bir havuz değildir."
+"speedLimitSeparateTitle" = "Yönleri Ayır"
+"speedLimitSeparateDesc" = "İndirme ve yükleme hızlarını ayrı ayrı belirle. Kapalıyken tek bir hız her yönü kendi başına sınırlar (birleşik toplam değildir)."
+"speedLimitValue" = "Hız"
+"speedLimitValueDesc" = "Hesap başına hız, KB/s cinsinden. İndirme ve yüklemeyi ayrı ayrı, her birini bu hızda sınırlar. 0 = sınırsız."
+"speedLimitDown" = "İndirme"
+"speedLimitDownDesc" = "Hesap başına indirme hızı, KB/s cinsinden. 0 = sınırsız."
+"speedLimitUp" = "Yükleme"
+"speedLimitUpDesc" = "Hesap başına yükleme hızı, KB/s cinsinden. 0 = sınırsız."
+"speedLimitApplyAfter" = "Şundan Sonra Uygula"
+"speedLimitFromStart" = "= Baştan itibaren sınırla. (birim: GB)"
 "lastReset" = "Son Sıfırlama"
 
 [pages.client]

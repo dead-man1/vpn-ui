@@ -177,18 +177,104 @@ func (s *InboundService) GetClients(inbound *model.Inbound) ([]model.Client, err
 	return clients, nil
 }
 
-func (s *InboundService) getAllEmails() ([]string, error) {
+// A client's email is the panel's GLOBAL account identity, not a per-inbound label:
+// it is the unique key of client_traffics, the name RADIUS authenticates and the
+// selector the per-account routing rules are built from. Two clients sharing one
+// email are therefore one account to everything downstream, whichever inbounds they
+// live in, which is why the checks below query across all inbounds rather than the
+// one being edited.
+
+// sameEmail reports whether two emails name the same account. Identity is case- and
+// whitespace-insensitive, so every comparison must be too: comparing with == would
+// read a "Bob" -> "bob" rename as a change of identity.
+func sameEmail(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// containsEmail is the identity-aware counterpart of contains (which stays exact for
+// PPP usernames). It trims the stored side too, because rows written before
+// normalizeClientEmails existed may still carry untrimmed emails.
+func containsEmail(emails []string, email string) bool {
+	for _, e := range emails {
+		if sameEmail(e, email) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeClientEmails trims surrounding whitespace off every client email in an
+// inbound's settings JSON, which is what later gets persisted.
+//
+// Normalizing on WRITE rather than only at compare time: client_traffics.email is
+// the unique index, so storing "bob " beside "bob" leaves two keys the index is
+// perfectly happy to accept, and downstream two accounts. Trimming before the
+// settings are parsed means the key that lands in the DB is the one uniqueness was
+// checked against.
+//
+// The JSON is only rebuilt when something actually changed, so the common case does
+// not churn key order or re-encode numbers.
+func normalizeClientEmails(settings string) string {
+	var root map[string]any
+	if err := json.Unmarshal([]byte(settings), &root); err != nil || root == nil {
+		// Malformed settings are the callers' own unmarshal to report, not ours.
+		return settings
+	}
+	list, ok := root["clients"].([]any)
+	if !ok {
+		return settings
+	}
+	changed := false
+	for _, item := range list {
+		client, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		email, ok := client["email"].(string)
+		if !ok {
+			continue
+		}
+		if trimmed := strings.TrimSpace(email); trimmed != email {
+			client["email"] = trimmed
+			changed = true
+		}
+	}
+	if !changed {
+		return settings
+	}
+	normalized, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return settings
+	}
+	return string(normalized)
+}
+
+// duplicateEmailError is shared so the mutation paths cannot drift into wording the
+// UI shows differently for the same rejection.
+func duplicateEmailError(email string) error {
+	return common.NewErrorf("Duplicate email: %q is already used by another client. Emails must be unique across all inbounds.", email)
+}
+
+// getAllEmailsExcludingInbound lists every client email in the DB except one
+// inbound's. An ignoreInboundId of 0 excludes nothing: inbound ids are AUTOINCREMENT
+// and start at 1, so no row can hold 0.
+func (s *InboundService) getAllEmailsExcludingInbound(ignoreInboundId int) ([]string, error) {
 	db := database.GetDB()
 	var emails []string
 	err := db.Raw(`
 		SELECT JSON_EXTRACT(client.value, '$.email')
 		FROM inbounds,
 			JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.clients')) AS client
-		`).Scan(&emails).Error
+		WHERE inbounds.id != ?
+		`, ignoreInboundId).Scan(&emails).Error
 	if err != nil {
 		return nil, err
 	}
 	return emails, nil
+}
+
+func (s *InboundService) getAllEmails() ([]string, error) {
+	return s.getAllEmailsExcludingInbound(0)
 }
 
 func (s *InboundService) contains(slice []string, str string) bool {
@@ -236,48 +322,36 @@ func (s *InboundService) checkPPPUsernamesForDuplicates(protocol string, clients
 	return "", nil
 }
 
-func (s *InboundService) checkEmailsExistForClients(clients []model.Client) (string, error) {
-	allEmails, err := s.getAllEmails()
+// checkEmailsExistExcludingInbound returns the first email in clients that already
+// names another account, whether inside the batch itself or anywhere in the DB
+// outside ignoreInboundId.
+//
+// The exclusion is what makes this usable from UpdateInbound, which REPLACES an
+// inbound's whole client list: measured against the whole DB, every client it is
+// KEEPING would collide with its own persisted row. Callers whose row is not yet
+// persisted (AddInbound) or whose write is additive (AddInboundClient) pass 0 and
+// get a plain global check.
+func (s *InboundService) checkEmailsExistExcludingInbound(clients []model.Client, ignoreInboundId int) (string, error) {
+	allEmails, err := s.getAllEmailsExcludingInbound(ignoreInboundId)
 	if err != nil {
 		return "", err
 	}
 	var emails []string
 	for _, client := range clients {
-		if client.Email != "" {
-			if s.contains(emails, client.Email) {
-				return client.Email, nil
-			}
-			if s.contains(allEmails, client.Email) {
-				return client.Email, nil
-			}
-			emails = append(emails, client.Email)
+		email := strings.TrimSpace(client.Email)
+		if email == "" {
+			continue
 		}
+		if containsEmail(emails, email) || containsEmail(allEmails, email) {
+			return email, nil
+		}
+		emails = append(emails, email)
 	}
 	return "", nil
 }
 
-func (s *InboundService) checkEmailExistForInbound(inbound *model.Inbound) (string, error) {
-	clients, err := s.GetClients(inbound)
-	if err != nil {
-		return "", err
-	}
-	allEmails, err := s.getAllEmails()
-	if err != nil {
-		return "", err
-	}
-	var emails []string
-	for _, client := range clients {
-		if client.Email != "" {
-			if s.contains(emails, client.Email) {
-				return client.Email, nil
-			}
-			if s.contains(allEmails, client.Email) {
-				return client.Email, nil
-			}
-			emails = append(emails, client.Email)
-		}
-	}
-	return "", nil
+func (s *InboundService) checkEmailsExistForClients(clients []model.Client) (string, error) {
+	return s.checkEmailsExistExcludingInbound(clients, 0)
 }
 
 // isVpnProtocol reports whether a protocol is one of the panel's built-in VPN
@@ -329,6 +403,17 @@ func (s *InboundService) validateInboundConfig(inbound *model.Inbound) error {
 	}
 	if inbound.TrafficMultiplierAfter < 0 {
 		return common.NewError("Traffic multiplier threshold cannot be negative")
+	}
+
+	// Speed limit. The form's :min="0" is not a guard: the API can be posted directly.
+	// A negative rate would reach the sidecar and become a negative rate.Limit, which
+	// blocks the account outright instead of throttling it, so reject it here rather
+	// than let it look like a mysterious dead connection.
+	if inbound.SpeedLimitDown < 0 || inbound.SpeedLimitUp < 0 {
+		return common.NewError("Speed limit cannot be negative")
+	}
+	if inbound.SpeedLimitAfter < 0 {
+		return common.NewError("Speed limit threshold cannot be negative")
 	}
 
 	if inbound.Protocol == "openvpn" {
@@ -413,6 +498,10 @@ func (s *InboundService) validateInboundConfig(inbound *model.Inbound) error {
 }
 
 func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, bool, error) {
+	// Before anything parses the settings, so the emails checked below and the ones
+	// persisted are the same strings.
+	inbound.Settings = normalizeClientEmails(inbound.Settings)
+
 	if err := s.validateInboundConfig(inbound); err != nil {
 		return inbound, false, err
 	}
@@ -429,17 +518,18 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		return inbound, false, common.NewError("Port already exists:", inbound.Port)
 	}
 
-	existEmail, err := s.checkEmailExistForInbound(inbound)
+	clients, err := s.GetClients(inbound)
+	if err != nil {
+		return inbound, false, err
+	}
+
+	// Nothing to exclude: this inbound has no row yet, so the whole DB is "other".
+	existEmail, err := s.checkEmailsExistExcludingInbound(clients, 0)
 	if err != nil {
 		return inbound, false, err
 	}
 	if existEmail != "" {
-		return inbound, false, common.NewError("Duplicate email:", existEmail)
-	}
-
-	clients, err := s.GetClients(inbound)
-	if err != nil {
-		return inbound, false, err
+		return inbound, false, duplicateEmailError(existEmail)
 	}
 
 	// Ensure created_at and updated_at on clients in settings
@@ -613,6 +703,10 @@ func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {
 // It validates changes, updates the database, and syncs with the running Xray instance.
 // Returns the updated inbound, whether Xray needs restart, and any error.
 func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, bool, error) {
+	// Before anything parses the settings, so the emails checked below and the ones
+	// persisted are the same strings.
+	inbound.Settings = normalizeClientEmails(inbound.Settings)
+
 	if err := s.validateInboundConfig(inbound); err != nil {
 		return inbound, false, err
 	}
@@ -625,6 +719,23 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	}
 	if exist {
 		return inbound, false, common.NewError("Port already exists:", inbound.Port)
+	}
+
+	// This edit REPLACES the client list, so the inbound's own persisted row is not a
+	// competitor and must be excluded, or every client being kept collides with
+	// itself. Ahead of updateClientTraffics because that is what would otherwise hit
+	// the client_traffics unique index mid-transaction, turning a duplicate the user
+	// can fix into an opaque constraint failure.
+	updatedClients, err := s.GetClients(inbound)
+	if err != nil {
+		return inbound, false, err
+	}
+	existEmail, err := s.checkEmailsExistExcludingInbound(updatedClients, inbound.Id)
+	if err != nil {
+		return inbound, false, err
+	}
+	if existEmail != "" {
+		return inbound, false, duplicateEmailError(existEmail)
 	}
 
 	oldInbound, err := s.GetInbound(inbound.Id)
@@ -719,6 +830,11 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	oldInbound.TrafficMultiplierEnable = inbound.TrafficMultiplierEnable
 	oldInbound.TrafficMultiplierAfter = inbound.TrafficMultiplierAfter
 	oldInbound.TrafficMultiplier = inbound.TrafficMultiplier
+	oldInbound.SpeedLimitEnable = inbound.SpeedLimitEnable
+	oldInbound.SpeedLimitSeparate = inbound.SpeedLimitSeparate
+	oldInbound.SpeedLimitDown = inbound.SpeedLimitDown
+	oldInbound.SpeedLimitUp = inbound.SpeedLimitUp
+	oldInbound.SpeedLimitAfter = inbound.SpeedLimitAfter
 	oldInbound.Listen = inbound.Listen
 	oldInbound.Port = inbound.Port
 	oldInbound.Protocol = inbound.Protocol
@@ -875,6 +991,10 @@ func (s *InboundService) updateClientTraffics(tx *gorm.DB, oldInbound *model.Inb
 }
 
 func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
+	// Before anything parses the settings: interfaceClients below is spliced into the
+	// inbound's stored JSON verbatim, so an email left untrimmed here is persisted.
+	data.Settings = normalizeClientEmails(data.Settings)
+
 	clients, err := s.GetClients(data)
 	if err != nil {
 		return false, err
@@ -898,12 +1018,13 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 			interfaceClients[i] = cm
 		}
 	}
+	// Additive: these clients are not in any row yet, so the whole DB is "other".
 	existEmail, err := s.checkEmailsExistForClients(clients)
 	if err != nil {
 		return false, err
 	}
 	if existEmail != "" {
-		return false, common.NewError("Duplicate email:", existEmail)
+		return false, duplicateEmailError(existEmail)
 	}
 
 	oldInbound, err := s.GetInbound(data.Id)
@@ -1306,6 +1427,10 @@ func (s *InboundService) DelInboundClient(inboundId int, clientId string) (bool,
 
 func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId string) (bool, error) {
 	// TODO: check if TrafficReset field is updating
+	// Before anything parses the settings: interfaceClients[0] below replaces the
+	// stored client verbatim, so an email left untrimmed here is persisted.
+	data.Settings = normalizeClientEmails(data.Settings)
+
 	clients, err := s.GetClients(data)
 	if err != nil {
 		return false, err
@@ -1360,13 +1485,19 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 		return false, common.NewError("empty client ID")
 	}
 
-	if len(clients[0].Email) > 0 && clients[0].Email != oldEmail {
+	// Only a change of IDENTITY needs checking, and identity is case- and
+	// whitespace-insensitive. Comparing with != instead made "Bob" -> "bob" look like
+	// a rename and run the check, which searches the whole DB INCLUDING this client's
+	// own persisted row, matches it case-insensitively and rejects the edit as a
+	// duplicate of itself. Keeping the check global (no exclusion) is right here: a
+	// genuine rename must not land on a sibling in this very inbound either.
+	if len(clients[0].Email) > 0 && !sameEmail(clients[0].Email, oldEmail) {
 		existEmail, err := s.checkEmailsExistForClients(clients)
 		if err != nil {
 			return false, err
 		}
 		if existEmail != "" {
-			return false, common.NewError("Duplicate email:", existEmail)
+			return false, duplicateEmailError(existEmail)
 		}
 	}
 

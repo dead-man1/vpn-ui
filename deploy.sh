@@ -7,6 +7,10 @@ ASSET="vpn-ui-amd64"
 DEST_DIR="/opt/vpn-ui"
 DEST="$DEST_DIR/$ASSET"
 UNIT="vpn-ui"
+# The management menu (`vpn-ui`). Installed from INSIDE the binary we just placed
+# ($DEST install-menu), never curled from the repo's default branch: that would pin
+# a menu from a different release than the binary it drives.
+MENU="/usr/bin/vpn-ui"
 DL_URL="https://github.com/$REPO/releases/latest/download/$ASSET"
 # The panel keeps its SQLite DB next to the binary (exe dir). Backups go beside it.
 DB="$DEST_DIR/vpn-ui.db"
@@ -34,80 +38,12 @@ warn() { printf '%swarning:%s %s\n' "$B$YELLOW" "$R" "$*" >&2; }
 die()  { printf '%serror:%s %s\n'   "$B$RED" "$R" "$*" >&2; exit 1; }
 hr()   { printf '%s%s%s\n' "$D" "$(printf '%.0s-' {1..60})" "$R"; }
 
-# Obtain a REAL certificate (Let's Encrypt via acme.sh, standalone HTTP-01) and
-# point the panel's HTTPS at it. Needs a public DNS A record for $DOMAIN pointing
-# at this host and TCP :80 free during issuance. The same cert files can be reused
-# for SSTP so stock Windows trusts it. Best-effort: on any failure it warns and
-# leaves the panel's current TLS untouched (returns non-zero). Callers guard with
-# `|| ...` so set -e is suspended inside — unguarded failures won't abort deploy.
-obtain_letsencrypt_cert() {
-    if [[ -z "$DOMAIN" && -r /dev/tty ]]; then
-        printf '  %sdomain%s (DNS A record must point here): ' "$BLUE" "$R" > /dev/tty
-        read -r DOMAIN < /dev/tty || DOMAIN=""
-    fi
-    [[ -n "$DOMAIN" ]] || { warn "no domain (set DEPLOY_DOMAIN=…) — skipping real SSL."; return 1; }
-    if [[ -z "$EMAIL" && -r /dev/tty ]]; then
-        printf "  %semail%s (Let's Encrypt account, optional): " "$BLUE" "$R" > /dev/tty
-        read -r EMAIL < /dev/tty || EMAIL=""
-    fi
-
-    command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || \
-        { warn "need curl or wget for acme.sh — skipping real SSL."; return 1; }
-
-    # acme.sh standalone binds :80. Warn (don't fail) if it's already taken.
-    if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE ':80$'; then
-        warn "TCP :80 is in use — acme.sh standalone may fail to bind it."
-    fi
-
-    local ACME="$HOME/.acme.sh/acme.sh"
-    if ! [[ -x "$ACME" ]]; then
-        if command -v acme.sh >/dev/null 2>&1; then
-            ACME="$(command -v acme.sh)"
-        else
-            msg "Installing acme.sh"
-            if command -v curl >/dev/null 2>&1; then
-                curl -fsSL https://get.acme.sh | sh -s email="${EMAIL:-admin@$DOMAIN}" >/dev/null 2>&1 \
-                    || { warn "acme.sh install failed — skipping real SSL."; return 1; }
-            else
-                wget -qO- https://get.acme.sh | sh -s email="${EMAIL:-admin@$DOMAIN}" >/dev/null 2>&1 \
-                    || { warn "acme.sh install failed — skipping real SSL."; return 1; }
-            fi
-            ACME="$HOME/.acme.sh/acme.sh"
-        fi
-    fi
-    [[ -x "$ACME" ]] || { warn "acme.sh not found after install — skipping real SSL."; return 1; }
-
-    "$ACME" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
-
-    msg "Issuing Let's Encrypt certificate for ${DOMAIN} (standalone HTTP-01)"
-    # RSA-2048 for the widest client trust (legacy Windows SSTP included).
-    if ! "$ACME" --issue -d "$DOMAIN" --standalone --keylength 2048; then
-        # acme returns non-zero when an existing cert is still valid ("skip"); only
-        # bail when no cert directory was produced at all.
-        if [[ ! -d "$HOME/.acme.sh/${DOMAIN}" && ! -d "$HOME/.acme.sh/${DOMAIN}_ecc" ]]; then
-            warn "acme.sh issuance failed for ${DOMAIN} — check the DNS A record and that :80 is reachable."
-            return 1
-        fi
-    fi
-
-    install -d -m 0755 "$CERT_DIR"
-    msg "Installing certificate + auto-renew hook"
-    # `|| true` on the reload: acme runs reloadcmd immediately, but on a FRESH
-    # install the systemd unit doesn't exist yet (it's created later by --systemd),
-    # so a bare `systemctl restart` would fail and make install-cert return non-zero.
-    # The tolerant form still restarts correctly on future auto-renewals.
-    "$ACME" --install-cert -d "$DOMAIN" \
-        --key-file       "$CERT_DIR/privkey.pem" \
-        --fullchain-file "$CERT_DIR/fullchain.pem" \
-        --reloadcmd      "systemctl restart $UNIT || true" \
-        || { warn "acme.sh install-cert failed — skipping real SSL."; return 1; }
-
-    # Point the panel's web server (and subscription server) at the real cert.
-    "$DEST" cert -webCert "$CERT_DIR/fullchain.pem" -webCertKey "$CERT_DIR/privkey.pem" >/dev/null 2>&1 \
-        || { warn "applying cert to panel failed."; return 1; }
-    ok "real certificate installed for ${DOMAIN}"
-    return 0
-}
+# Real-SSL (Let's Encrypt via acme.sh) lives in ONE place: obtain_letsencrypt_cert
+# in vpn-ui.sh, which is sourced further below once the menu script is installed.
+# It used to be defined here and copied into the menu, which is exactly how two
+# acme.sh flows drift apart. Sourcing (rather than running `vpn-ui ssl`) keeps it
+# in THIS shell, so its DOMAIN/EMAIL prompts fill in the variables the completion
+# message below prints.
 
 # Acquire root: re-exec through sudo when not already root, so `./deploy.sh`
 # just works. If invoked piped (no script file) or without sudo, bail with
@@ -214,6 +150,28 @@ chmod +x "$tmp"
 mv -f "$tmp" "$DEST"
 trap - EXIT
 ok "installed -> $DEST"
+
+# Install/refresh the management menu on BOTH paths (fresh install and update), so
+# `vpn-ui` always matches the binary that ships it. Must come before the TLS step
+# below, which sources the menu for obtain_letsencrypt_cert.
+msg "Installing the ${MENU} management menu"
+# VPNUI_BIN is what the menu (and the sourced SSL function) resolve the panel
+# binary from, so a non-default DEST_DIR carries through instead of falling back to
+# the compiled-in /opt/vpn-ui default.
+export VPNUI_BIN="$DEST"
+if "$DEST" install-menu >/dev/null 2>&1 && [[ -r "$MENU" ]]; then
+    ok "management menu -> ${MENU}  (run: ${TEAL}vpn-ui${R})"
+    # Bring in obtain_letsencrypt_cert: the single implementation, shared rather
+    # than copied. vpn-ui.sh does nothing at top level when sourced (its menu is
+    # behind a sourced/executed guard), so this only defines functions.
+    # shellcheck source=vpn-ui.sh
+    source "$MENU"
+else
+    warn "could not install ${MENU}, so the 'vpn-ui' menu is unavailable on this host."
+    # Keep the TLS branch below honest instead of letting an undefined function
+    # abort the whole deploy: real SSL simply isn't on offer without the menu.
+    obtain_letsencrypt_cert() { warn "real SSL needs ${MENU}, which failed to install. Skipping."; return 1; }
+fi
 
 # Configure + install/refresh the systemd unit. Fresh installs get randomized
 # credentials (--random); updates DO NOT, so the operator's existing port, login
@@ -326,7 +284,15 @@ if [[ "$MODE" == "install" ]]; then
     fi
 else
     act "updated to ${GREEN}${ver:-latest}${R} — your existing port / login / web path are unchanged"
-    [[ -n "${backup:-}" ]] && act "DB backup: ${TEAL}${backup}${R}"
+    # `[[ … ]] && act …` would return 1 when there was no backup, and under set -e
+    # that ends the script right here, swallowing the status/logs lines below on
+    # any update that found no DB to snapshot.
+    if [[ -n "${backup:-}" ]]; then
+        act "DB backup: ${TEAL}${backup}${R}"
+    fi
+fi
+if [[ -x "$MENU" ]]; then
+    act "manage:  ${TEAL}vpn-ui${R}  (update, login, start/stop, Xray, SSL)"
 fi
 act "status:  ${TEAL}systemctl status ${UNIT}${R}"
 act "logs:    ${TEAL}journalctl -u ${UNIT} -f${R}"

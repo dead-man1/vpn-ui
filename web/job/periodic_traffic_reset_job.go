@@ -54,5 +54,11 @@ func (j *PeriodicTrafficResetJob) Run() {
 
 	if resetCount > 0 {
 		logger.Infof("Periodic traffic reset completed: %d inbounds reset", resetCount)
+		// A reset zeroes up/down, which un-arms every "Limit After" that was resolved
+		// against the old counters, so a throttled account is entitled to full speed
+		// again as of right now. This job signals Xray nowhere else, so without this the
+		// sidecar would keep the stale rates until the next traffic tick republished it,
+		// leaving users throttled after their quota was restored.
+		service.WriteSpeedLimits()
 	}
 }

@@ -15,6 +15,11 @@ class DBInbound {
         this.trafficMultiplierEnable = false;
         this.trafficMultiplierAfter = 0;
         this.trafficMultiplier = 1;
+        this.speedLimitEnable = false;
+        this.speedLimitSeparate = false;
+        this.speedLimitDown = 0;
+        this.speedLimitUp = 0;
+        this.speedLimitAfter = 0;
 
         this.listen = "";
         this.port = 0;
@@ -46,6 +51,16 @@ class DBInbound {
 
     set trafficMultiplierAfterGB(gb) {
         this.trafficMultiplierAfter = NumberFormatter.toFixed(gb * SizeFormatter.ONE_GB, 0);
+    }
+
+    // The speed-limit threshold is stored in bytes, like the multiplier's, so the
+    // resolver can compare it to up+down directly. The form binds these GB accessors.
+    get speedLimitAfterGB() {
+        return NumberFormatter.toFixed(this.speedLimitAfter / SizeFormatter.ONE_GB, 2);
+    }
+
+    set speedLimitAfterGB(gb) {
+        this.speedLimitAfter = NumberFormatter.toFixed(gb * SizeFormatter.ONE_GB, 0);
     }
 
     get isVMess() {

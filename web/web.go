@@ -364,6 +364,21 @@ func (s *Server) startTask() {
 		}
 	})
 
+	// Republish the speed limit sidecar when the CONFIG changed, as opposed to when
+	// traffic flowed. The traffic job publishes it too, but only on a tick that carried
+	// bytes (it early-returns otherwise), so on an idle box a limit set in the panel
+	// reached the core only once somebody happened to generate traffic: measured as the
+	// core still enforcing the old IP limit minutes after the panel reported success.
+	//
+	// Deliberately NOT folded into the restart cron above, and it must never grow into
+	// it: a rate change touches nothing in the xray.Config graph, and restarting would
+	// drop every live connection on the box, which is the whole reason the limits travel
+	// in a sidecar. One second because the wait is user-visible (an operator watching the
+	// UI), and it is affordable only because the writer is gated on a dirty flag armed
+	// from the inbounds table itself, so an idle second costs one atomic load.
+	service.RegisterSpeedLimitInvalidation()
+	s.cron.AddFunc("@every 1s", service.WriteSpeedLimitsIfDirty)
+
 	// Ensure Xray keeps its per-VPN dokodemo ports bound (rebinds after a rare
 	// silent bind failure on restart, so L2TP/PPTP/OpenVPN internet self-heals)
 	s.cron.AddJob("@every 20s", job.NewCheckVpnDokodemoJob())

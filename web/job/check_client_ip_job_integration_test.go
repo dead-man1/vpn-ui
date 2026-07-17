@@ -2,9 +2,9 @@ package job
 
 import (
 	"encoding/json"
-	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -35,15 +35,6 @@ func setupIntegrationDB(t *testing.T) {
 
 	t.Setenv("VPNUI_DB_FOLDER", dbDir)
 	t.Setenv("VPNUI_LOG_FOLDER", logDir)
-
-	// updateInboundClientIps calls log.SetOutput on the package global,
-	// which would leak to other tests in the same binary.
-	origLogWriter := log.Writer()
-	origLogFlags := log.Flags()
-	t.Cleanup(func() {
-		log.SetOutput(origLogWriter)
-		log.SetFlags(origLogFlags)
-	})
 
 	if err := database.InitDB(filepath.Join(dbDir, "vpn-ui.db")); err != nil {
 		t.Fatalf("database.InitDB failed: %v", err)
@@ -128,18 +119,17 @@ func ipSet(entries []IPWithTimestamp) map[string]int64 {
 	return out
 }
 
-// #4091 repro: client has limit=3, db still holds 3 idle ips from a
-// few minutes ago, only one live ip is actually connecting. pre-fix:
-// live ip got banned every tick and never appeared in the panel.
-// post-fix: no ban, live ip persisted, historical ips still visible.
-func TestUpdateInboundClientIps_LiveIpNotBannedByStillFreshHistoricals(t *testing.T) {
+// The list is telemetry, so a client under its cap must simply be recorded: the address
+// that is connecting now, plus the ones that were connecting recently enough to still be
+// worth showing. #4091 is the reason the historical ones must not displace the live one.
+func TestUpdateInboundClientIps_RecordsLiveAndRecentIps(t *testing.T) {
 	setupIntegrationDB(t)
 
 	const email = "pr4091-repro"
 	seedInboundWithClient(t, "inbound-pr4091", email, 3)
 
 	now := time.Now().Unix()
-	// idle but still within the 30min staleness window.
+	// Idle, but still inside the retention window.
 	row := seedClientIps(t, email, []IPWithTimestamp{
 		{IP: "10.0.0.1", Timestamp: now - 20*60},
 		{IP: "10.0.0.2", Timestamp: now - 15*60},
@@ -147,19 +137,11 @@ func TestUpdateInboundClientIps_LiveIpNotBannedByStillFreshHistoricals(t *testin
 	})
 
 	j := NewCheckClientIpJob()
-	// the one that's actually connecting (user's 128.71.x.x).
 	live := []IPWithTimestamp{
 		{IP: "128.71.1.1", Timestamp: now},
 	}
 
-	shouldCleanLog := j.updateInboundClientIps(row, email, live)
-
-	if shouldCleanLog {
-		t.Fatalf("shouldCleanLog must be false, nothing should have been banned with 1 live ip under limit 3")
-	}
-	if len(j.disAllowedIps) != 0 {
-		t.Fatalf("disAllowedIps must be empty, got %v", j.disAllowedIps)
-	}
+	j.updateInboundClientIps(row, email, live)
 
 	persisted := ipSet(readClientIps(t, email))
 	for _, want := range []string{"128.71.1.1", "10.0.0.1", "10.0.0.2", "10.0.0.3"} {
@@ -171,80 +153,93 @@ func TestUpdateInboundClientIps_LiveIpNotBannedByStillFreshHistoricals(t *testin
 		t.Errorf("live ip timestamp should match the scan timestamp %d, got %d", now, got)
 	}
 
-	// 3xipl.log must not contain a ban line.
-	if info, err := os.Stat(readIpLimitLogPath()); err == nil && info.Size() > 0 {
-		body, _ := os.ReadFile(readIpLimitLogPath())
-		t.Fatalf("3xipl.log should be empty when no ips are banned, got:\n%s", body)
-	}
+	assertNoBanLog(t)
 }
 
-// opposite invariant: when several ips are actually live and exceed
-// the limit, the newcomer still gets banned.
-func TestUpdateInboundClientIps_ExcessLiveIpIsStillBanned(t *testing.T) {
+// The inverted invariant, and the point of the whole change: an address BEYOND the
+// client's cap is recorded like any other and nothing is banned. The core refused it at
+// admission (or did not, if the account is under its cap on live connections, which this
+// job cannot know); either way this job's only job is to say it was seen.
+func TestUpdateInboundClientIps_OverLimitIpIsRecordedNotBanned(t *testing.T) {
 	setupIntegrationDB(t)
 
 	const email = "pr4091-abuse"
+	// limit=1, and two addresses show up. The old code banned the newcomer here.
 	seedInboundWithClient(t, "inbound-pr4091-abuse", email, 1)
 
 	now := time.Now().Unix()
 	row := seedClientIps(t, email, []IPWithTimestamp{
-		{IP: "10.1.0.1", Timestamp: now - 60}, // original connection
+		{IP: "10.1.0.1", Timestamp: now - 60},
 	})
 
 	j := NewCheckClientIpJob()
-	// both live, limit=1. use distinct timestamps so sort-by-timestamp
-	// is deterministic: 10.1.0.1 is the original (older), 192.0.2.9
-	// joined later and must get banned.
 	live := []IPWithTimestamp{
 		{IP: "10.1.0.1", Timestamp: now - 5},
 		{IP: "192.0.2.9", Timestamp: now},
 	}
 
-	shouldCleanLog := j.updateInboundClientIps(row, email, live)
-
-	if !shouldCleanLog {
-		t.Fatalf("shouldCleanLog must be true when the live set exceeds the limit")
-	}
-	if len(j.disAllowedIps) != 1 || j.disAllowedIps[0] != "192.0.2.9" {
-		t.Fatalf("expected 192.0.2.9 to be banned; disAllowedIps = %v", j.disAllowedIps)
-	}
+	j.updateInboundClientIps(row, email, live)
 
 	persisted := ipSet(readClientIps(t, email))
-	if _, ok := persisted["10.1.0.1"]; !ok {
-		t.Errorf("original IP 10.1.0.1 must still be persisted; got %v", persisted)
-	}
-	if _, ok := persisted["192.0.2.9"]; ok {
-		t.Errorf("banned IP 192.0.2.9 must NOT be persisted; got %v", persisted)
+	for _, want := range []string{"10.1.0.1", "192.0.2.9"} {
+		if _, ok := persisted[want]; !ok {
+			t.Errorf("%s must be recorded even though the client's cap is 1; got %v", want, persisted)
+		}
 	}
 
-	// 3xipl.log must contain the ban line in the exact fail2ban format.
-	body, err := os.ReadFile(readIpLimitLogPath())
-	if err != nil {
-		t.Fatalf("read 3xipl.log: %v", err)
+	// Nothing may reach 3xipl.log: that file existed only for a fail2ban jail to parse,
+	// and a ban here would be by ADDRESS, hitting every customer behind the same CGNAT.
+	assertNoBanLog(t)
+}
+
+// The blob is rewritten on every tick, so its order must not depend on map iteration.
+func TestUpdateInboundClientIps_PersistsInStableOrder(t *testing.T) {
+	setupIntegrationDB(t)
+
+	const email = "order-stable"
+	seedInboundWithClient(t, "inbound-order", email, 2)
+
+	now := time.Now().Unix()
+	row := seedClientIps(t, email, nil)
+	scan := []IPWithTimestamp{
+		{IP: "10.0.0.9", Timestamp: now - 30},
+		{IP: "10.0.0.2", Timestamp: now},
+		{IP: "10.0.0.1", Timestamp: now}, // same timestamp: the address breaks the tie
 	}
-	wantSubstr := "[LIMIT_IP] Email = pr4091-abuse || Disconnecting OLD IP = 192.0.2.9"
-	if !contains(string(body), wantSubstr) {
-		t.Fatalf("3xipl.log missing expected ban line %q\nfull log:\n%s", wantSubstr, body)
+
+	j := NewCheckClientIpJob()
+	j.updateInboundClientIps(row, email, scan)
+	want := readClientIps(t, email)
+
+	for i := 0; i < 10; i++ {
+		j.updateInboundClientIps(row, email, scan)
+		got := readClientIps(t, email)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("run %d reordered the list\ngot:  %v\nwant: %v", i+2, got, want)
+		}
+	}
+	if want[0].IP != "10.0.0.9" || want[1].IP != "10.0.0.1" || want[2].IP != "10.0.0.2" {
+		t.Errorf("want oldest first, then by address: got %v", want)
 	}
 }
 
-// readIpLimitLogPath reads the 3xipl.log path the same way the job
-// does via xray.GetIPLimitLogPath but without importing xray here
-// just for the path helper (which would pull a lot more deps into the
-// test binary). The env-derived log folder is deterministic.
+// assertNoBanLog fails if anything wrote to 3xipl.log. Enforcement is the core's now, so
+// the job must never produce a ban line again.
+func assertNoBanLog(t *testing.T) {
+	t.Helper()
+	if info, err := os.Stat(readIpLimitLogPath()); err == nil && info.Size() > 0 {
+		body, _ := os.ReadFile(readIpLimitLogPath())
+		t.Fatalf("3xipl.log must stay empty; the job no longer bans anything, got:\n%s", body)
+	}
+}
+
+// readIpLimitLogPath reads the 3xipl.log path the same way xray.GetIPLimitLogPath does
+// but without importing xray here just for the path helper (which would pull a lot more
+// deps into the test binary). The env-derived log folder is deterministic.
 func readIpLimitLogPath() string {
 	folder := os.Getenv("VPNUI_LOG_FOLDER")
 	if folder == "" {
 		folder = filepath.Join(".", "log")
 	}
 	return filepath.Join(folder, "3xipl.log")
-}
-
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }

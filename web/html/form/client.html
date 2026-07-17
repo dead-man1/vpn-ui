@@ -405,11 +405,12 @@
             <template slot="label">
                 <a-tooltip>
                     <template slot="title">
-                        Max simultaneous devices for this account, counted as distinct
-                        client IPs and enforced by the proxy itself (the excess device is
-                        refused). 0 means no practical limit.
+                        Max simultaneous client IPs for this account, enforced by the
+                        proxy itself (the excess connection is refused). 0 means no
+                        limit. Named for what it counts: devices sharing one IP behind
+                        NAT count as one, so this caps addresses, not devices.
                     </template>
-                    User Limit
+                    IP Limit
                     <a-icon type="question-circle"></a-icon>
                 </a-tooltip>
             </template>
@@ -441,7 +442,7 @@
             show-icon
             :style="{ marginBottom: '16px' }"
             message="Ad Tag turns off Xray routing for the WHOLE inbound"
-            description="An ad tag only counts if traffic goes through Telegram's middle-proxy relays, and that path is a property of the proxy process, not of one account. So enabling it here also stops every OTHER account on this inbound from being routed through Xray: they all egress directly from this server instead. Telegram derives the middle-proxy key from this server's own outgoing IP and port, which any proxied egress would change. Everything else (usage, quota, User Limit, per-account modes) works the same either way."
+            description="An ad tag only counts if traffic goes through Telegram's middle-proxy relays, and that path is a property of the proxy process, not of one account. So enabling it here also stops every OTHER account on this inbound from being routed through Xray: they all egress directly from this server instead. Telegram derives the middle-proxy key from this server's own outgoing IP and port, which any proxied egress would change. Everything else (usage, quota, IP Limit, per-account modes) works the same either way."
         ></a-alert>
 
         <a-form-item v-if="client.adtagEnable" label="Ad Tag">

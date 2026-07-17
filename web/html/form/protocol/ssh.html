@@ -8,10 +8,11 @@
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
-                    Simultaneous devices per account, counted as distinct client IPs.
-                    0 = no limit, 1 = single device, up to 64.
+                    Max simultaneous client IPs per account on this inbound. 0 = no
+                    limit, up to 64. Named for what it counts: devices sharing one IP
+                    behind NAT count as one, so this caps addresses, not devices.
                 </template>
-                User Limit
+                IP Limit
                 <a-icon type="question-circle"></a-icon>
             </a-tooltip>
         </template>
@@ -26,11 +27,11 @@
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
-                    When an account is already at its device limit and another device
+                    When an account is already at its IP limit and a new client IP
                     connects: reject the new one, or accept it and disconnect that
-                    account's oldest device.
+                    account's oldest IP (all of its sessions).
                 </template>
-                User Limit Strategy
+                IP Limit Strategy
                 <a-icon type="question-circle"></a-icon>
             </a-tooltip>
         </template>

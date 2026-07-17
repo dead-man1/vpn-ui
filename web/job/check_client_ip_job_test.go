@@ -6,10 +6,11 @@ import (
 )
 
 func TestMergeClientIps_EvictsStaleOldEntries(t *testing.T) {
-	// #4077: after a ban expires, a single IP that reconnects used to get
-	// banned again immediately because a long-disconnected IP stayed in the
-	// DB with an ancient timestamp and kept "protecting" itself against
-	// eviction. Guard against that regression here.
+	// The cutoff is what stops the list from being an append-only history: an
+	// address the access log stopped mentioning has to drop off in bounded
+	// time, or a client that has been used from a dozen cafes lists all of
+	// them forever. It has no bearing on the limit (the core refcounts live
+	// connections), but the panel shows this as the client's current IPs.
 	old := []IPWithTimestamp{
 		{IP: "1.1.1.1", Timestamp: 100},  // stale — client disconnected long ago
 		{IP: "2.2.2.2", Timestamp: 1900}, // fresh — still connecting
@@ -27,8 +28,8 @@ func TestMergeClientIps_EvictsStaleOldEntries(t *testing.T) {
 }
 
 func TestMergeClientIps_KeepsFreshOldEntriesUnchanged(t *testing.T) {
-	// Backwards-compat: entries that aren't stale are still carried forward,
-	// so enforcement survives access-log rotation.
+	// Entries that aren't stale are carried forward, so the list survives the
+	// hourly access-log rotation instead of emptying itself every hour.
 	old := []IPWithTimestamp{
 		{IP: "1.1.1.1", Timestamp: 1500},
 	}
@@ -73,74 +74,5 @@ func TestMergeClientIps_NoStaleCutoffStillWorks(t *testing.T) {
 	want := map[string]int64{"1.1.1.1": 100, "2.2.2.2": 200}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("zero cutoff should keep everything\ngot:  %v\nwant: %v", got, want)
-	}
-}
-
-func collectIps(entries []IPWithTimestamp) []string {
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		out = append(out, e.IP)
-	}
-	return out
-}
-
-func TestPartitionLiveIps_SingleLiveNotStarvedByStillFreshHistoricals(t *testing.T) {
-	// #4091: db holds A, B, C from minutes ago (still in the 30min
-	// window) but they're not connecting anymore. only D is. old code
-	// merged all four, sorted ascending, kept [A,B,C] and banned D
-	// every tick. pin the new rule: only live ips count toward the limit.
-	ipMap := map[string]int64{
-		"A": 1000,
-		"B": 1100,
-		"C": 1200,
-		"D": 2000,
-	}
-	observed := map[string]bool{"D": true}
-
-	live, historical := partitionLiveIps(ipMap, observed)
-
-	if got := collectIps(live); !reflect.DeepEqual(got, []string{"D"}) {
-		t.Fatalf("live set should only contain the ip observed this scan\ngot:  %v\nwant: [D]", got)
-	}
-	if got := collectIps(historical); !reflect.DeepEqual(got, []string{"A", "B", "C"}) {
-		t.Fatalf("historical set should contain db-only ips in ascending order\ngot:  %v\nwant: [A B C]", got)
-	}
-}
-
-func TestPartitionLiveIps_ConcurrentLiveIpsStillBanNewcomers(t *testing.T) {
-	// keep the "protect original, ban newcomer" policy when several ips
-	// are really live. with limit=1, A must stay and B must be banned.
-	ipMap := map[string]int64{
-		"A": 5000,
-		"B": 5500,
-	}
-	observed := map[string]bool{"A": true, "B": true}
-
-	live, historical := partitionLiveIps(ipMap, observed)
-
-	if got := collectIps(live); !reflect.DeepEqual(got, []string{"A", "B"}) {
-		t.Fatalf("both live ips should be in the live set, ascending\ngot:  %v\nwant: [A B]", got)
-	}
-	if len(historical) != 0 {
-		t.Fatalf("no historical ips expected, got %v", historical)
-	}
-}
-
-func TestPartitionLiveIps_EmptyScanLeavesDbIntact(t *testing.T) {
-	// quiet tick: nothing observed => nothing live. everything merged
-	// is historical. keeps the panel from wiping recent-but-idle ips.
-	ipMap := map[string]int64{
-		"A": 1000,
-		"B": 1100,
-	}
-	observed := map[string]bool{}
-
-	live, historical := partitionLiveIps(ipMap, observed)
-
-	if len(live) != 0 {
-		t.Fatalf("no live ips expected, got %v", live)
-	}
-	if got := collectIps(historical); !reflect.DeepEqual(got, []string{"A", "B"}) {
-		t.Fatalf("all merged entries should flow to historical\ngot:  %v\nwant: [A B]", got)
 	}
 }

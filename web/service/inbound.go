@@ -416,6 +416,24 @@ func (s *InboundService) validateInboundConfig(inbound *model.Inbound) error {
 		return common.NewError("Speed limit threshold cannot be negative")
 	}
 
+	// IP limit. The resolver already reads a negative as "absent" so nothing bad can
+	// reach the core, but that defence is SILENT: an operator posting -1 would get a
+	// 200 and an account with no limit, and nothing would say why. Reject it here for
+	// the same reason the speed limits above are rejected, and keep the read-side
+	// guard as the last line against a hand-edited or imported DB, which no request
+	// validator ever sees.
+	if inbound.IPLimit < 0 {
+		return common.NewError("IP limit cannot be negative")
+	}
+	// The strategy resolver absorbs any unknown value as "reject", which is the safe
+	// default but silently discards a typo like "Accept" or "evict". Only the two
+	// words the VPN User Limit already uses are accepted.
+	switch inbound.IPLimitStrategy {
+	case "", "reject", "accept":
+	default:
+		return common.NewError(fmt.Sprintf("IP limit strategy must be \"reject\" or \"accept\" (got %q)", inbound.IPLimitStrategy))
+	}
+
 	if inbound.Protocol == "openvpn" {
 		var st struct {
 			TcpEnable  bool   `json:"tcpEnable"`
@@ -835,6 +853,8 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	oldInbound.SpeedLimitDown = inbound.SpeedLimitDown
 	oldInbound.SpeedLimitUp = inbound.SpeedLimitUp
 	oldInbound.SpeedLimitAfter = inbound.SpeedLimitAfter
+	oldInbound.IPLimit = inbound.IPLimit
+	oldInbound.IPLimitStrategy = inbound.IPLimitStrategy
 	oldInbound.Listen = inbound.Listen
 	oldInbound.Port = inbound.Port
 	oldInbound.Protocol = inbound.Protocol

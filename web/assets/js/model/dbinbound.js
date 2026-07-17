@@ -20,6 +20,12 @@ class DBInbound {
         this.speedLimitDown = 0;
         this.speedLimitUp = 0;
         this.speedLimitAfter = 0;
+        // Declared here or they do not exist: cloneProps below skips any key the
+        // destination does not already own, so an undeclared field would be dropped on
+        // every load from the server and posted back as undefined. Defaulted to the
+        // columns' own defaults so an Add form starts on the same values a fresh row gets.
+        this.ipLimit = 0;
+        this.ipLimitStrategy = "reject";
 
         this.listen = "";
         this.port = 0;

@@ -361,6 +361,82 @@
         </a-form-item>
     </template>
 
+    <!--
+      IP Limit and the strategy that qualifies it: how many client source addresses one
+      account may hold at once, and what happens when it reaches that number.
+
+      The cap here is the inbound's DEFAULT, which the per-client control on the client
+      form overrides, so an operator sets the baseline once instead of on every account.
+      The strategy has NO per-client control on purpose: the entitlement is the account's,
+      the policy at the cap is the operator's.
+
+      Both are offered ONLY for the Xray-native protocols that have accounts, because only
+      there is the core the enforcement point: it terminates the client connection itself
+      and so counts the client's own source address. The VPN protocols enforce K at RADIUS
+      auth and ssh/mtproto in the relay that terminated the connection (each already
+      carries its own pair of controls on its own form), and the remaining native protocols
+      have no accounts to cap at all. A control that changes nothing is worse than an
+      absent one: it reads as a limit that is set and is not.
+
+      The strategy stays visible whatever this default is, rather than being gated on it:
+      a client can carry its own cap with the inbound default at 0, and hiding the policy
+      that governs those overrides would strand it.
+
+      Gated on inbound.protocol, not dbInbound.protocol, because the Add form binds the
+      picker to the former and the latter is still empty there.
+
+      Hardcoded English, like the per-protocol forms this copies: an en_US-only i18n key
+      would blank the label in the other 12 locales (see web/i18n_toml_test.go).
+    -->
+    <a-form-item
+        v-if="inbound.protocol === Protocols.VMESS || inbound.protocol === Protocols.VLESS || inbound.protocol === Protocols.TROJAN || inbound.protocol === Protocols.SHADOWSOCKS"
+    >
+        <template slot="label">
+            <a-tooltip>
+                <template slot="title">
+                    Max simultaneous client IPs per account on this inbound. 0 = no
+                    limit. A client's own IP Limit overrides this default. Devices
+                    behind one NAT share one IP and count as one, so this caps
+                    addresses, not devices.
+                </template>
+                IP Limit
+                <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+        </template>
+        <a-input-number
+            :value="dbInbound.ipLimit"
+            @change="dbInbound.ipLimit = Math.max(0, Math.floor($event || 0))"
+            :min="0"
+            :step="1"
+            :precision="0"
+            style="width: 90px"
+        ></a-input-number>
+    </a-form-item>
+
+    <a-form-item
+        v-if="inbound.protocol === Protocols.VMESS || inbound.protocol === Protocols.VLESS || inbound.protocol === Protocols.TROJAN || inbound.protocol === Protocols.SHADOWSOCKS"
+    >
+        <template slot="label">
+            <a-tooltip>
+                <template slot="title">
+                    When an account is already at its IP Limit and a new client IP
+                    connects: reject the new one, or accept it and disconnect that
+                    account's oldest IP (all of its connections). Applies to every
+                    account on this inbound.
+                </template>
+                IP Limit Strategy
+                <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+        </template>
+        <a-radio-group
+            v-model="dbInbound.ipLimitStrategy"
+            button-style="solid"
+        >
+            <a-radio-button value="accept">Accept</a-radio-button>
+            <a-radio-button value="reject">Reject</a-radio-button>
+        </a-radio-group>
+    </a-form-item>
+
     <a-form-item>
         <template slot="label">
             <a-tooltip>

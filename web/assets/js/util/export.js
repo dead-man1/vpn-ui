@@ -2,14 +2,18 @@
 //
 // Builds a "card" per selected account and renders it either as a styled plain-text
 // file or as a PDF (via the vendored jsPDF UMD build). A QR code is drawn only for
-// accounts that have a real share-link URI (xray protocols); VPN accounts
-// (L2TP/PPTP/OpenVPN) have no URI, so they get the card without a QR.
+// accounts whose credential is a scannable payload: xray share links, MTProto tg://
+// links, the SSH ssh:// link, and the WireGuard-C .conf. The username/password VPN
+// protocols (L2TP/PPTP/OpenVPN/OpenConnect/SSTP/IKEv2) have no importable payload, so
+// they render server/port/user/pass without a QR.
 const AccountExport = {
   // --- data ------------------------------------------------------------------
 
   // buildCards turns [{inboundId, email}] targets into renderable card objects,
-  // reusing the page app for inbound lookup, stats and link generation.
-  buildCards(app, targets) {
+  // reusing the page app for inbound lookup, stats and link generation. Async because
+  // the key-based / relay protocols (WireGuard-C, SSH) fetch their real config or share
+  // link from the backend (server-minted keys / panel-host endpoint).
+  async buildCards(app, targets) {
     const cards = [];
     for (const t of targets) {
       // One malformed account must not abort the whole export — guard each card
@@ -49,6 +53,7 @@ const AccountExport = {
           || proto === Protocols.SSH);
         const isWgc = (proto === Protocols.WGC);
         const isMtproto = (proto === Protocols.MTPROTO);
+        const isSsh = (proto === Protocols.SSH);
         // MTProto has no username (identity = email, the wg-c model) and no UUID; its
         // credential is the secret, which is already embedded in each link.
         const username = vpnUserPass ? (client.id || client.email || '') : (client.email || '');
@@ -57,7 +62,7 @@ const AccountExport = {
 
         const base = {
           remark: dbInbound.remark || inbound.remark || '',
-          protocol: (dbInbound.protocol || '').toUpperCase(),
+          protocol: AccountExport._protocolLabel(dbInbound, inbound),
           network: AccountExport._network(dbInbound, inbound),
           server: server,
           port: AccountExport._portText(dbInbound, inbound),
@@ -71,25 +76,86 @@ const AccountExport = {
           total: client.totalGB > 0 ? SizeFormatter.sizeFormat(client.totalGB) : '∞',
           enable: !!client.enable,
           link: link,
+          qr: link,          // xray link -> QR; overridden per protocol below
+          configText: '',    // multi-line config embedded in the TXT (WireGuard-C)
         };
 
-        // MTProto: one account yields one link PER ENABLED MODE (and per external-proxy
-        // endpoint), and each is a separately usable profile. Emit a card each, so the
-        // PDF draws a QR per mode and the TXT lists them individually, rather than
-        // silently exporting only the first link. An account with every mode off
+        // MTProto: LINK-ONLY. Server/port/username/secret all live inside each tg://
+        // link, so those rows are dropped. One account yields one link PER ENABLED MODE
+        // (and per external-proxy endpoint); emit a card each so the PDF draws a QR per
+        // mode and the TXT lists them individually. An account with every mode off
         // produces no links and so no card, it has nothing to hand out.
         if (isMtproto) {
+          const mtAddr = (inbound.listen && inbound.listen !== '0.0.0.0') ? inbound.listen : location.hostname;
           let mtLinks = [];
-          try { mtLinks = inbound.genAllLinks('', app.remarkModel || '-ieo', client) || []; }
+          try { mtLinks = (typeof client.links === 'function') ? (client.links(mtAddr, inbound.port) || []) : []; }
           catch (e) { mtLinks = []; }
+          const modeLabel = { classic: 'MTProto - Classic', secure: 'MTProto - DD(Secure)', tls: 'MTProto - FakeTLS(EE)' };
           for (const l of mtLinks) {
             cards.push(Object.assign({}, base, {
-              protocol: 'MTPROTO, ' + (l.remark || '').split(app.remarkModel ? app.remarkModel.charAt(0) : '-').pop(),
-              password: client.secret || '',
+              protocol: modeLabel[l.mode] || 'MTProto',
+              network: '',
+              server: '', port: '', username: '', password: '', uuid: '', psk: '',
               link: l.link,
+              qr: l.link,
             }));
           }
           continue;
+        }
+
+        // WireGuard (C): key-based. Fetch the server-minted .conf (one per endpoint,
+        // Endpoint = the panel host) and use it as both the QR payload (WireGuard-
+        // importable) and the TXT config block. No password/UUID.
+        if (isWgc) {
+          const devices = await AccountExport._fetchConfigs(dbInbound.id, client.email, 'wgc-configs');
+          if (!devices.length) { cards.push(base); continue; }
+          for (const dev of devices) {
+            cards.push(Object.assign({}, base, {
+              remark: base.remark + (dev.remark ? ' (' + dev.remark + ')' : ''),
+              qr: dev.config || '',
+              configText: dev.config || '',
+            }));
+          }
+          continue;
+        }
+
+        // SSH: fetch the ssh:// share link (one per endpoint) for the QR while keeping
+        // the server/port/user/pass rows. The backend builds the link so the modal QR
+        // and this export stay identical.
+        if (isSsh) {
+          const cfgs = await AccountExport._fetchConfigs(dbInbound.id, client.email, 'ssh-configs');
+          if (!cfgs.length) { cards.push(base); continue; }
+          for (const cfg of cfgs) {
+            cards.push(Object.assign({}, base, {
+              server: cfg.host || base.server,
+              port: cfg.port ? String(cfg.port) : base.port,
+              remark: base.remark + (cfg.remark ? ' (' + cfg.remark + ')' : ''),
+              link: cfg.link || '',
+              qr: cfg.link || '',
+            }));
+          }
+          continue;
+        }
+
+        // Connection-oriented VPNs (l2tp/pptp/ikev2/sstp/openconnect) have no config
+        // file, but an external-proxy list advertises alternate server addresses. When
+        // set, emit one card per endpoint so the exported credentials show the relay host
+        // instead of the panel host.
+        const connExtProxy = (proto === Protocols.L2TP || proto === Protocols.PPTP
+          || proto === Protocols.OPENCONNECT || proto === Protocols.SSTP || proto === Protocols.IKEV2);
+        if (connExtProxy) {
+          const eps = (inbound.settings && Array.isArray(inbound.settings.externalProxy))
+            ? inbound.settings.externalProxy.filter(e => e && String(e.dest || '').trim() !== '') : [];
+          if (eps.length) {
+            for (const ep of eps) {
+              cards.push(Object.assign({}, base, {
+                server: ep.dest,
+                port: String(ep.port || inbound.port),
+                remark: base.remark + (ep.remark ? ' (' + ep.remark + ')' : ''),
+              }));
+            }
+            continue;
+          }
         }
 
         cards.push(base);
@@ -100,16 +166,62 @@ const AccountExport = {
     return cards;
   },
 
-  _network(dbInbound, inbound) {
-    if (dbInbound.isOpenvpn) {
-      const s = inbound.settings || {};
-      const parts = [];
-      if (s.udpEnable) parts.push('UDP');
-      if (s.tcpEnable) parts.push('TCP');
-      return parts.join('/') || 'UDP';
+  // _fetchConfigs pulls a protocol's server-rendered client configs for one account
+  // (WireGuard-C .conf devices, or SSH endpoints with their ssh:// link).
+  async _fetchConfigs(inboundId, email, endpoint) {
+    try {
+      // Respect the global axios baseURL: do NOT prefix with base_path here.
+      const msg = await HttpUtil.get('/panel/api/inbounds/' + inboundId + '/' + endpoint, { email: email });
+      return (msg && msg.success && Array.isArray(msg.obj)) ? msg.obj : [];
+    } catch (e) {
+      if (typeof console !== 'undefined') console.warn('export: config fetch failed', endpoint, inboundId, email, e);
+      return [];
     }
-    if (dbInbound.isL2tp) return inbound.settings && inbound.settings.ipsec ? 'IPsec/PSK' : 'raw';
-    if (dbInbound.isPptp) return 'MPPE';
+  },
+
+  // _isVpnProto reports whether the protocol is one of the 9 non-xray VPN protocols,
+  // whose display name is a single clean label (no "/ tcp" transport suffix).
+  _isVpnProto(dbInbound) {
+    const p = (dbInbound.protocol || '').toLowerCase();
+    return p === Protocols.L2TP || p === Protocols.PPTP || p === Protocols.OPENVPN
+      || p === Protocols.OPENCONNECT || p === Protocols.SSTP || p === Protocols.IKEV2
+      || p === Protocols.WGC || p === Protocols.MTPROTO || p === Protocols.SSH;
+  },
+
+  // _protocolLabel is the human display name shown in the TXT/PDF. The VPN protocols
+  // get a fixed, prettified name (WireGuard (C), IKEv2, OpenConnect, ...) instead of the
+  // raw uppercase slug + a "/ tcp" suffix; xray protocols keep their uppercase slug
+  // (the transport is appended separately via _network).
+  _protocolLabel(dbInbound, inbound) {
+    const proto = (dbInbound.protocol || '').toLowerCase();
+    const s = inbound.settings || {};
+    switch (proto) {
+      case Protocols.L2TP: {
+        const ipsecOn = s.ipsecEnable !== undefined ? !!s.ipsecEnable
+          : (s.ipsec !== undefined ? !!s.ipsec : true);
+        return ipsecOn ? 'L2TP/IPsec' : 'L2TP/RAW';
+      }
+      case Protocols.PPTP: return 'PPTP';
+      case Protocols.OPENVPN: {
+        const parts = [];
+        if (s.tcpEnable) parts.push('TCP');
+        if (s.udpEnable) parts.push('UDP');
+        return 'OpenVPN' + (parts.length ? ' - ' + parts.join('/') : '');
+      }
+      case Protocols.OPENCONNECT: return 'OpenConnect';
+      case Protocols.SSTP: return 'SSTP';
+      case Protocols.IKEV2: return 'IKEv2';
+      case Protocols.WGC: return 'WireGuard (C)';
+      case Protocols.SSH: return 'SSH';
+      case Protocols.MTPROTO: return 'MTProto'; // mode appended per-card in buildCards
+      default: return (dbInbound.protocol || '').toUpperCase();
+    }
+  },
+
+  _network(dbInbound, inbound) {
+    // Only the xray protocols add a transport suffix; the VPN protocols fold everything
+    // into the protocol label (see _protocolLabel).
+    if (AccountExport._isVpnProto(dbInbound)) return '';
     if (inbound.stream) {
       const p = [inbound.stream.network];
       if (inbound.stream.isTls) p.push('TLS');
@@ -131,8 +243,11 @@ const AccountExport = {
   },
 
   _psk(dbInbound, inbound, client) {
-    if (dbInbound.isL2tp && inbound.settings && inbound.settings.ipsec) {
-      return inbound.settings.psk || '';
+    if (dbInbound.isL2tp) {
+      const s = inbound.settings || {};
+      const ipsecOn = s.ipsecEnable !== undefined ? !!s.ipsecEnable
+        : (s.ipsec !== undefined ? !!s.ipsec : true);
+      return ipsecOn ? (s.ipsecPsk || s.psk || '') : '';
     }
     // WireGuard (C): when preshared-key mode is on, each account has its own PSK.
     if ((dbInbound.protocol || '').toLowerCase() === Protocols.WGC
@@ -164,7 +279,7 @@ const AccountExport = {
     const dash = '─'.repeat(W);
     const blocks = cards.map(c => {
       const rows = [
-        line('Server', c.server + ':' + c.port),
+        line('Server', c.server ? (c.server + ':' + c.port) : ''),
         line('Protocol', c.protocol + (c.network ? ' / ' + c.network : '')),
         line('Username', c.username),
         line('Password', c.password),
@@ -176,7 +291,13 @@ const AccountExport = {
         line('Link', c.link),
       ].filter(Boolean);
       const title = ('  ' + (c.remark || c.email)).padEnd(W, ' ');
-      return [bars, title, dash, rows.join('\n'), bars].join('\n');
+      let body = rows.join('\n');
+      // WireGuard-C has no username/password; its usable credential is the full config,
+      // so embed it (indented) under a divider. There is no QR in a .txt file.
+      if (c.configText) {
+        body += '\n' + dash + '\n' + c.configText.replace(/\n+$/, '').split('\n').map(l => '  ' + l).join('\n');
+      }
+      return [bars, title, dash, body, bars].join('\n');
     });
     const header = 'VPN Accounts — ' + cards.length + ' account(s)\nGenerated ' + new Date().toLocaleString() + '\n\n';
     FileManager.downloadTextFile(header + blocks.join('\n\n') + '\n', (filename || 'accounts') + '.txt', { type: 'text/plain' });
@@ -209,9 +330,9 @@ const AccountExport = {
 
     for (const c of cards) {
       const rows = [
-        ['Server', c.server + ':' + c.port],
+        c.server ? ['Server', c.server + ':' + c.port] : null,
         ['Protocol', c.protocol + (c.network ? '  /  ' + c.network : '')],
-        ['Username', c.username],
+        c.username ? ['Username', c.username] : null,
         c.password ? ['Password', c.password] : null,
         c.uuid ? ['UUID', c.uuid] : null,
         c.psk ? ['PSK', c.psk] : null,
@@ -220,7 +341,7 @@ const AccountExport = {
         ['Status', c.enable ? 'Enabled' : 'Disabled'],
       ].filter(Boolean);
 
-      const qr = c.link ? AccountExport._qrDataUrl(c.link) : '';
+      const qr = c.qr ? AccountExport._qrDataUrl(c.qr) : '';
       const qrSize = qr ? 96 : 0;
       const bodyRows = rows.length + (c.link ? 1 : 0);
       const bodyH = Math.max(bodyRows * lineH, qrSize);
@@ -272,7 +393,9 @@ const AccountExport = {
   },
 
   _qrDataUrl(text) {
-    try { return new QRious({ value: text, size: 240, level: 'M' }).toDataURL('image/png'); }
+    // level 'L' + a large source raster so a dense payload (a full WireGuard .conf,
+    // ~300 chars) still fits and stays crisp when the PDF scales it down.
+    try { return new QRious({ value: text, size: 512, level: 'L' }).toDataURL('image/png'); }
     catch (e) { return ''; }
   },
 

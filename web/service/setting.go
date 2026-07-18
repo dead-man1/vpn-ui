@@ -108,6 +108,9 @@ var defaultValueMap = map[string]string{
 	"ldapDefaultLimitIP":    "0",
 	"vpnProvisioned":        "false",
 	"provisionedProtocols":  "",
+	// Fabricate local ICMP echo replies for client pings to the internet (Xray carries
+	// no ICMP), so `ping` works at tunnel latency like the tun-based clients do.
+	"answerIcmp": "true",
 }
 
 // SettingService provides business logic for application settings management.
@@ -370,6 +373,21 @@ func (s *SettingService) GetTwoFactorEnable() (bool, error) {
 
 func (s *SettingService) SetTwoFactorEnable(value bool) error {
 	return s.setBool("twoFactorEnable", value)
+}
+
+// GetAnswerIcmp reports whether the local ICMP echo responder should fabricate replies
+// for client pings to the internet. Defaults to enabled; a read error is treated as
+// enabled so ping keeps working.
+func (s *SettingService) GetAnswerIcmp() (bool, error) {
+	v, err := s.getBool("answerIcmp")
+	if err != nil {
+		return true, err
+	}
+	return v, nil
+}
+
+func (s *SettingService) SetAnswerIcmp(value bool) error {
+	return s.setBool("answerIcmp", value)
 }
 
 // GetVpnProvisioned reports whether the VPN backend has been provisioned via the

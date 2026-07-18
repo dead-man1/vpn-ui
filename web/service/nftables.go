@@ -203,6 +203,15 @@ func (s *NftService) ApplyNftRules() error {
 	b.WriteString("add chain ip vpn postrouting { type filter hook postrouting priority mangle; policy accept; }\n")
 	b.WriteString("add chain ip vpn input { type filter hook input priority filter; policy accept; }\n")
 
+	// Local ICMP responder hook: hand client echo-requests bound OUTSIDE the client
+	// space (the internet — not the gateway, not other clients) to NFQUEUE, where a
+	// userspace responder (icmpresponder.go) fabricates a reply. Xray carries only
+	// TCP/UDP, so without this a client `ping 8.8.8.8` leaves un-NATed and gets no
+	// answer. `bypass` = if the responder is not listening, accept the packet (behave
+	// exactly as before — never drop). Gateway ping and client-to-client ICMP keep
+	// their existing kernel paths (excluded by `daddr != 10.0.0.0/13`).
+	b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr 10.0.0.0/13 ip daddr != 10.0.0.0/13 ip protocol icmp icmp type echo-request queue num %d bypass\n", icmpQueueNum))
+
 	// Flush only static chains (accounting chains are dynamic, never flushed)
 	b.WriteString("flush chain ip vpn prerouting\n")
 	b.WriteString("flush chain ip vpn postrouting\n")

@@ -107,6 +107,7 @@ const cards = [
     uuid: "11111111-2222-3333-4444-555555555555", psk: "",
     expiry: "2026-08-01", used: "20.0 MB", total: "∞", enable: true,
     link: "vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443?type=tcp#alice",
+    qr: "vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443?type=tcp#alice",
   },
   {
     remark: "l2tp-inbound", protocol: "L2TP", network: "IPsec/PSK",
@@ -114,6 +115,7 @@ const cards = [
     uuid: "", psk: "TestPSK-9182",
     expiry: "∞", used: "5.0 MB", total: "1.0 GB", enable: false,
     link: "",
+    qr: "",
   },
 ];
 
@@ -140,6 +142,9 @@ ok(head.startsWith("%PDF"), "output is a real PDF (starts with %PDF), got " + JS
 ok(qrCount === 1, "QR embedded ONLY for the xray card (1 image), got " + qrCount);
 
 // ================== buildCards (link logic) ==================
+// buildCards is async (WireGuard-C / SSH fetch their config from the backend); the
+// xray + l2tp fixtures below never hit that fetch path, but we still await the result.
+(async () => {
 console.log("[buildCards]");
 // Minimal fake of the inbounds Vue app: an xray inbound whose genAllLinks yields
 // a link, and a VPN inbound whose genAllLinks yields '' (as Inbound.genLink does).
@@ -149,7 +154,7 @@ function fakeApp() {
     genAllLinks: () => [{ link: "vless://uuid@1.2.3.4:443#x" }],
   };
   const vpnInbound = {
-    listen: "", settings: { ipsec: true, psk: "P" },
+    listen: "", settings: { ipsecEnable: true, ipsecPsk: "P" },
     genAllLinks: () => [{ link: "" }],  // VPN protocols return '' from genLink
   };
   const rows = {
@@ -167,7 +172,7 @@ function fakeApp() {
     getSumStats: () => 12345,
   };
 }
-const built = AE.buildCards(fakeApp(), [
+const built = await AE.buildCards(fakeApp(), [
   { inboundId: 10, email: "x@t" },
   { inboundId: 20, email: "v@t" },
 ]);
@@ -175,8 +180,31 @@ ok(built.length === 2, "buildCards returned a card per target");
 const xc = built.find((c) => c.email === "x@t");
 const vc = built.find((c) => c.email === "v@t");
 ok(xc && xc.link && xc.link.startsWith("vless://"), "xray card has a share link (QR source)");
+ok(xc && xc.qr && xc.qr.startsWith("vless://"), "xray card QR payload is the share link");
 ok(vc && vc.link === "", "VPN card has no link (no QR)");
+ok(vc && !vc.qr, "VPN card has no QR payload");
 ok(vc && vc.psk === "P", "VPN (l2tp/ipsec) card carries the PSK");
+ok(vc && vc.protocol === "L2TP/IPsec", "l2tp label is 'L2TP/IPsec' when ipsec on, got " + (vc && vc.protocol));
+ok(vc && vc.network === "", "VPN protocol has no '/ tcp' network suffix");
+
+// ================== protocol labels (TXT + PDF display) ==================
+console.log("[labels]");
+const lbl = (proto, settings) => AE._protocolLabel({ protocol: proto }, { settings: settings || {} });
+ok(lbl("wg-c") === "WireGuard (C)", "wg-c -> 'WireGuard (C)', got " + lbl("wg-c"));
+ok(lbl("ikev2") === "IKEv2", "ikev2 -> 'IKEv2', got " + lbl("ikev2"));
+ok(lbl("pptp") === "PPTP", "pptp -> 'PPTP'");
+ok(lbl("openconnect") === "OpenConnect", "openconnect -> 'OpenConnect', got " + lbl("openconnect"));
+ok(lbl("sstp") === "SSTP", "sstp -> 'SSTP'");
+ok(lbl("ssh") === "SSH", "ssh -> 'SSH'");
+ok(lbl("openvpn", { tcpEnable: true, udpEnable: true }) === "OpenVPN - TCP/UDP",
+  "openvpn both -> 'OpenVPN - TCP/UDP', got " + lbl("openvpn", { tcpEnable: true, udpEnable: true }));
+ok(lbl("openvpn", { udpEnable: true }) === "OpenVPN - UDP", "openvpn udp-only -> 'OpenVPN - UDP'");
+ok(lbl("l2tp", { ipsecEnable: false }) === "L2TP/RAW", "l2tp ipsec off -> 'L2TP/RAW'");
+ok(lbl("l2tp", { ipsecEnable: true }) === "L2TP/IPsec", "l2tp ipsec on -> 'L2TP/IPsec'");
+// networks: VPN protocols carry no transport suffix, xray still does
+ok(AE._network({ protocol: "wg-c" }, {}) === "", "wg-c network suffix is empty");
+ok(AE._network({ protocol: "vless" }, { stream: { network: "tcp", isTls: true } }) === "tcp/TLS",
+  "xray keeps its transport suffix");
 
 // ---- verdict ------------------------------------------------------------
 console.log("");
@@ -186,3 +214,4 @@ if (failures.length) {
   process.exit(1);
 }
 console.log("PASS: export.js TXT/PDF/buildCards all good");
+})();

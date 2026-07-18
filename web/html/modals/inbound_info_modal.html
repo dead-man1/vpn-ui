@@ -24,6 +24,14 @@
             <a-tag>[[ dbInbound.port ]]</a-tag>
           </td>
         </tr>
+        <tr v-if="infoModal.inbound && infoModal.inbound.settings && Array.isArray(infoModal.inbound.settings.externalProxy) && infoModal.inbound.settings.externalProxy.length">
+          <td>External Proxy</td>
+          <td>
+            <a-tag v-for="(ep, i) in infoModal.inbound.settings.externalProxy" :key="i" color="blue" :style="{ marginBottom: '4px' }">
+              [[ ep.dest ]]:[[ ep.port || dbInbound.port ]][[ ep.remark ? ' (' + ep.remark + ')' : '' ]]
+            </a-tag>
+          </td>
+        </tr>
       </table>
     </a-col>
     <a-col :xs="24" :md="12">

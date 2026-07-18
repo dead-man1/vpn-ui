@@ -13,6 +13,11 @@
       </div>
       <div class="ssh-cfg-body">
         <div class="ssh-cfg-text">
+          <div v-if="cfg.link" :style="{ color: '#888', fontSize: '12px', marginBottom: '4px' }">Share link (scan or import)</div>
+          <a-input v-if="cfg.link" :value="cfg.link" read-only
+            :style="{ fontFamily: 'monospace', fontSize: '12px', marginBottom: '12px' }">
+            <a-icon v-if="cfg.link" slot="addonAfter" type="copy" :style="{ cursor: 'pointer' }" @click="copy(cfg.link)"></a-icon>
+          </a-input>
           <div :style="{ color: '#888', fontSize: '12px', marginBottom: '4px' }">Connection details</div>
           <a-textarea :value="cfg.plain" read-only :auto-size="{ minRows: 4, maxRows: 12 }"
             :style="{ fontFamily: 'monospace', fontSize: '12px' }"></a-textarea>
@@ -38,7 +43,7 @@
           </a-space>
         </div>
         <div class="ssh-cfg-qr">
-          <canvas :id="'sshQr-' + index" @click="copy(cfg.plain)"></canvas>
+          <canvas :id="'sshQr-' + index" @click="copy(cfg.link || cfg.plain)"></canvas>
         </div>
       </div>
     </div>
@@ -136,7 +141,7 @@
           new QRious({
             element: el,
             size: 360,
-            value: cfg.plain || '',
+            value: cfg.link || cfg.plain || '',
             background: 'white',
             backgroundAlpha: 1,
             foreground: 'black',

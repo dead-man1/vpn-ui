@@ -5,9 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/mhsanaei/3x-ui/v2/config"
@@ -396,6 +399,22 @@ type SshClientConfig struct {
 	Port    int    `json:"port"`    // endpoint port
 	Singbox string `json:"singbox"` // a sing-box "ssh" outbound JSON (Hiddify-consumable)
 	Plain   string `json:"plain"`   // plaintext host/port/user/pass block
+	Link    string `json:"link"`    // an ssh:// share link (Shadowrocket-importable, QR-friendly)
+}
+
+// sshShareLink builds an ssh:// share link that mobile proxy clients (Shadowrocket)
+// can import from a QR scan. The scheme is not publicly documented; Shadowrocket's
+// family of schemes base64-encodes the userinfo, so we encode "user:password@host:port"
+// (standard base64) and append the label as a URL fragment. Kept as a single source of
+// truth so the modal QR and the bulk export render the same link. NOTE: verify against a
+// live Shadowrocket import; the encoder is trivial to adjust if the field order differs.
+func sshShareLink(user, password, host string, port int, label string) string {
+	userinfo := fmt.Sprintf("%s:%s@%s:%s", user, password, host, strconv.Itoa(port))
+	link := "ssh://" + base64.StdEncoding.EncodeToString([]byte(userinfo))
+	if strings.TrimSpace(label) != "" {
+		link += "#" + url.QueryEscape(label)
+	}
+	return link
 }
 
 // RenderClientConfigs returns the client artifacts for the account with the given
@@ -425,7 +444,13 @@ func (s *SshService) RenderClientConfigs(inbound *model.Inbound, email, endpoint
 		targets = append(targets, endpointTarget{host: dest, port: port, remark: strings.TrimSpace(ep.Remark)})
 	}
 	if len(targets) == 0 {
-		targets = append(targets, endpointTarget{host: endpointHost, port: inbound.Port})
+		// Parity with OpenVPN: an explicit non-wildcard Listen address wins over the
+		// panel host, so an operator who pins the inbound to a public IP gets it.
+		host := endpointHost
+		if l := strings.TrimSpace(inbound.Listen); l != "" && l != "0.0.0.0" {
+			host = l
+		}
+		targets = append(targets, endpointTarget{host: host, port: inbound.Port})
 	}
 
 	var acct *sshClient
@@ -453,12 +478,17 @@ func (s *SshService) RenderClientConfigs(inbound *model.Inbound, email, endpoint
 			continue
 		}
 		plain := fmt.Sprintf("Host: %s\nPort: %d\nUsername: %s\nPassword: %s\n", t.host, t.port, acct.ID, acct.Password)
+		label := t.remark
+		if label == "" {
+			label = email
+		}
 		out = append(out, SshClientConfig{
 			Remark:  t.remark,
 			Host:    t.host,
 			Port:    t.port,
 			Singbox: string(singbox),
 			Plain:   plain,
+			Link:    sshShareLink(acct.ID, acct.Password, t.host, t.port, label),
 		})
 	}
 	return out, nil

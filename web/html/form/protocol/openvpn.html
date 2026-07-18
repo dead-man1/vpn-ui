@@ -51,7 +51,7 @@
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
-                    Simultaneous devices per account (each gets its own IP). 0 = no limit, 1 = single device, up to 64.
+                    Simultaneous devices per account (each gets its own IP). 1 = one IP per account (default, best capacity). Higher values reserve that many consecutive IPs per account, so fewer accounts fit the pool; 0 reserves a 16-IP block. Max 64.
                 </template>
                 User Limit
                 <a-icon type="question-circle"></a-icon>

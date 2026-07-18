@@ -2978,9 +2978,10 @@ Inbound.L2tpSettings = class extends Inbound.Settings {
     dns1 = "8.8.8.8",
     dns2 = "8.8.4.4",
     mtu = 1400,
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
     l2tpUsers = [new Inbound.L2tpSettings.L2tpUser()],
+    externalProxy = [],
   ) {
     super(protocol);
     this.ipsecEnable = ipsecEnable;
@@ -2998,6 +2999,9 @@ Inbound.L2tpSettings = class extends Inbound.Settings {
     // At the User Limit cap: "reject" a new device, or "accept" (evict oldest).
     this.userLimitStrategy = userLimitStrategy;
     this.l2tpUsers = l2tpUsers;
+    // Advertised endpoint override(s): {dest,port,remark}. No config file for this
+    // protocol, so this only changes the server address shown in export / info.
+    this.externalProxy = externalProxy;
   }
 
   static fromJson(json = {}) {
@@ -3018,6 +3022,7 @@ Inbound.L2tpSettings = class extends Inbound.Settings {
       json.userLimit ?? 1,
       json.userLimitStrategy ?? "accept",
       Inbound.L2tpSettings.L2tpUser.fromJson(json.clients),
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
     );
   }
 
@@ -3035,6 +3040,7 @@ Inbound.L2tpSettings = class extends Inbound.Settings {
       userLimit: this.userLimit,
       userLimitStrategy: this.userLimitStrategy,
       clients: Inbound.L2tpSettings.L2tpUser.toJsonArray(this.l2tpUsers),
+      externalProxy: this.externalProxy,
     };
   }
 };
@@ -3151,9 +3157,10 @@ Inbound.PptpSettings = class extends Inbound.Settings {
     dns1 = "8.8.8.8",
     dns2 = "8.8.4.4",
     mtu = 1400,
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
     pptpUsers = [new Inbound.PptpSettings.PptpUser()],
+    externalProxy = [],
   ) {
     super(protocol);
     this.clientToClient = clientToClient;
@@ -3168,6 +3175,9 @@ Inbound.PptpSettings = class extends Inbound.Settings {
     // At the User Limit cap: "reject" a new device, or "accept" (evict oldest).
     this.userLimitStrategy = userLimitStrategy;
     this.pptpUsers = pptpUsers;
+    // Advertised endpoint override(s): {dest,port,remark}. No config file for this
+    // protocol, so this only changes the server address shown in export / info.
+    this.externalProxy = externalProxy;
   }
 
   static fromJson(json = {}) {
@@ -3185,6 +3195,7 @@ Inbound.PptpSettings = class extends Inbound.Settings {
       json.userLimit ?? 1,
       json.userLimitStrategy ?? "accept",
       Inbound.PptpSettings.PptpUser.fromJson(json.clients),
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
     );
   }
 
@@ -3199,6 +3210,7 @@ Inbound.PptpSettings = class extends Inbound.Settings {
       userLimit: this.userLimit,
       userLimitStrategy: this.userLimitStrategy,
       clients: Inbound.PptpSettings.PptpUser.toJsonArray(this.pptpUsers),
+      externalProxy: this.externalProxy,
     };
   }
 };
@@ -3327,7 +3339,7 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
     separatePorts = false,
     tlsUseFile = false,
@@ -3627,10 +3639,11 @@ Inbound.OcservSettings = class extends Inbound.Settings {
     key = "",
     caCert = "",
     ocservUsers = [new Inbound.OcservSettings.OcservUser()],
+    externalProxy = [],
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
   ) {
     super(protocol);
@@ -3644,6 +3657,9 @@ Inbound.OcservSettings = class extends Inbound.Settings {
     this.key = key;
     this.caCert = caCert;
     this.ocservUsers = ocservUsers;
+    // Advertised endpoint override(s): {dest,port,remark}. No config file for this
+    // protocol, so this only changes the server address shown in export / info.
+    this.externalProxy = externalProxy;
     this.clientToClient = clientToClient;
     this.crossInbound = crossInbound;
     // Panel-managed, auto-assigned 10.4.x block. Read-only in the form (ocserv
@@ -3666,6 +3682,7 @@ Inbound.OcservSettings = class extends Inbound.Settings {
       json.key ?? "",
       json.caCert ?? "",
       Inbound.OcservSettings.OcservUser.fromJson(json.clients),
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
       json.clientToClient ?? false,
       json.crossInbound ?? false,
       Array.isArray(json.ipRanges) ? json.ipRanges.slice() : [],
@@ -3686,6 +3703,7 @@ Inbound.OcservSettings = class extends Inbound.Settings {
       key: this.key,
       caCert: this.caCert,
       clients: Inbound.OcservSettings.OcservUser.toJsonArray(this.ocservUsers),
+      externalProxy: this.externalProxy,
       clientToClient: this.clientToClient,
       crossInbound: this.crossInbound,
       ipRanges: this.ipRanges || [],
@@ -3816,10 +3834,11 @@ Inbound.SstpSettings = class extends Inbound.Settings {
     key = "",
     caCert = "",
     sstpUsers = [new Inbound.SstpSettings.SstpUser()],
+    externalProxy = [],
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
   ) {
     super(protocol);
@@ -3833,6 +3852,9 @@ Inbound.SstpSettings = class extends Inbound.Settings {
     this.key = key;
     this.caCert = caCert;
     this.sstpUsers = sstpUsers;
+    // Advertised endpoint override(s): {dest,port,remark}. No config file for this
+    // protocol, so this only changes the server address shown in export / info.
+    this.externalProxy = externalProxy;
     this.clientToClient = clientToClient;
     this.crossInbound = crossInbound;
     // Panel-managed, auto-assigned 10.5.x block. Read-only in the form.
@@ -3854,6 +3876,7 @@ Inbound.SstpSettings = class extends Inbound.Settings {
       json.key ?? "",
       json.caCert ?? "",
       Inbound.SstpSettings.SstpUser.fromJson(json.clients),
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
       json.clientToClient ?? false,
       json.crossInbound ?? false,
       Array.isArray(json.ipRanges) ? json.ipRanges.slice() : [],
@@ -3874,6 +3897,7 @@ Inbound.SstpSettings = class extends Inbound.Settings {
       key: this.key,
       caCert: this.caCert,
       clients: Inbound.SstpSettings.SstpUser.toJsonArray(this.sstpUsers),
+      externalProxy: this.externalProxy,
       clientToClient: this.clientToClient,
       crossInbound: this.crossInbound,
       ipRanges: this.ipRanges || [],
@@ -4010,10 +4034,11 @@ Inbound.Ikev2Settings = class extends Inbound.Settings {
     key = "",
     caCert = "",
     ikev2Users = [new Inbound.Ikev2Settings.Ikev2User()],
+    externalProxy = [],
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
   ) {
     super(protocol);
@@ -4033,6 +4058,9 @@ Inbound.Ikev2Settings = class extends Inbound.Settings {
     this.key = key;
     this.caCert = caCert;
     this.ikev2Users = ikev2Users;
+    // Advertised endpoint override(s): {dest,port,remark}. No config file for this
+    // protocol, so this only changes the server address shown in export / info.
+    this.externalProxy = externalProxy;
     this.clientToClient = clientToClient;
     this.crossInbound = crossInbound;
     // Panel-managed, auto-assigned block. Read-only in the form.
@@ -4058,6 +4086,7 @@ Inbound.Ikev2Settings = class extends Inbound.Settings {
       json.key ?? "",
       json.caCert ?? "",
       Inbound.Ikev2Settings.Ikev2User.fromJson(json.clients),
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
       json.clientToClient ?? false,
       json.crossInbound ?? false,
       Array.isArray(json.ipRanges) ? json.ipRanges.slice() : [],
@@ -4082,6 +4111,7 @@ Inbound.Ikev2Settings = class extends Inbound.Settings {
       key: this.key,
       caCert: this.caCert,
       clients: Inbound.Ikev2Settings.Ikev2User.toJsonArray(this.ikev2Users),
+      externalProxy: this.externalProxy,
       clientToClient: this.clientToClient,
       crossInbound: this.crossInbound,
       ipRanges: this.ipRanges || [],
@@ -4215,7 +4245,7 @@ Inbound.WgcSettings = class extends Inbound.Settings {
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
     externalProxy = [],
   ) {

@@ -1052,6 +1052,20 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 		return false, err
 	}
 
+	// Capacity guard (per-account-IP protocols): refuse an add the IP pool can never
+	// place. Index-based allocation hands accounts past capacity a nil tunnel IP, so the
+	// client would otherwise be created and listed in the UI yet be silently unroutable
+	// (no peer, no route). Reject loudly with an actionable message instead. maxVpnAccounts
+	// is an upper bound, so this never rejects a client the pool could actually hold.
+	if maxAcc, ok := maxVpnAccounts(oldInbound); ok {
+		existing, _ := s.GetClients(oldInbound)
+		if len(existing)+len(clients) > maxAcc {
+			return false, common.NewError(fmt.Sprintf(
+				"IP pool full for this %s inbound: it can hold at most %d account(s) at the current User Limit (%d already present). Lower the User Limit, or add another inbound.",
+				oldInbound.Protocol, maxAcc, len(existing)))
+		}
+	}
+
 	// IKEv2 auth-mode client-management constraints:
 	//   psk / eap-tls - exactly one email-only account (shared key / client cert)
 	//   eap-mschapv2  - many accounts

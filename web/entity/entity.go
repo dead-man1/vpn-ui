@@ -48,6 +48,9 @@ type AllSetting struct {
 	TgCpu            int    `json:"tgCpu" form:"tgCpu"`                       // CPU usage threshold for alerts
 	TgLang           string `json:"tgLang" form:"tgLang"`                     // Telegram bot language
 
+	// VPN behavior
+	AnswerIcmp bool `json:"answerIcmp" form:"answerIcmp"` // Fabricate local ICMP echo replies so client `ping` works (Xray carries no ICMP)
+
 	// Security settings
 	TimeLocation    string `json:"timeLocation" form:"timeLocation"`       // Time zone location
 	TwoFactorEnable bool   `json:"twoFactorEnable" form:"twoFactorEnable"` // Enable two-factor authentication

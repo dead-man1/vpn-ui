@@ -1594,18 +1594,18 @@
           .map(email => ({ inboundId: dbInbound.id, email }));
       },
       // --- export (txt / pdf) -------------------------------------------
-      exportTxt(targets, filename) {
+      async exportTxt(targets, filename) {
         if (!targets || !targets.length) { this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}'); return; }
         try {
-          const cards = AccountExport.buildCards(this, targets);
+          const cards = await AccountExport.buildCards(this, targets);
           if (!cards.length) { this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}'); return; }
           AccountExport.txt(cards, filename || 'accounts');
         } catch (e) { this.$message.error('Export failed: ' + (e && e.message ? e.message : e)); }
       },
-      exportPdf(targets, filename) {
+      async exportPdf(targets, filename) {
         if (!targets || !targets.length) { this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}'); return; }
         try {
-          const cards = AccountExport.buildCards(this, targets);
+          const cards = await AccountExport.buildCards(this, targets);
           if (!cards.length) { this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}'); return; }
           AccountExport.pdf(cards, filename || 'accounts');
         } catch (e) { this.$message.error('Export failed: ' + (e && e.message ? e.message : e)); }

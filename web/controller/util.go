@@ -76,21 +76,29 @@ func pureJsonMsg(c *gin.Context, statusCode int, success bool, msg string) {
 }
 
 // browserHost returns the host the client used to reach the panel (the browser
-// address-bar host, with the port stripped): X-Forwarded-Host / X-Real-IP for
-// reverse-proxied setups, otherwise the request Host. This is the server-side
-// equivalent of the location.hostname that xray share-links use, so server-generated
-// configs (e.g. .ovpn) can point at whatever address the operator is actually using.
+// address-bar host, with the port stripped): the X-Forwarded-Host set by a reverse
+// proxy, otherwise the request Host. This is the server-side equivalent of the
+// location.hostname that xray share-links use, so server-generated configs (e.g. .ovpn,
+// the WireGuard Endpoint, the SSH server) can point at whatever address the operator is
+// actually using.
+//
+// It deliberately does NOT consult X-Real-IP: by convention (nginx
+// `proxy_set_header X-Real-IP $remote_addr`) that header carries the CLIENT's IP, not
+// the panel host, so using it made every generated endpoint resolve to the admin's own
+// address behind a standard reverse proxy — visible as "the config ignores the panel
+// URL unless an external proxy is set".
 func browserHost(c *gin.Context) string {
 	host := c.GetHeader("X-Forwarded-Host")
-	if host == "" {
-		host = c.GetHeader("X-Real-IP")
-	}
 	if host == "" {
 		h, _, err := net.SplitHostPort(c.Request.Host)
 		if err != nil {
 			h = c.Request.Host
 		}
 		host = h
+	}
+	// A comma-separated X-Forwarded-Host (proxy chain) lists the original host first.
+	if i := strings.IndexByte(host, ','); i >= 0 {
+		host = strings.TrimSpace(host[:i])
 	}
 	return host
 }

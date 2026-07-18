@@ -336,6 +336,10 @@ func (s *Server) startTask() {
 	s.wgcService.InitWgc()
 	s.mtprotoService.InitMtproto()
 	s.sshService.InitSsh()
+	// Local ICMP echo responder (fabricates ping replies for client traffic, which Xray
+	// cannot carry). Idle until the nftables rule feeds it; self-disables if the kernel
+	// lacks NFQUEUE. Started once, for the process lifetime.
+	service.StartIcmpResponder()
 
 	s.customGeoService.EnsureOnStartup()
 	// Reap an orphaned Xray from a previous instance BEFORE starting ours — a panel

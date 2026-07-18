@@ -48,7 +48,9 @@
                     Size of the account's IP block, rounded up to a power of two
                     (e.g. 6 gives a /29 of 8 addresses). The account's single config
                     addresses this whole block, which a router/gateway hands out to
-                    its LAN. 0 = the maximum (64 devices, a /26); 1 = a single /32.
+                    its LAN. 1 = a single /32 (default, best capacity); larger blocks
+                    fit fewer accounts. 0 = the maximum (64 devices, a /26), which fits
+                    only ~2 accounts per /24.
                 </template>
                 User Limit
                 <a-icon type="question-circle"></a-icon>

@@ -595,7 +595,13 @@ func (s *WgcService) RenderClientConfigs(inbound *model.Inbound, email, endpoint
 		targets = append(targets, endpointTarget{host: dest, port: port, remark: strings.TrimSpace(ep.Remark)})
 	}
 	if len(targets) == 0 {
-		targets = append(targets, endpointTarget{host: endpointHost, port: inbound.Port})
+		// Parity with OpenVPN: an explicit non-wildcard Listen address wins over the
+		// panel host, so an operator who pins the inbound to a public IP gets it.
+		host := endpointHost
+		if l := strings.TrimSpace(inbound.Listen); l != "" && l != "0.0.0.0" {
+			host = l
+		}
+		targets = append(targets, endpointTarget{host: host, port: inbound.Port})
 	}
 
 	var out []WgcClientConfig

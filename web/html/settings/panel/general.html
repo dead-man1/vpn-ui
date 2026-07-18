@@ -125,6 +125,15 @@
             </template>
         </a-setting-list-item>
     </a-collapse-panel>
+    <a-collapse-panel key="vpn" header="VPN">
+        <a-setting-list-item paddings="small">
+            <template #title>Answer ICMP (ping)</template>
+            <template #description>Reply to client pings locally so `ping` works through the tunnel. Xray carries only TCP/UDP, so replies are fabricated at tunnel latency (like Shadowrocket / sing-box do) — a dead host still "answers", and traceroute is unaffected. Turn off to leave client ICMP unanswered.</template>
+            <template #control>
+                <a-switch v-model="allSetting.answerIcmp"></a-switch>
+            </template>
+        </a-setting-list-item>
+    </a-collapse-panel>
     <a-collapse-panel key="5" header='{{ i18n "pages.settings.dateAndTime" }}'>
         <a-setting-list-item paddings="small">
             <template #title>{{ i18n "pages.settings.timeZone"}}</template>

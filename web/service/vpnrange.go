@@ -745,6 +745,66 @@ func vpnAccountsCapacity(subnets []string, k int) int {
 	return len(subnets) * accountsPerSubnet(k)
 }
 
+// maxVpnAccounts returns an UPPER BOUND on the number of per-account tunnel IPs an
+// inbound can ever hold after maximum auto-expansion (ok=false for protocols with no
+// per-account IP: the relays mtproto/ssh and the xray protocols). It mirrors the sizing
+// in normalizeRanges: PPP protocols (l2tp/pptp/sstp) can grow to own every free /24 in
+// their /16; the block protocols (openvpn/openconnect/ikev2/wg-c) are hard-capped at a
+// /18 (64 /24s). Because it counts the largest pool the inbound could obtain, it never
+// under-reports, so the add-client guard built on it never falsely rejects a placeable
+// client; it exists to catch the hard walls (the /18 block cap, and /16 exhaustion)
+// where the index-based allocator would otherwise hand the account a nil IP silently.
+func maxVpnAccounts(inbound *model.Inbound) (int, bool) {
+	proto := string(inbound.Protocol)
+	switch proto {
+	case "l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wg-c":
+	default:
+		return 0, false
+	}
+
+	var raw map[string]json.RawMessage
+	if len(inbound.Settings) > 0 {
+		if json.Unmarshal([]byte(inbound.Settings), &raw) != nil {
+			return 0, false
+		}
+	}
+	if raw == nil {
+		raw = map[string]json.RawMessage{}
+	}
+
+	// Free /24s available to this inbound: its own (excludeId) plus any that no other
+	// inbound of the family owns.
+	used := usedVpnSubnets(inbound.Id)
+	base := protocolBase(proto)
+	free := 0
+	for n := 2; n <= 254; n++ {
+		if !used[fmt.Sprintf("10.%d.%d", base, n)] {
+			free++
+		}
+	}
+
+	switch proto {
+	case "l2tp", "pptp", "sstp":
+		// PPP: no per-inbound cap, grows across the whole /16.
+		return free * accountsPerSubnet(decodeUserLimit(raw)), true
+	case "wg-c":
+		// Gateway model: block sizing rounds the wg-c User Limit up to a power of two;
+		// the single contiguous block is capped at 64 /24s (a /18).
+		n24 := free
+		if n24 > 64 {
+			n24 = 64
+		}
+		return n24 * accountsPerSubnet(nextPow2(wgcDecodeUserLimit(raw))), true
+	default:
+		// openvpn/openconnect/ikev2: single aligned block capped at 64 /24s (a /18).
+		n24 := free
+		if n24 > 64 {
+			n24 = 64
+		}
+		return n24 * accountsPerSubnet(decodeUserLimit(raw)), true
+	}
+}
+
 // vpnAccountBlock maps account index i to its (/24 prefix, first-host octet) under
 // user limit k>=2, walking the ordered /24 prefixes. ok=false past capacity.
 func vpnAccountBlock(subnets []string, i, k int) (subnet string, hostBase int, ok bool) {

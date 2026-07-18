@@ -223,6 +223,28 @@
                     inModal.inbound.settings.externalProxy = [];
                 }
             },
+            // Shared toggle for the connection-oriented protocols (l2tp/pptp/ikev2/
+            // sstp/openconnect), which keep an advertised-endpoint list in
+            // settings.externalProxy just like OpenVPN / WireGuard-C.
+            get vpnExternalProxy() {
+                return (
+                    Array.isArray(inModal.inbound.settings.externalProxy) &&
+                    inModal.inbound.settings.externalProxy.length > 0
+                );
+            },
+            set vpnExternalProxy(value) {
+                if (value) {
+                    inModal.inbound.settings.externalProxy = [
+                        {
+                            dest: window.location.hostname,
+                            port: inModal.inbound.port,
+                            remark: "",
+                        },
+                    ];
+                } else {
+                    inModal.inbound.settings.externalProxy = [];
+                }
+            },
         },
         computed: {
             ovpnAeadCiphers() {

@@ -272,6 +272,13 @@ func (a *InboundController) mtprotoChanged(clientOnly bool) {
 		if err := a.mtprotoService.RestartServices(); err != nil {
 			logger.Warning("MTProto: service restart failed:", err)
 		}
+	} else {
+		// Client-only changes hot-reload a running telemt via its config watcher, but
+		// when this change produces the inbound's first usable account nothing has
+		// launched the process yet. Start it if down (never supersedes a live one).
+		if err := a.mtprotoService.EnsureServicesRunning(); err != nil {
+			logger.Warning("MTProto: ensure-running failed:", err)
+		}
 	}
 	a.mtprotoService.KillDisabledSessions()
 	// The paired socks inbound (and thus this inbound's routing tag) is built from

@@ -758,6 +758,49 @@ func (s *MtprotoService) RestartServices() error {
 	return nil
 }
 
+// EnsureServicesRunning is the start-if-down analogue of ensureCharonRunning: it
+// launches telemt for any enabled inbound that has a usable account but no running
+// process, and leaves inbounds whose telemt is already up untouched.
+//
+// A plain client change (add/enable/edit) only hot-reloads a RUNNING telemt via its
+// config watcher, so RestartServices is deliberately skipped on the client-only path
+// to avoid superseding (killing+relaunching) live connections. But that skip also
+// meant nothing launched telemt when a client operation produced an inbound's FIRST
+// usable account, leaving the backend down until an unrelated inbound-level toggle.
+// This closes that gap without dropping any live session, since procMgr.Start (which
+// supersedes) is only reached for inbounds that are not currently running.
+func (s *MtprotoService) EnsureServicesRunning() error {
+	inbounds, err := s.GetMtprotoInbounds()
+	if err != nil {
+		return err
+	}
+	bin := s.telemtBinaryPath()
+	for _, inbound := range inbounds {
+		if !inbound.Enable {
+			continue
+		}
+		settings, err := s.parseSettings(inbound)
+		if err != nil {
+			logger.Warning("MTProto: skipping inbound", inbound.Id, err)
+			continue
+		}
+		if len(s.activeClients(settings)) == 0 {
+			continue
+		}
+		name := mtprotoProcName(inbound.Id)
+		if procMgr.IsRunning(name) {
+			// Already up: GenerateAllConfigs has hot-reloaded it via the config watcher.
+			continue
+		}
+		dir := s.configDir(inbound.Id)
+		args := []string{"--data-path", dir, dir + "/config.toml"}
+		if err := procMgr.Start(name, bin, args, nil, dir); err != nil {
+			logger.Warning("MTProto: failed to start", name, err)
+		}
+	}
+	return nil
+}
+
 // StopServices stops all MTProto child processes.
 func (s *MtprotoService) StopServices() error {
 	procMgr.StopByPrefix("mtproto-server-")

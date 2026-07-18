@@ -59,7 +59,7 @@
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
-                    Simultaneous devices per account (each gets its own IP). 0 = no limit, 1 = single device, up to 64.
+                    Simultaneous devices per account (each gets its own IP). 1 = one IP per account (default, best capacity). Higher values reserve that many consecutive IPs per account, so fewer accounts fit the pool; 0 reserves a 16-IP block. Max 64.
                 </template>
                 User Limit
                 <a-icon type="question-circle"></a-icon>
@@ -118,5 +118,59 @@
             :disabled="!inbound.settings.clientToClient"
         ></a-switch>
     </a-form-item>
+    <a-form-item>
+        <template slot="label">
+            <a-tooltip>
+                <template slot="title">
+                    Advertise an alternate server address (a relay / port-forward host)
+                    in the exported credentials and account info instead of the panel
+                    host. Add one entry per endpoint.
+                </template>
+                External Proxy
+                <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+        </template>
+        <a-switch v-model="vpnExternalProxy"></a-switch>
+        <a-button
+            icon="plus"
+            v-if="vpnExternalProxy"
+            type="primary"
+            :style="{ marginLeft: '10px' }"
+            size="small"
+            @click="inbound.settings.externalProxy.push({dest: '', port: inbound.port, remark: ''})"
+        ></a-button>
+    </a-form-item>
+    <a-input-group
+        :style="{ margin: '8px 0' }"
+        compact
+        v-for="(row, index) in inbound.settings.externalProxy"
+    >
+        <a-input
+            :style="{ width: '45%' }"
+            v-model.trim="row.dest"
+            placeholder='{{ i18n "host" }}'
+        ></a-input>
+        <a-tooltip title='{{ i18n "pages.inbounds.port" }}'>
+            <a-input-number
+                :style="{ width: '20%' }"
+                v-model.number="row.port"
+                min="1"
+                max="65535"
+            ></a-input-number>
+        </a-tooltip>
+        <a-input
+            :style="{ width: '30%', top: '0' }"
+            v-model.trim="row.remark"
+            placeholder='{{ i18n "remark" }}'
+        >
+            <template slot="addonAfter">
+                <a-button
+                    icon="minus"
+                    size="small"
+                    @click="inbound.settings.externalProxy.splice(index, 1)"
+                ></a-button>
+            </template>
+        </a-input>
+    </a-input-group>
 </a-form>
 {{end}}

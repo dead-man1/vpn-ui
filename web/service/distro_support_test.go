@@ -11,7 +11,6 @@ func TestDistroSupportedBy(t *testing.T) {
 		want        bool
 	}{
 		// tested families + versions
-		{"ubuntu", "22.04", true},
 		{"ubuntu", "24.04", true},
 		{"ubuntu", "26.04", true},
 		{"Ubuntu", "24.04", true}, // ID is case-insensitive
@@ -22,11 +21,14 @@ func TestDistroSupportedBy(t *testing.T) {
 		{"almalinux", "9.4", true},  // point release -> major 9
 		{"almalinux", "10.0", true}, // point release -> major 10
 		{"rocky", "9.5", true},
+		{"centos", "9", true},      // CentOS Stream 9
+		{"centos", "10", true},     // CentOS Stream 10
 		{"arch", "", true},         // rolling: no VERSION_ID
 		{"arch", "20260101", true}, // rolling: any VERSION_ID
 
 		// untested versions of a tested family
 		{"ubuntu", "20.04", false},
+		{"ubuntu", "22.04", false}, // dropped from the tested matrix
 		{"debian", "11", false},
 		{"fedora", "40", false},
 		{"rocky", "7.9", false},
@@ -35,10 +37,10 @@ func TestDistroSupportedBy(t *testing.T) {
 		// EL8 dropped in v1.4: bundled strongSwan (IKEv2) setup fails there.
 		{"almalinux", "8.10", false},
 		{"rocky", "8.10", false},
+		{"centos", "8", false},
 
 		// distros not on the list at all
 		{"linuxmint", "21", false}, // ubuntu-derived, still not tested
-		{"centos", "9", false},
 		{"opensuse", "15", false},
 		{"", "", false}, // missing os-release
 	}
@@ -53,8 +55,8 @@ func TestDistroSupportedBy(t *testing.T) {
 
 func TestSupportedDistroSummary(t *testing.T) {
 	s := SupportedDistroSummary()
-	for _, want := range []string{"Ubuntu 22/24/26", "Debian 12/13", "Fedora 43/44",
-		"AlmaLinux 9/10", "Rocky 9/10", "Arch"} {
+	for _, want := range []string{"Ubuntu 24/26", "Debian 12/13", "Fedora 43/44",
+		"AlmaLinux 9/10", "Rocky 9/10", "CentOS Stream 9/10", "Arch"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("summary %q missing %q", s, want)
 		}

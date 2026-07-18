@@ -619,10 +619,12 @@ func panelAccessURL(settingService *service.SettingService, port int, normPath s
 }
 
 // certHost returns the host a browser should use to reach a panel serving certFile:
-// the leaf certificate's first DNS SAN, else its first IP SAN, else "" when the file
-// cannot be read or parsed. It reads the FIRST certificate in the PEM (the leaf; a
-// fullchain.pem puts intermediates after it) and does not fall back to the deprecated
-// CN, which browsers no longer match on.
+// the leaf certificate's first routable DNS SAN, else its first non-loopback IP SAN,
+// else "" when the file cannot be read or parsed. "localhost" and loopback IPs are
+// skipped, so a self-signed panel cert (which also carries them for local access)
+// still yields the server's public address. It reads the FIRST certificate in the
+// PEM (the leaf; a fullchain.pem puts intermediates after it) and does not fall back
+// to the deprecated CN, which browsers no longer match on.
 func certHost(certFile string) string {
 	pemData, err := os.ReadFile(certFile)
 	if err != nil {
@@ -641,11 +643,21 @@ func certHost(certFile string) string {
 		if err != nil {
 			return ""
 		}
-		if len(cert.DNSNames) > 0 {
-			return cert.DNSNames[0]
+		// Prefer a host a REMOTE browser can actually reach. The self-signed panel
+		// cert (deploy.sh's HTTPS option) carries "localhost" + 127.0.0.1 loopback
+		// SANs, so it validates for local access too, alongside the server's public
+		// IP. Returning the first SAN blindly hands back "localhost", so --random
+		// prints https://localhost:PORT, which no remote browser can open. Skip the
+		// loopback/localhost identities and return the first routable SAN.
+		for _, name := range cert.DNSNames {
+			if !strings.EqualFold(name, "localhost") {
+				return name
+			}
 		}
-		if len(cert.IPAddresses) > 0 {
-			return cert.IPAddresses[0].String()
+		for _, ip := range cert.IPAddresses {
+			if !ip.IsLoopback() {
+				return ip.String()
+			}
 		}
 		return ""
 	}

@@ -58,6 +58,21 @@ func TestCertHost(t *testing.T) {
 		t.Errorf("ip cert: got %q, want 203.0.113.7", got)
 	}
 
+	// Self-signed panel cert: "localhost" + 127.0.0.1 loopback SANs sit alongside
+	// the server's public IP. certHost must skip the loopback identities and return
+	// the routable IP, else deploy.sh prints an unreachable https://localhost URL.
+	selfsigned := writeTestCert(t, []string{"localhost"}, []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("203.0.113.7")})
+	if got := certHost(selfsigned); got != "203.0.113.7" {
+		t.Errorf("self-signed cert: got %q, want 203.0.113.7", got)
+	}
+
+	// Only loopback SANs (public IP undetected when the cert was generated): nothing
+	// routable, so certHost returns "" and panelAccessURL falls back to the detected IP.
+	loopback := writeTestCert(t, []string{"localhost"}, []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")})
+	if got := certHost(loopback); got != "" {
+		t.Errorf("loopback-only cert: got %q, want empty", got)
+	}
+
 	// No SAN at all: no fallback to the deprecated CN, so empty.
 	none := writeTestCert(t, nil, nil)
 	if got := certHost(none); got != "" {

@@ -11,7 +11,6 @@ set -euo pipefail
 # Distros to test. Comment out / delete lines to skip. Names must match the
 # server names in config.toml. Leave the array EMPTY to test all of them.
 DISTROS=(
-#  ubuntu-22
   ubuntu-24
   ubuntu-26
   debian-12
@@ -23,6 +22,8 @@ DISTROS=(
   alma-10
   rocky-9
   rocky-10
+  centos-9
+  centos-10
   arch
 )
 

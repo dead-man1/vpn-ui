@@ -33,7 +33,7 @@ def tunnel_egress(client: Client, ifaces=("tun0", "ppp0", "wgc")) -> SubTest:
 def internet(client: Client) -> SubTest:
     """Reachability through the tunnel. Retries: the server-side tproxy->xray
     path can take a few seconds to warm up after a fresh connect (slower on
-    older kernels like ubuntu-22's 5.15), so a single immediate curl races the
+    older cloud kernels), so a single immediate curl races the
     cold path. On persistent failure, capture route/DNS/IP-only diagnostics to
     separate a dead data-plane from a DNS-only problem."""
     st = SubTest("internet")

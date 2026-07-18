@@ -177,10 +177,19 @@ obtain_letsencrypt_cert() {
     msg "Issuing Let's Encrypt certificate for ${DOMAIN} (standalone HTTP-01)"
     # RSA-2048 for the widest client trust (legacy Windows SSTP included).
     if ! "$ACME" --issue -d "$DOMAIN" --standalone --keylength 2048; then
-        # acme returns non-zero when an existing cert is still valid ("skip"); only
-        # bail when no cert directory was produced at all.
-        if [[ ! -d "$HOME/.acme.sh/${DOMAIN}" && ! -d "$HOME/.acme.sh/${DOMAIN}_ecc" ]]; then
-            warn "acme.sh issuance failed for ${DOMAIN}. Check the DNS A record and that :80 is reachable."
+        # acme returns non-zero for two very different reasons and only one is fatal:
+        #   - an existing cert is still valid ("skip") -> a real chain IS on disk, proceed;
+        #   - issuance FAILED, e.g. the HTTP-01 check timed out because Let's Encrypt
+        #     could not fetch the token over :80 (the domain doesn't point at THIS box,
+        #     or :80 is firewalled/behind NAT) -> NO chain on disk, bail.
+        # Gate on the actual fullchain, NOT the domain directory: acme.sh creates the
+        # directory (with the domain key) even when validation fails, so its presence
+        # proves nothing. Checking the dir let a failed issuance march into
+        # --install-cert, which then died on a missing fullchain.cer and left a partial
+        # key in $CERT_DIR.
+        if [[ ! -s "$HOME/.acme.sh/${DOMAIN}/fullchain.cer" && ! -s "$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer" ]]; then
+            warn "acme.sh could not issue a certificate for ${DOMAIN}."
+            warn "Let's Encrypt validates over HTTP: ${DOMAIN} must resolve to THIS server's public IP and TCP :80 must be reachable from the internet (not firewalled, not behind a proxy/CDN for a different host). The panel's TLS was left unchanged."
             return 1
         fi
     fi

@@ -74,7 +74,7 @@ sudo ./setup.sh          # install + init incus, python3, deps (idempotent)
 ```
 
 `setup.sh` detects the package manager (apt/dnf/yum/pacman) and installs incus
-(Zabbly upstream repo fallback on Debian 12 / Ubuntu 22; EPEL on RHEL-family),
+(Zabbly upstream repo fallback on older host distros like Debian 12; EPEL on RHEL-family),
 python3 + pip and the python deps, starts the incus daemon, and runs
 `incus admin init --minimal` if no storage pool exists. Re-running is safe.
 
@@ -82,7 +82,7 @@ python3 + pip and the python deps, starts the incus daemon, and runs
 
 ```bash
 # place the prebuilt amd64 binary named `vpn-ui` (+ its bin/ dir) in test_subject/
-sudo ./run.sh                          # full 12-distro matrix (auto-setup if needed)
+sudo ./run.sh                          # full 13-distro matrix (auto-setup if needed)
 sudo ./run.sh --only ubuntu-24,arch    # subset
 sudo ./run.sh -c /path/to/other.toml
 ```

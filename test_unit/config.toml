@@ -7,7 +7,6 @@ keep_failed_vms = false                     # keep a failed job's VMs for post-m
 
 # Distro matrix. enabled = false (or --only) skips one.
 servers = [
-  {name = "ubuntu-22", image = "images:ubuntu/22.04/cloud",  enabled = true},
   {name = "ubuntu-24", image = "images:ubuntu/24.04/cloud",  enabled = true},
   {name = "ubuntu-26", image = "images:ubuntu/26.04/cloud",  enabled = true},
   {name = "debian-12", image = "images:debian/12/cloud",     enabled = true},
@@ -19,6 +18,8 @@ servers = [
   {name = "alma-10",   image = "images:almalinux/10/cloud",  enabled = true},
   {name = "rocky-9",   image = "images:rockylinux/9/cloud",  enabled = true},
   {name = "rocky-10",  image = "images:rockylinux/10/cloud", enabled = true},
+  {name = "centos-9",  image = "images:centos/9-Stream/cloud", enabled = true},
+  {name = "centos-10", image = "images:centos/10-Stream/cloud", enabled = true},
   {name = "arch",      image = "images:archlinux/cloud",     enabled = true},
 ]
 

@@ -79,7 +79,7 @@ ensure_py_deps() {
 apt_has_pkg() { apt-cache show "$1" >/dev/null 2>&1; }
 
 setup_zabbly_apt() {
-  # Debian 12 / Ubuntu 22 and older have no `incus` in the distro repos.
+  # Older apt-based hosts have no `incus` in the distro repos.
   # Add the upstream Zabbly repo (the method Incus documents itself).
   log "incus not in distro repos — adding upstream Zabbly repo"
   pm_install curl ca-certificates gpg

@@ -43,19 +43,24 @@
 ## سیستم‌عامل‌های تست شده
 
 
-| | Distribution |Version |Version |Version |
-|:---:|:---|:---:|:---:|:---:|
-| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` | |
-| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` | |
-| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` | |
-| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | | |
+| | توزیع |نسخه |نسخه |
+|:---:|:---|:---:|:---:|
+| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` |
+| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` |
+| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` |
+| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | |
 
 
 > [!IMPORTANT]
 > پیشنهاد می‌شه حتماً پنل رو روی سیستم‌عامل‌های تست‌شده نصب کنید؛ چون احتمال این‌که هسته‌های جدید روی بقیه‌ی سیستم‌عامل‌ها درست کار نکنن بالاست!
+
+> [!NOTE]
+> **پروتکل AmneziaWG فقط روی Debian 12/13 و Ubuntu 24.04/26.04 کار می‌کنه.**
+> برخلاف بقیه‌ی پروتکل‌ها، AmneziaWG توی هسته‌ی هیچ توزیعی نیست: پنل موقع راه‌اندازی، ماژول هسته‌اش رو روی سرور خودتون کامپایل می‌کنه. این ماژول فعلاً توی دو حالت بیلد نمی‌شه. روی **هسته‌ی 7.1 و بالاتر** (Fedora 43/44 و Arch) هسته سمبل `ipv6_stub` رو که ماژول هنوز ازش استفاده می‌کنه حذف کرده. روی **AlmaLinux، Rocky Linux و CentOS Stream** هم هسته‌های بک‌پورت‌شده‌ی RHEL با لایه‌ی سازگاری ماژول تداخل دارن و EL10 اصلاً براش شناخته‌شده نیست. هر دوی این‌ها محدودیت خودِ ماژول AmneziaWG هستن و رفعشون هنوز سمت پروژه‌ی اصلی بازه، پس چیزی نیست که پنل بتونه با تنظیمات دورش بزنه.
+> فرایند راه‌اندازی این رو تشخیص می‌ده و بهتون خبر می‌ده، به‌جای این‌که بی‌صدا شکست بخوره. **بقیه‌ی پروتکل‌ها روی همه‌ی سیستم‌عامل‌های تست‌شده به‌طور عادی کار می‌کنن.**
 
 ## نصب پنل
 

@@ -51,6 +51,17 @@ var vpnOptionalKernelModules = []string{
 	// kernel without it degrades to a Warn (kernel-only build, no userspace fallback yet)
 	// rather than failing provisioning. Autoloads on the first `ip link add type wireguard`.
 	"wireguard",
+	// amneziawg: the AmneziaWG data plane. Unlike every other entry here this module is
+	// NOT shipped by any distro kernel; ensureAmneziawg DKMS-builds it from the vendored
+	// source during setup. Listed so it shows up in the System card's module list once
+	// built (GetSystemStatus only renders an optional module when it is actually
+	// available, so it stays hidden rather than red on a host that never built it).
+	//
+	// It must stay OPTIONAL and out of vpnKernelModules: MissingKernelModules would
+	// otherwise always report it (no stock kernel has it), sending provisionKernelModules
+	// off to install a distro kernel package that cannot provide it and needlessly
+	// tripping the reboot/bootloader-pin path.
+	"amneziawg",
 }
 
 // CoreState is the coarse health of a backend "core".
@@ -545,7 +556,14 @@ func (s *CoreService) awgStatus() CoreStatus {
 	cs.Inbounds = len(inbounds)
 	if !s.awgService.AmneziawgAvailable() {
 		cs.State = CoreNotInstalled
-		cs.Detail = "amneziawg kernel module not built (run Core Settings setup)"
+		// Distinguish "setup has not run yet" from "this host cannot build it at all".
+		// Telling an operator on Fedora/Arch/RHEL to re-run setup would send them round a
+		// loop that can never succeed, so say what is actually wrong.
+		if ok, why := awgKernelModuleSupported(); !ok {
+			cs.Detail = why
+		} else {
+			cs.Detail = "amneziawg kernel module not built (run Core Settings setup)"
+		}
 		return cs
 	}
 	cs.Version = amneziawgModuleVersion()
@@ -940,8 +958,18 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 			continue
 		}
 		if !moduleAvailable(m) {
-			emit(ProvisionStep{Name: "module " + m, OK: true,
-				Msg: "not on this kernel — optional, IPsec uses XFRM instead"})
+			// amneziawg is the one entry here that no kernel ships: it is built from the
+			// vendored source by ensureAmneziawg later in THIS same pass, so on a first
+			// run it is legitimately absent at this point. Saying "IPsec uses XFRM
+			// instead" would be simply wrong for it.
+			msg := "not on this kernel, optional: IPsec uses XFRM instead"
+			if m == amneziawgModule {
+				// Deliberately neutral: on a supported host the AmneziaWG step below builds
+				// it, on an unsupported one that step explains why it cannot. Promising a
+				// build here would contradict the very next line on Fedora/Arch/RHEL.
+				msg = "not built yet, see the AmneziaWG step below"
+			}
+			emit(ProvisionStep{Name: "module " + m, OK: true, Msg: msg})
 			continue
 		}
 		if exec.Command("modprobe", m).Run() == nil {
@@ -1043,14 +1071,22 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 		emit(ensureLibreswan())
 	}
 
-	// AmneziaWG: DKMS-build + load the out-of-tree `amneziawg` kernel module from the
-	// vendored source (the project's only on-host compile). Warn-and-degrade on failure.
-	emit(ensureAmneziawg())
-
 	// L2TP/PPTP need PPP kernel modules that minimal/cloud kernels omit. Best-
 	// effort install of the distro's full kernel-modules package. When the modules
 	// ship only in a newer kernel, this reports that a reboot is needed to load them.
 	mods, pkg := s.provisionKernelModules(emit)
+
+	// AmneziaWG: DKMS-build + load the out-of-tree `amneziawg` module from the vendored
+	// source (the project's only on-host compile). Warn-and-degrade on failure.
+	//
+	// This MUST run AFTER provisionKernelModules. That step can install a fuller kernel on
+	// a cut-down cloud image (Debian's "cloud" flavour ships no PPP/L2TP) and ask for a
+	// reboot, so the kernel this host will actually boot is not the one running now.
+	// Building first meant the module was compiled for the kernel being left behind, and
+	// AmneziaWG came back "module not found" after the reboot until setup was run a second
+	// time. Running here, the incoming kernel and its headers are already on disk, so the
+	// `dkms autoinstall` inside this step covers it too.
+	emit(ensureAmneziawg())
 
 	// Clear any distro deny-list/disable for our modules (and their dependencies) so
 	// systemd-modules-load auto-loads them on boot (Fedora/RHEL blacklist the L2TP

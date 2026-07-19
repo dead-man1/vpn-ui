@@ -42,19 +42,24 @@
 ## Протестированные операционные системы
 
 
-| | Дистрибутив |Версия |Версия |Версия |
-|:---:|:---|:---:|:---:|:---:|
-| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` | |
-| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` | |
-| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` | |
-| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | | |
+| | Дистрибутив |Версия |Версия |
+|:---:|:---|:---:|:---:|
+| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` |
+| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` |
+| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` |
+| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | |
 
 
 > [!IMPORTANT]
 > Настоятельно рекомендуется устанавливать панель только на протестированные операционные системы, так как высока вероятность, что новые ядра не будут корректно работать на других ОС!
+
+> [!NOTE]
+> **AmneziaWG работает только на Debian 12/13 и Ubuntu 24.04/26.04.**
+> В отличие от всех остальных протоколов, AmneziaWG не входит в ядро ни одного дистрибутива: панель сама собирает его модуль ядра на вашем сервере во время первоначальной настройки. Сейчас этот модуль не собирается в двух случаях. На **ядре 7.1 и новее** (Fedora 43/44, Arch) из ядра удалён символ `ipv6_stub`, который модуль по-прежнему использует. На **AlmaLinux, Rocky Linux и CentOS Stream** бэкпортированные ядра RHEL конфликтуют со слоем совместимости модуля, а EL10 он не распознаёт вовсе. И то и другое является ограничением самого модуля AmneziaWG, исправления для них всё ещё не приняты в основном проекте, поэтому обойти их настройками панели невозможно.
+> Настройка обнаруживает это и сообщает вам, вместо того чтобы молча завершиться с ошибкой. **Все остальные протоколы нормально работают на всех протестированных операционных системах.**
 
 ## Установка панели
 

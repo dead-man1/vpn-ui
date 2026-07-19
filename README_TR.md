@@ -42,19 +42,24 @@ Bu proje, **[3X-UI](https://github.com/MHSanaei/3x-ui)** panelinin (2.9.3 sürü
 ## Test Edilen İşletim Sistemleri
 
 
-| | Dağıtım |Sürüm |Sürüm |Sürüm |
-|:---:|:---|:---:|:---:|:---:|
-| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` | |
-| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` | |
-| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` | |
-| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | | |
+| | Dağıtım |Sürüm |Sürüm |
+|:---:|:---|:---:|:---:|
+| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` |
+| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` |
+| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` |
+| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | |
 
 
 > [!IMPORTANT]
 > Paneli mutlaka test edilen işletim sistemlerine kurmanız önerilir; çünkü yeni çekirdeklerin diğer işletim sistemlerinde düzgün çalışmama ihtimali yüksektir!
+
+> [!NOTE]
+> **AmneziaWG yalnızca Debian 12/13 ve Ubuntu 24.04/26.04 üzerinde çalışır.**
+> Diğer tüm protokollerin aksine AmneziaWG hiçbir dağıtımın çekirdeğinde yer almaz: panel, kurulum sırasında çekirdek modülünü sizin sunucunuzda derler. Bu modül şu anda iki durumda derlenemiyor. **Çekirdek 7.1 ve üzerinde** (Fedora 43/44, Arch) çekirdek, modülün hâlâ kullandığı `ipv6_stub` sembolünü kaldırdı. **AlmaLinux, Rocky Linux ve CentOS Stream** üzerinde ise geriye uyarlanmış (backport) RHEL çekirdekleri modülün uyumluluk katmanıyla çakışıyor; EL10 ise bu katman tarafından hiç tanınmıyor. Her ikisi de AmneziaWG modülünün kendi sınırlamalarıdır ve düzeltmeleri ana projede hâlâ beklemektedir, dolayısıyla panelin ayarlarla aşabileceği şeyler değildir.
+> Kurulum bunu tespit edip size bildirir, sessizce başarısız olmaz. **Diğer tüm protokoller, test edilen tüm işletim sistemlerinde normal şekilde çalışır.**
 
 ## Panel Kurulumu
 

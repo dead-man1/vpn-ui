@@ -42,19 +42,24 @@
 ## أنظمة التشغيل المُختبَرة
 
 
-| | التوزيعة |الإصدار |الإصدار |الإصدار |
-|:---:|:---|:---:|:---:|:---:|
-| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` | |
-| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` | |
-| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` | |
-| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | | |
+| | التوزيعة |الإصدار |الإصدار |
+|:---:|:---|:---:|:---:|
+| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` |
+| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` |
+| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` |
+| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | |
 
 
 > [!IMPORTANT]
 > يُوصى بشدّة بتثبيت اللوحة على أنظمة التشغيل المُختبَرة؛ لأن احتمال ألّا تعمل النوى الجديدة بشكل صحيح على بقية أنظمة التشغيل مرتفع!
+
+> [!NOTE]
+> **يعمل AmneziaWG على Debian 12/13 وUbuntu 24.04/26.04 فقط.**
+> على خلاف بقية البروتوكولات، AmneziaWG غير موجود في نواة أي توزيعة: فاللوحة تُجمِّع (compile) وحدة النواة الخاصة به على خادمك أثناء الإعداد. وهذه الوحدة تفشل حالياً في البناء في حالتين. على **النواة 7.1 أو أحدث** (Fedora 43/44 وArch) أزالت النواة الرمز `ipv6_stub` الذي ما زالت الوحدة تستخدمه. وعلى **AlmaLinux وRocky Linux وCentOS Stream** تتعارض نوى RHEL المنقولة (backported) مع طبقة التوافق في الوحدة، كما أن EL10 غير معروف لها إطلاقاً. وكلتا الحالتين قيدٌ في وحدة AmneziaWG الأصلية، وإصلاحهما ما زال مفتوحاً لدى المشروع الأصلي، لذا لا يمكن للوحة تجاوزهما بأي إعداد.
+> يكتشف الإعداد ذلك ويُخبرك به بدلاً من أن يفشل بصمت. **أما بقية البروتوكولات فتعمل بشكل طبيعي على كل أنظمة التشغيل المُختبَرة.**
 
 ## تثبيت اللوحة
 

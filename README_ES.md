@@ -42,19 +42,24 @@ Este proyecto es una versión mejorada del panel **[3X-UI](https://github.com/MH
 ## Sistemas operativos probados
 
 
-| | Distribución |Versión |Versión |Versión |
-|:---:|:---|:---:|:---:|:---:|
-| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` | |
-| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` | |
-| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` | |
-| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | | |
+| | Distribución |Versión |Versión |
+|:---:|:---|:---:|:---:|
+| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` |
+| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` |
+| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` |
+| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | |
 
 
 > [!IMPORTANT]
 > Se recomienda instalar el panel siempre en los sistemas operativos probados, ya que es muy probable que los nuevos núcleos no funcionen correctamente en los demás sistemas operativos.
+
+> [!NOTE]
+> **AmneziaWG solo funciona en Debian 12/13 y Ubuntu 24.04/26.04.**
+> A diferencia del resto de protocolos, AmneziaWG no está incluido en el núcleo de ninguna distribución: el panel compila su módulo de núcleo en tu servidor durante la configuración inicial. Actualmente ese módulo falla al compilarse en dos casos. En **el núcleo 7.1 o posterior** (Fedora 43/44, Arch) el núcleo eliminó el símbolo `ipv6_stub` que el módulo todavía utiliza. En **AlmaLinux, Rocky Linux y CentOS Stream** los núcleos de RHEL con parches retroportados chocan con la capa de compatibilidad del módulo, y EL10 no es reconocido por ella en absoluto. Ambos casos son limitaciones del módulo original de AmneziaWG, cuyas correcciones siguen pendientes en el proyecto original, así que no son algo que el panel pueda resolver mediante configuración.
+> La configuración inicial lo detecta y te avisa, en lugar de fallar en silencio. **El resto de protocolos funcionan con normalidad en todos los sistemas operativos probados.**
 
 ## Instalación del panel
 

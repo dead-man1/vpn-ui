@@ -42,19 +42,24 @@
 ## 已测试的操作系统
 
 
-| | 发行版 |版本 |版本 |版本 |
-|:---:|:---|:---:|:---:|:---:|
-| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` | |
-| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` | |
-| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` | |
-| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | | |
+| | 发行版 |版本 |版本 |
+|:---:|:---|:---:|:---:|
+| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` |
+| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` |
+| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` |
+| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | |
 
 
 > [!IMPORTANT]
 > 强烈建议务必将面板安装在已测试的操作系统上；因为新内核在其他操作系统上无法正常工作的可能性很高！
+
+> [!NOTE]
+> **AmneziaWG 仅支持 Debian 12/13 与 Ubuntu 24.04/26.04。**
+> 与其他所有协议不同，AmneziaWG 并未包含在任何发行版的内核中：面板会在初始化过程中在您的服务器上编译它的内核模块。该模块目前在两种情况下会编译失败。在**内核 7.1 及更新版本**（Fedora 43/44、Arch）上，内核已移除该模块仍在使用的 `ipv6_stub` 符号。在 **AlmaLinux、Rocky Linux 与 CentOS Stream** 上，回溯移植的 RHEL 内核与该模块的兼容层相互冲突，而 EL10 更是完全无法被其识别。这两者都是 AmneziaWG 原始模块自身的限制，相关修复在上游项目中仍未合并，因此并不是面板可以通过配置绕开的问题。
+> 初始化过程会检测到这一点并提示您，而不会静默失败。**其他所有协议在全部已测试的操作系统上均可正常工作。**
 
 ## 安装面板
 

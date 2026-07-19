@@ -23,7 +23,7 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// AwgService manages "AmneziaWG" — obfuscated WireGuard on the in-kernel `amneziawg`
+// AwgService manages "AmneziaWG" , obfuscated WireGuard on the in-kernel `amneziawg`
 // module, driven natively from Go via the AmneziaWG-aware wgctrl fork (netlink). It is a
 // sibling of WgcService ("wg-c"): the account/IP/limit/accounting model is identical
 // (gateway model, one keypair per account, rbridge-swept), so this reuses WgcService's
@@ -613,7 +613,7 @@ func (o *awgSettings) dnsList() string {
 
 // RenderClientConfigs returns the AmneziaWG .conf(s) for the account with the given email.
 // Identical to WgcService.RenderClientConfigs plus the AWG 1.0 obfuscation lines in [Interface]
-// (which a plain WireGuard client rejects — an AmneziaWG-aware client is required).
+// (which a plain WireGuard client rejects , an AmneziaWG-aware client is required).
 func (s *AwgService) RenderClientConfigs(inbound *model.Inbound, email, endpointHost string) ([]AwgClientConfig, error) {
 	settings, err := s.parseSettings(inbound)
 	if err != nil {

@@ -139,8 +139,8 @@ func writeCrossInboundRules(b *strings.Builder, nets []vpnNet) {
 
 // ApplyNftRules regenerates and atomically loads the nftables config for all VPN inbounds.
 // Static chains (prerouting/postrouting/input) are flushed and rebuilt.
-// Accounting chains (l2tp_acct/pptp_acct) are NEVER flushed — their dynamic per-client
-// rules (added by ip-up.d scripts) survive across regenerations.
+// Accounting chains (<proto>_acct_in / <proto>_acct_out) are NEVER flushed: their dynamic
+// per-client rules survive across regenerations.
 func (s *NftService) ApplyNftRules() error {
 	l2tp := L2tpService{}
 	pptp := PptpService{}
@@ -200,14 +200,10 @@ func (s *NftService) ApplyNftRules() error {
 
 	// Create table and chains (idempotent — 'add' doesn't error if they already exist)
 	b.WriteString("add table ip vpn\n")
-	b.WriteString("add chain ip vpn l2tp_acct\n")
-	b.WriteString("add chain ip vpn pptp_acct\n")
-	b.WriteString("add chain ip vpn openvpn_acct\n")
-	b.WriteString("add chain ip vpn openconnect_acct\n")
-	b.WriteString("add chain ip vpn sstp_acct\n")
-	b.WriteString("add chain ip vpn ikev2_acct\n")
-	b.WriteString("add chain ip vpn wgc_acct\n")
-	b.WriteString("add chain ip vpn awg_acct\n")
+	for _, p := range acctProtocols {
+		b.WriteString(fmt.Sprintf("add chain ip vpn %s\n", p+"_acct_in"))
+		b.WriteString(fmt.Sprintf("add chain ip vpn %s\n", p+"_acct_out"))
+	}
 	b.WriteString("add chain ip vpn prerouting { type filter hook prerouting priority mangle; policy accept; }\n")
 	b.WriteString("add chain ip vpn postrouting { type filter hook postrouting priority mangle; policy accept; }\n")
 	b.WriteString("add chain ip vpn input { type filter hook input priority filter; policy accept; }\n")
@@ -217,23 +213,22 @@ func (s *NftService) ApplyNftRules() error {
 	b.WriteString("flush chain ip vpn postrouting\n")
 	b.WriteString("flush chain ip vpn input\n")
 
-	// Accounting jumps (must be before TPROXY so packets are counted before accept)
-	b.WriteString("add rule ip vpn prerouting jump l2tp_acct\n")
-	b.WriteString("add rule ip vpn prerouting jump pptp_acct\n")
-	b.WriteString("add rule ip vpn prerouting jump openvpn_acct\n")
-	b.WriteString("add rule ip vpn prerouting jump openconnect_acct\n")
-	b.WriteString("add rule ip vpn prerouting jump sstp_acct\n")
-	b.WriteString("add rule ip vpn prerouting jump ikev2_acct\n")
-	b.WriteString("add rule ip vpn prerouting jump wgc_acct\n")
-	b.WriteString("add rule ip vpn prerouting jump awg_acct\n")
-	b.WriteString("add rule ip vpn postrouting jump l2tp_acct\n")
-	b.WriteString("add rule ip vpn postrouting jump pptp_acct\n")
-	b.WriteString("add rule ip vpn postrouting jump openvpn_acct\n")
-	b.WriteString("add rule ip vpn postrouting jump openconnect_acct\n")
-	b.WriteString("add rule ip vpn postrouting jump sstp_acct\n")
-	b.WriteString("add rule ip vpn postrouting jump ikev2_acct\n")
-	b.WriteString("add rule ip vpn postrouting jump wgc_acct\n")
-	b.WriteString("add rule ip vpn postrouting jump awg_acct\n")
+	// Accounting jumps (must be before TPROXY so packets are counted before accept).
+	//
+	// Each direction is jumped from exactly ONE hook: uplink at prerouting, downlink at
+	// postrouting. A single combined chain jumped from both hooks counts a FORWARDED
+	// packet twice, because such a packet traverses prerouting AND postrouting and would
+	// match its direction's rule in each. TPROXY'd TCP/UDP masked that (those packets are
+	// locally delivered on the way in and locally generated on the way out, so they only
+	// ever see one hook), but client-to-client, cross-inbound and every non-TCP/UDP
+	// protocol are forwarded and were billed at 2x. Splitting by direction is exactly
+	// once under BOTH topologies.
+	for _, p := range acctProtocols {
+		b.WriteString(fmt.Sprintf("add rule ip vpn prerouting jump %s\n", p+"_acct_in"))
+	}
+	for _, p := range acctProtocols {
+		b.WriteString(fmt.Sprintf("add rule ip vpn postrouting jump %s\n", p+"_acct_out"))
+	}
 
 	// --- Cross-inbound pass (mutual opt-in) --------------------------------
 	// Gather every enabled VPN inbound's client subnet(s) plus its Client-to-
@@ -520,6 +515,15 @@ func (s *NftService) ApplyNftRules() error {
 	s.runCmd("nft", "flush", "chain", "ip", "vpn", "nat_post")
 	s.runCmd("nft", "delete", "chain", "ip", "vpn", "nat_post")
 
+	// Best-effort: drop the pre-split combined "<proto>_acct" chains. The static chains
+	// were rebuilt above without their jumps, so on an upgraded box they linger holding
+	// dead rules that nothing reaches. AddClientAccounting repopulates the new direction
+	// chains on the next reconcile tick. Both calls no-op once they're gone.
+	for _, p := range acctProtocols {
+		s.runCmd("nft", "flush", "chain", "ip", "vpn", p+"_acct")
+		s.runCmd("nft", "delete", "chain", "ip", "vpn", p+"_acct")
+	}
+
 	logger.Infof("nft: loaded VPN rules (%d L2TP, %d PPTP, %d OpenVPN inbounds)", len(l2tpInbounds), len(pptpInbounds), len(ovpnInbounds))
 	return nil
 }
@@ -548,63 +552,124 @@ func counterKey(ipOrCIDR string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(ipOrCIDR, ".", "_"), "/", "m")
 }
 
-// nftAcctChain is the per-protocol accounting chain name. The static chains in ApplyNftRules
-// are hyphen-free, but a protocol slug can hold a hyphen ("wg-c"): an nft chain name with a
-// hyphen would not match the static "wgc_acct" chain (so the rules would target a missing
-// chain and silently drop, counting nothing). Strip the hyphen so the dynamic accounting
-// rules land in the real chain. Counter names deliberately keep the raw slug — they carry
-// the protocol back to CollectAndResetTraffic via byProto[protocol].
-func nftAcctChain(protocol string) string {
-	return strings.ReplaceAll(protocol, "-", "") + "_acct"
+// nftAcctChain is the accounting chain name for one protocol and one direction, dir being
+// "in" (uplink, jumped from prerouting) or "out" (downlink, jumped from postrouting).
+//
+// The static chains in ApplyNftRules are hyphen-free, but a protocol slug can hold a hyphen
+// ("wg-c"): an nft chain name with a hyphen would not match the static "wgc_acct_in" chain,
+// so the rules would target a missing chain and silently drop, counting nothing. Strip the
+// hyphen so the dynamic accounting rules land in the real chain. Counter names deliberately
+// keep the raw slug: they carry the protocol back to CollectAndResetTraffic via
+// byProto[protocol].
+func nftAcctChain(protocol, dir string) string {
+	return strings.ReplaceAll(protocol, "-", "") + "_acct_" + dir
+}
+
+// acctProtocols are the protocol slugs that own a pair of accounting chains, already
+// hyphen-free so they match nftAcctChain's output ("wgc", not "wg-c"). Kept in one place
+// so adding a protocol means adding one entry rather than editing four rule blocks.
+var acctProtocols = []string{
+	"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "awg",
+}
+
+// acctRuleHandles returns the handles of every rule in `chain` that references the named
+// counter, in listing order.
+//
+// It keys on the counter name rather than on the address text for a reason that has bitten
+// twice: nft NORMALISES an address before printing it, so a host-prefix key like
+// "10.7.1.2/32" (the WireGuard single-device block CIDR) is echoed back as a bare
+// "10.7.1.2". Any `strings.Contains(out, "addr "+ip+" ")` test against the original key
+// therefore never matches for such a client, which silently turned the add path into
+// "append unconditionally" and the remove path into "delete nothing". The counter name is
+// echoed verbatim and quoted, and counterKey() already makes it unique per (protocol, ip),
+// so it is the one token that survives nft's formatting.
+func (s *NftService) acctRuleHandles(chain, counter string) []string {
+	out, err := exec.Command("nft", "-a", "list", "chain", "ip", "vpn", chain).Output()
+	if err != nil {
+		return nil
+	}
+	return acctRuleHandlesFrom(string(out), counter)
+}
+
+// acctRuleHandlesFrom is the pure half of acctRuleHandles, split out so the parse can be
+// tested against real `nft -a list chain` output.
+func acctRuleHandlesFrom(listing, counter string) []string {
+	needle := `counter name "` + counter + `"`
+	var handles []string
+	for _, line := range strings.Split(listing, "\n") {
+		if !strings.Contains(line, needle) {
+			continue
+		}
+		if idx := strings.Index(line, "# handle "); idx >= 0 {
+			handles = append(handles, strings.TrimSpace(line[idx+len("# handle "):]))
+		}
+	}
+	return handles
 }
 
 // AddClientAccounting creates named nft counters and accounting rules for a VPN client.
 // `ip` is a client IP, or (WireGuard gateway model) the account's block CIDR — nft matches
 // either in `ip saddr`. Called by RADIUS Acct-Start / the rbridge sweep for a new session.
+//
+// Reconciles to EXACTLY one rule per direction. Both callers fire repeatedly for a session
+// that is already live (every Acct-Start, every sweep that re-notices it), and an accounting
+// chain carries no verdict, so traversal does not stop at the first match: a second copy of
+// the same rule counts every packet twice and bills the account double. Extra copies are
+// deleted rather than tolerated so an install that already accumulated them heals on the
+// next call instead of over-billing until the session ends.
 func (s *NftService) AddClientAccounting(protocol, ip string) error {
 	counterIP := counterKey(ip)
 	upCounter := fmt.Sprintf("%s_up_%s", protocol, counterIP)
 	downCounter := fmt.Sprintf("%s_down_%s", protocol, counterIP)
-	chain := nftAcctChain(protocol)
 
 	// Create counters (idempotent)
 	s.runCmd("nft", "add", "counter", "ip", "vpn", upCounter)
 	s.runCmd("nft", "add", "counter", "ip", "vpn", downCounter)
 
-	// Check if rules already exist for this IP
-	output, _ := exec.Command("nft", "list", "chain", "ip", "vpn", chain).Output()
-	if !strings.Contains(string(output), "addr "+ip+" ") {
-		s.runCmd("nft", "add", "rule", "ip", "vpn", chain, "ip", "saddr", ip, "counter", "name", upCounter)
-		s.runCmd("nft", "add", "rule", "ip", "vpn", chain, "ip", "daddr", ip, "counter", "name", downCounter)
-	}
+	s.reconcileAcctRule(nftAcctChain(protocol, "in"), upCounter, "saddr", ip)
+	s.reconcileAcctRule(nftAcctChain(protocol, "out"), downCounter, "daddr", ip)
 
 	logger.Debugf("nft: added %s accounting for %s", protocol, ip)
 	return nil
+}
+
+// reconcileAcctRule leaves EXACTLY one rule in `chain` feeding `counter`, matching the
+// client on `match` ("saddr" or "daddr"). Anything else present is deleted first, so an
+// install that already accumulated duplicates heals here instead of over-billing until
+// the session ends.
+func (s *NftService) reconcileAcctRule(chain, counter, match, ip string) {
+	handles := s.acctRuleHandles(chain, counter)
+	if len(handles) == 1 {
+		return // already exactly right
+	}
+	for _, h := range handles {
+		s.runCmd("nft", "delete", "rule", "ip", "vpn", chain, "handle", h)
+	}
+	s.runCmd("nft", "add", "rule", "ip", "vpn", chain, "ip", match, ip, "counter", "name", counter)
 }
 
 // RemoveClientAccounting removes nft accounting rules and counters for a PPP client.
 // Called by RADIUS Acct-Stop to stop traffic counting when a session ends.
 func (s *NftService) RemoveClientAccounting(protocol, ip string) error {
 	counterIP := counterKey(ip)
-	chain := nftAcctChain(protocol)
 
-	// Remove rules by handle (find rules matching this IP)
-	output, err := exec.Command("nft", "-a", "list", "chain", "ip", "vpn", chain).Output()
-	if err == nil {
-		for _, line := range strings.Split(string(output), "\n") {
-			if strings.Contains(line, "addr "+ip+" ") {
-				// Extract handle number
-				if idx := strings.Index(line, "# handle "); idx >= 0 {
-					handle := strings.TrimSpace(line[idx+9:])
-					s.runCmd("nft", "delete", "rule", "ip", "vpn", chain, "handle", handle)
-				}
-			}
+	// Remove every rule feeding this client's two counters, in both direction chains.
+	// Matching on the counter name (not the address text) is what makes this work for a
+	// /32 block CIDR. See acctRuleHandles.
+	upCounter := fmt.Sprintf("%s_up_%s", protocol, counterIP)
+	downCounter := fmt.Sprintf("%s_down_%s", protocol, counterIP)
+	for _, dc := range []struct{ chain, counter string }{
+		{nftAcctChain(protocol, "in"), upCounter},
+		{nftAcctChain(protocol, "out"), downCounter},
+	} {
+		for _, h := range s.acctRuleHandles(dc.chain, dc.counter) {
+			s.runCmd("nft", "delete", "rule", "ip", "vpn", dc.chain, "handle", h)
 		}
 	}
 
 	// Delete counters
-	s.runCmd("nft", "delete", "counter", "ip", "vpn", fmt.Sprintf("%s_up_%s", protocol, counterIP))
-	s.runCmd("nft", "delete", "counter", "ip", "vpn", fmt.Sprintf("%s_down_%s", protocol, counterIP))
+	s.runCmd("nft", "delete", "counter", "ip", "vpn", upCounter)
+	s.runCmd("nft", "delete", "counter", "ip", "vpn", downCounter)
 
 	logger.Debugf("nft: removed %s accounting for %s", protocol, ip)
 	return nil

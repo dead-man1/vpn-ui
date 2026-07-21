@@ -2145,7 +2145,14 @@ func (s *InboundService) addClientTraffic(tx *gorm.DB, traffics []*xray.ClientTr
 		multiplierInbounds = nil
 	}
 
+	// Every record matching an email is applied, not just the first. A tick can legitimately
+	// carry more than one record for an account (a client billed under two protocols, or a
+	// relay reporting alongside Xray), and stopping at the first silently threw the rest
+	// away: the bytes were collected, the source counter was reset, and nobody was charged.
+	// Callers that must not double-report the same bytes de-duplicate before they get here
+	// (see the relay handling in web/job/xray_traffic_job.go).
 	for dbTraffic_index := range dbClientTraffics {
+		moved := int64(0)
 		for traffic_index := range traffics {
 			if dbClientTraffics[dbTraffic_index].Email == traffics[traffic_index].Email {
 				rawUp := traffics[traffic_index].Up
@@ -2163,14 +2170,14 @@ func (s *InboundService) addClientTraffic(tx *gorm.DB, traffics []*xray.ClientTr
 				// AllTime stays raw: it's the lifetime record of bytes actually moved,
 				// and survives the resets that up/down don't.
 				dbClientTraffics[dbTraffic_index].AllTime += (rawUp + rawDown)
-
-				// Add user in onlineUsers array on traffic
-				if rawUp+rawDown > 0 {
-					onlineClients = append(onlineClients, traffics[traffic_index].Email)
-					dbClientTraffics[dbTraffic_index].LastOnline = time.Now().UnixMilli()
-				}
-				break
+				moved += rawUp + rawDown
 			}
+		}
+		// Online is a property of the client, not of each record: marked once here so a
+		// client carrying two records in one tick is not listed twice.
+		if moved > 0 {
+			onlineClients = append(onlineClients, dbClientTraffics[dbTraffic_index].Email)
+			dbClientTraffics[dbTraffic_index].LastOnline = time.Now().UnixMilli()
 		}
 	}
 
@@ -2323,9 +2330,21 @@ func (s *InboundService) autoRenewClients(tx *gorm.DB) (bool, int64, error) {
 	if err != nil {
 		return false, 0, err
 	}
-	err = tx.Save(traffics).Error
-	if err != nil {
-		return false, 0, err
+	// Write ONLY the columns a renewal owns. tx.Save would write the whole row back from
+	// the copy read at the top of this function, silently rolling back anything the 10s
+	// accounting job committed in between -- most damagingly all_time, the lifetime byte
+	// record that deliberately survives resets, and last_online. Traffic going BACKWARDS
+	// on an account is exactly what that looks like from the panel.
+	for _, t := range traffics {
+		err = tx.Model(xray.ClientTraffic{}).Where("id = ?", t.Id).Updates(map[string]any{
+			"expiry_time": t.ExpiryTime,
+			"up":          0,
+			"down":        0,
+			"enable":      t.Enable,
+		}).Error
+		if err != nil {
+			return false, 0, err
+		}
 	}
 	if p != nil {
 		err1 = s.xrayApi.Init(p.GetAPIPort())
@@ -2971,12 +2990,17 @@ func (s *InboundService) ResetClientTraffic(id int, clientEmail string) (bool, e
 		}
 	}
 
-	traffic.Up = 0
-	traffic.Down = 0
-	traffic.Enable = true
-
+	// Targeted update, not db.Save(traffic): `traffic` was read at the top of this
+	// function, so saving the whole struct would also write back the all_time and
+	// last_online it held then, discarding whatever the 10s accounting job committed
+	// meanwhile. A reset zeroes up/down and re-enables; it must not rewind the lifetime
+	// counter. Mirrors ResetClientTrafficByEmail, which already updates by column.
 	db := database.GetDB()
-	err = db.Save(traffic).Error
+	err = db.Model(xray.ClientTraffic{}).Where("id = ?", traffic.Id).Updates(map[string]any{
+		"up":     0,
+		"down":   0,
+		"enable": true,
+	}).Error
 	if err != nil {
 		return false, err
 	}

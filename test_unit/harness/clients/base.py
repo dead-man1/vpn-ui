@@ -182,7 +182,13 @@ class Client:
     def disconnect_all(self):
         """Best-effort kill of every VPN client process + drop tunnels."""
         self.incus.exec(self.vm, (
-            "pkill -f 'openvpn --config' 2>/dev/null; "
+            # Bracketed like the tun2socks/ssh sweeps below, and for the same reason: an
+            # unbracketed 'openvpn --config' matches THIS command's own shell (the whole
+            # teardown is one `sh -c` string, so the pattern appears in its cmdline), so
+            # pkill killed the shell on the very first statement and every teardown after
+            # it silently never ran. That is what left stray wgc/awg/ppp links behind for
+            # the next protocol to latch onto.
+            "pkill -f '[o]penvpn --config' 2>/dev/null; "
             "pkill sstpc 2>/dev/null; "
             # SSH relay: kill the `ssh -D` session (via sshpass's child; sshpass does not
             # forward signals) + tun2socks by saved PID, then drop the tun2socks tun0
@@ -201,7 +207,12 @@ class Client:
             # AmneziaWG: same teardown via awg-quick (and force-remove a stray awg link).
             "awg-quick down awg 2>/dev/null; ip link del awg 2>/dev/null; "
             "poff -a 2>/dev/null; pkill pppd 2>/dev/null; "
-            "(echo 'd vpn' > /var/run/xl2tpd/l2tp-control 2>/dev/null); "
+            # Guarded and time-boxed: l2tp-control is a FIFO, so when xl2tpd is NOT
+            # running there is no reader and this open() blocks forever, wedging the rest
+            # of the teardown (and the next protocol, which then reads as a hung connect
+            # rather than a stuck cleanup). Only worth sending while a reader exists.
+            "(pgrep -x xl2tpd >/dev/null 2>&1 && "
+            "timeout 2 sh -c \"echo 'd vpn' > /var/run/xl2tpd/l2tp-control\") 2>/dev/null; "
             "pkill xl2tpd 2>/dev/null; "
             "ipsec down l2tp 2>/dev/null; ipsec stop 2>/dev/null; "
             # IKEv2 (swanctl): tear the SA down gracefully, then kill the swanctl-mode

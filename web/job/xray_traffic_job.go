@@ -62,6 +62,26 @@ func NewXrayTrafficJob(rs *service.RadiusService) *XrayTrafficJob {
 	return j
 }
 
+// appendUnrecorded appends each fallback record whose email has no record in `existing`
+// yet, and returns the extended slice. It is the de-duplication guard for the relay
+// protocols: see the call site in Run for why presence, not byte count, is the predicate.
+func appendUnrecorded(existing, fallback []*xray.ClientTraffic) []*xray.ClientTraffic {
+	recorded := make(map[string]bool, len(existing))
+	for _, t := range existing {
+		recorded[t.Email] = true
+	}
+	for _, t := range fallback {
+		if recorded[t.Email] {
+			continue
+		}
+		// Mark as we go so two relays reporting the same account in one tick contribute
+		// once, not twice.
+		recorded[t.Email] = true
+		existing = append(existing, t)
+	}
+	return existing
+}
+
 // Run collects traffic statistics from Xray and updates the database, triggering restart if needed.
 func (j *XrayTrafficJob) Run() {
 	var traffics []*xray.Traffic
@@ -120,17 +140,32 @@ func (j *XrayTrafficJob) Run() {
 	}
 	clientTraffics = append(clientTraffics, j.nftService.CollectAndResetTraffic(vpnSessions)...)
 
-	// MTProto bills from telemt's own per-user counters instead of the nft per-IP
-	// path above. It has to: it is a userspace relay, so no client ever gets a
-	// tunnel IP for a counter to be keyed on. Routing it through the nft path
-	// anyway would fail SILENTLY (AddClientAccounting swallows every nft error and
-	// returns nil), leaving mtproto accounts permanently online and billing zero.
-	clientTraffics = append(clientTraffics, j.mtprotoService.CollectTraffic()...)
-
-	// SSH bills from the in-process byte counters its gateway keeps on every io.Copy
-	// (TCP and the UDP bridge alike). Like mtproto it is a relay with no per-client IP,
-	// so it does not and cannot use the nft per-IP path above.
-	clientTraffics = append(clientTraffics, j.sshService.CollectTraffic()...)
+	// MTProto and SSH are userspace relays: no client ever gets a tunnel IP, so neither
+	// can use the nft per-IP path above. Each keeps its own per-account byte counters
+	// (telemt's Prometheus metrics; the SSH gateway's io.Copy tallies).
+	//
+	// But both egress through a paired Xray socks inbound whose USERNAME is the account
+	// email, so Xray has usually already billed those exact bytes as a user stat in this
+	// same tick. Appending unconditionally therefore hands addClientTraffic two records
+	// measuring one transfer. That used to be masked by a `break` in addClientTraffic
+	// that silently applied only the first record per email, which made the outcome
+	// correct purely by append order: reordering these two lines would have doubled
+	// every relay account's bill. addClientTraffic now SUMS per email, so the
+	// de-duplication has to be explicit and it belongs here, at the point where the two
+	// sources meet.
+	//
+	// The predicate is "does this account already have a record this tick", NOT "did it
+	// move bytes this tick". The two sources flush on different boundaries: Xray can
+	// report zero for an account whose bytes the relay has already tallied, and report
+	// those same bytes a tick or two later. Gating on a positive byte count therefore
+	// admits the relay copy now and the Xray copy afterwards, billing the transfer twice
+	// (measured: 1.67x on a 100MiB SSH pull). Presence alone is stable, and it is what
+	// the old first-record-wins behaviour effectively tested.
+	//
+	// The relay counters remain a real fallback for an account Xray does not track at all
+	// (no socks user, so no record in any tick), which is what those tallies exist for.
+	clientTraffics = appendUnrecorded(clientTraffics,
+		append(j.mtprotoService.CollectTraffic(), j.sshService.CollectTraffic()...))
 
 	// Level-triggered enforcement: disconnect any STILL-connected client that is no
 	// longer allowed (quota/expiry hit, or disabled in settings). The edge-triggered

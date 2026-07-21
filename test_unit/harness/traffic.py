@@ -125,17 +125,27 @@ def usage(client: Client, panel, ib, cfg: dict, connect_fn, log, server_exec=Non
         diag = f"panel up={up_b} down={down_b} (client tunnel ip {ip})"
         if server_exec is not None:
             try:
+                # Chain names are hyphen-free ("wgc", not "wg-c") and split by direction:
+                # uplink lives in <proto>_acct_in, downlink in <proto>_acct_out. Counter
+                # names keep the raw slug, so the grep below still uses ib.protocol.
+                slug = ib.protocol.replace("-", "")
                 _, chains, _ = server_exec(
-                    f"nft list chain ip vpn {ib.protocol}_acct 2>/dev/null; "
+                    f"nft list chain ip vpn {slug}_acct_in 2>/dev/null; "
+                    f"nft list chain ip vpn {slug}_acct_out 2>/dev/null; "
                     f"echo '--- counters ---'; nft list counters table ip vpn 2>/dev/null "
                     f"| grep -A1 {ib.protocol}_ | head -40")
-                diag += "\n== server nft " + ib.protocol + "_acct ==\n" + chains
+                diag += f"\n== server nft {slug}_acct_in/_out ==\n" + chains
             except Exception as e:  # noqa: BLE001
                 diag += f"\n(nft dump failed: {e})"
-        # Wide tolerance: this proves counting WORKS and is roughly proportional,
-        # not that it's byte-exact (encap/PPP/MPPE overhead & compression vary by
-        # protocol — pptp counts a bit under, tunnels a bit over).
-        lo, hi = n * 0.5, n * 3
+        # Tolerance has to be wide enough for real per-protocol variance and tight
+        # enough to catch a MULTIPLE. The old [0.5x, 3x] band was neither: it was set
+        # to absorb "encap overhead", but 2x is not overhead, it is double counting,
+        # and a duplicate nft accounting rule billed every WireGuard account exactly
+        # twice while this assertion stayed green. Measured on a live server, a clean
+        # 100MiB pull through WireGuard counts 1.02x (inner IP/TCP headers plus the
+        # ACK stream); PPP-framed protocols sit a little either side of that. So allow
+        # encapsulation to move the number by tens of percent, never by a factor.
+        lo, hi = n * 0.8, n * 1.5
         st.log = (diag + "\n" +
                   f"downloaded {size} B; counted delta {delta} B (baseline {base}); "
                   f"tolerance [{int(lo)}, {int(hi)}]\ncounter trajectory: {traj}\n{dlog}")

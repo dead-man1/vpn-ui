@@ -799,10 +799,21 @@ func (s *RadiusService) killPppdByIP(ip string) {
 }
 
 // CleanStaleSessions removes sessions whose PPP interface no longer exists.
+//
+// Skips "cp:"-keyed sessions: ReconcileLocalSessions owns those, and it already derives them
+// each tick from the protocol's own liveness source (WireGuard handshake times, swanctl SAs),
+// folding their bytes on the way out. isIPActive cannot judge them anyway: it looks for the
+// address on a local interface, but a WireGuard peer's address is never local, and for the
+// gateway model sess.ip is a block CIDR ("10.7.1.2/32") rather than a bare address. So every
+// wg-c/awg session read as dead on every pass: the sweep re-added it seconds later, and the
+// resulting remove/add churn was what let duplicate accounting rules accumulate.
 func (s *RadiusService) CleanStaleSessions() {
 	s.mu.Lock()
 	var stale []string
 	for sid, sess := range s.sessions {
+		if strings.HasPrefix(sid, "cp:") {
+			continue
+		}
 		if !s.isIPActive(sess.ip, sess.protocol) {
 			stale = append(stale, sid)
 		}

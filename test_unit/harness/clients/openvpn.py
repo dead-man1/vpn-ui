@@ -25,7 +25,9 @@ def connect(client: Client, inbound, which: str, transport: str = "udp",
     if server_ip:
         client.pin_server_route(server_ip)
 
-    client.sh("pkill -f 'openvpn --config' 2>/dev/null; rm -f /var/log/ovpn.log; true")
+    # Bracketed: an unbracketed pattern matches this very `sh -c` string, so pkill would
+    # kill its own shell and the rm below would never run.
+    client.sh("pkill -f '[o]penvpn --config' 2>/dev/null; rm -f /var/log/ovpn.log; true")
     cmd = (
         "openvpn --config /etc/vpn/client.ovpn "
         "--auth-user-pass /etc/vpn/creds.txt "
@@ -50,5 +52,5 @@ def connect(client: Client, inbound, which: str, transport: str = "udp",
 
 def disconnect(client: Client):
     client.sh("kill $(cat /run/ovpn.pid 2>/dev/null) 2>/dev/null; "
-              "pkill -f 'openvpn --config' 2>/dev/null; true")
+              "pkill -f '[o]penvpn --config' 2>/dev/null; true")
     time.sleep(2)

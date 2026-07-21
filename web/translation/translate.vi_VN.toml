@@ -90,6 +90,9 @@
 "noExpiry" = "Không hết hạn"
 
 [menu]
+"navigation" = "Điều hướng chính"
+"collapse" = "Thu gọn thanh bên"
+"expand" = "Mở rộng thanh bên"
 "theme" = "Chủ đề"
 "dark" = "Tối"
 "ultraDark" = "Siêu tối"
@@ -116,6 +119,8 @@
 "successLogin" = "Bạn đã đăng nhập vào tài khoản thành công."
 
 [pages.index]
+"restore" = "Khôi phục"
+"systemStatus" = "Trạng thái hệ thống"
 "title" = "Trạng thái hệ thống"
 "cpu" = "CPU"
 "logicalProcessors" = "Bộ xử lý logic"
@@ -218,6 +223,7 @@
 "customGeoErrUpdateAllIncomplete" = "Một hoặc nhiều nguồn geo tùy chỉnh không cập nhật được"
 
 [pages.inbounds]
+"totalUsers" = "Tổng người dùng"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

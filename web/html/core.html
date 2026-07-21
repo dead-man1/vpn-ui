@@ -2,10 +2,7 @@
 {{ template "page/head_end" .}}
 
 {{ template "page/body_start" .}}
-<a-layout id="app" v-cloak :class="themeSwitcher.currentTheme">
-  <a-sidebar></a-sidebar>
-  <a-layout id="content-layout">
-    <a-layout-content>
+{{template "page/shell_start" . }}
       <a-spin :spinning="spinning" :delay="300" tip='{{ i18n "loading"}}' size="large">
         <transition name="list" appear>
         <a-row :gutter="[16, 16]" :style="{ margin: 0 }">
@@ -232,8 +229,6 @@
         </a-row>
         </transition>
       </a-spin>
-    </a-layout-content>
-  </a-layout>
 
   <!-- Provision live log: a real streaming terminal console. Closing mid-run is
        safe — provisioning runs server-side and the poll keeps ticking. -->
@@ -353,7 +348,7 @@
     </div>
     <pre class="core-logs">[[ logsContent || '{{ i18n "pages.core.noLogs" }}' ]]</pre>
   </a-modal>
-</a-layout>
+{{template "page/shell_end" . }}
 
 {{template "page/body_scripts" .}}
 {{template "component/aSidebar" .}}
@@ -365,6 +360,8 @@
     el: '#app',
     data: {
       themeSwitcher,
+      pageTitle: '{{ i18n "menu.core"}}',
+      pageClass: '',
       spinning: false,
       loaded: false,
       provisioned: false,

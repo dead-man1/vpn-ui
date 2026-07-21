@@ -80,7 +80,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 ## اسکرین‌شات‌ها
 
 ![نمای کلی](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-![تنظیمات هسته](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/core_Settings.png)
 
 
 ## نحوه‌ی تعامل پروتکل‌های جدید با هسته‌ی Xray-core

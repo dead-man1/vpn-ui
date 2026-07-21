@@ -79,7 +79,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 ## Ekran Görüntüleri
 
 ![Genel Görünüm](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-![Çekirdek Ayarları](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/core_Settings.png)
 
 
 ## Yeni Protokollerin Xray-core Çekirdeği ile Etkileşimi

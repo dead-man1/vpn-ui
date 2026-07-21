@@ -90,6 +90,9 @@
 "noExpiry" = "无到期"
 
 [menu]
+"navigation" = "主导航"
+"collapse" = "收起侧边栏"
+"expand" = "展开侧边栏"
 "theme" = "主题"
 "dark" = "暗色"
 "ultraDark" = "超暗色"
@@ -116,6 +119,8 @@
 "successLogin" = "您已成功登录您的账户。"
 
 [pages.index]
+"restore" = "恢复"
+"systemStatus" = "系统状态"
 "title" = "系统状态"
 "cpu" = "CPU"
 "logicalProcessors" = "逻辑处理器"
@@ -218,6 +223,7 @@
 "customGeoErrUpdateAllIncomplete" = "有一个或多个自定义 geo 源更新失败"
 
 [pages.inbounds]
+"totalUsers" = "用户总数"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

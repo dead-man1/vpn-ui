@@ -9,10 +9,7 @@
 {{ template "page/head_end" .}}
 
 {{ template "page/body_start" .}}
-<a-layout id="app" v-cloak :class="themeSwitcher.currentTheme + ' xray-page'">
-  <a-sidebar></a-sidebar>
-  <a-layout id="content-layout">
-    <a-layout-content>
+{{template "page/shell_start" . }}
       <a-spin :spinning="loadingStates.spinning" :delay="500"
         tip='{{ i18n "loading"}}' size="large">
         <transition name="list" appear>
@@ -58,7 +55,7 @@
                     <template>
                       <div>
                         <a-back-top
-                          :target="() => document.getElementById('content-layout')"
+                          :target="() => document.querySelector('.bo-main')"
                           visibility-height="200"></a-back-top>
                         <a-alert type="warning"
                           :style="{ float: 'right', width: 'fit-content' }"
@@ -132,9 +129,7 @@
           </a-row>
         </transition>
       </a-spin>
-    </a-layout-content>
-  </a-layout>
-</a-layout>
+{{template "page/shell_end" . }}
 {{template "page/body_scripts" .}}
 <script
   src="{{ .base_path }}assets/js/model/outbound.js?{{ .cur_ver }}"></script>
@@ -245,6 +240,8 @@
     el: '#app',
     data: {
       themeSwitcher,
+      pageTitle: '{{ i18n "menu.xray"}}',
+      pageClass: 'xray-page',
       isDarkTheme: themeSwitcher.isDarkTheme,
       loadingStates: {
         fetched: false,

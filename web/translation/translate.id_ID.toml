@@ -90,6 +90,9 @@
 "noExpiry" = "Tanpa kedaluwarsa"
 
 [menu]
+"navigation" = "Navigasi utama"
+"collapse" = "Ciutkan bilah sisi"
+"expand" = "Perluas bilah sisi"
 "theme" = "Tema"
 "dark" = "Gelap"
 "ultraDark" = "Sangat Gelap"
@@ -116,6 +119,8 @@
 "successLogin" = "Anda telah berhasil masuk ke akun Anda."
 
 [pages.index]
+"restore" = "Pulihkan"
+"systemStatus" = "Status sistem"
 "title" = "Ikhtisar"
 "cpu" = "CPU"
 "logicalProcessors" = "Prosesor logis"
@@ -218,6 +223,7 @@
 "customGeoErrUpdateAllIncomplete" = "Satu atau lebih sumber geo kustom gagal diperbarui"
 
 [pages.inbounds]
+"totalUsers" = "Total pengguna"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

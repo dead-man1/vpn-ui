@@ -11,64 +11,66 @@
   </a-tooltip>
 </template>
 <template slot="actions" slot-scope="text, client, index">
-  <a-tooltip>
-    <template slot="title">{{ i18n "qrCode" }}</template>
-    <!-- MTProto: an account with every mode off has no usable link, so it gets no QR
-         at all rather than a QR modal that opens empty. -->
-    <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="qrcode" v-if="record.hasLink() && (record.protocol !== Protocols.MTPROTO || client.modeClassic || client.modeSecure || client.modeTls)" @click="showQrcode(record.id,client);"></a-icon>
-  </a-tooltip>
-  <a-tooltip>
-    <template slot="title">WireGuard Config</template>
-    <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="qrcode" v-if="record.protocol === Protocols.WGC" @click="showWgcConfig(record.id,client);"></a-icon>
-  </a-tooltip>
-  <a-tooltip>
-    <template slot="title">AmneziaWG Config</template>
-    <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="qrcode" v-if="record.protocol === Protocols.AWG" @click="showAwgConfig(record.id,client);"></a-icon>
-  </a-tooltip>
-  <a-tooltip>
-    <template slot="title">SSH Config</template>
-    <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="qrcode" v-if="record.protocol === Protocols.SSH" @click="showSshConfig(record.id,client);"></a-icon>
-  </a-tooltip>
-  <a-tooltip>
-    <template slot="title">{{ i18n "pages.client.edit" }}</template>
-    <a-icon :style="{ fontSize: '22px' }" class="normal-icon" type="edit" @click="openEditClient(record.id,client);"></a-icon>
-  </a-tooltip>
-  <a-tooltip>
-    <template slot="title">{{ i18n "info" }}</template>
-    <a-icon :style="{ fontSize: '22px' }" class="normal-icon" type="info-circle" @click="showInfo(record.id,client);"></a-icon>
-  </a-tooltip>
-  <a-tooltip>
-    <template slot="title">{{ i18n "pages.inbounds.resetTraffic" }}</template>
-    <a-popconfirm @confirm="resetClientTraffic(client,record.id,false)" title='{{ i18n "pages.inbounds.resetTrafficContent"}}' :overlay-class-name="themeSwitcher.currentTheme" ok-text='{{ i18n "reset"}}' cancel-text='{{ i18n "cancel"}}'>
-      <a-icon slot="icon" type="question-circle-o" :style="{ color: 'var(--color-primary-100)'}"></a-icon>
-      <a-icon :style="{ fontSize: '22px', cursor: 'pointer' }" class="normal-icon" type="retweet" v-if="client.email.length > 0"></a-icon>
-    </a-popconfirm>
-  </a-tooltip>
-  <a-tooltip>
-    <template slot="title">[[ isFrozen(client) ? '{{ i18n "pages.client.unfreeze" }}' : '{{ i18n "pages.client.freeze" }}' ]]</template>
-    <svg viewBox="0 0 24 24" width="22" height="22" class="normal-icon" v-if="client.email.length > 0" @click="toggleFreeze(record.id, client)" :style="{ cursor: 'pointer', verticalAlign: 'text-bottom', fill: isFrozen(client) ? 'var(--color-primary-100)' : 'currentColor' }">
-      <path d="M22 11h-4.17l3.24-3.24-1.41-1.42L15 11h-2V9l4.66-4.66-1.42-1.41L13 6.17V2h-2v4.17L7.76 2.93 6.34 4.34 11 9v2H9L4.34 6.34 2.93 7.76 6.17 11H2v2h4.17l-3.24 3.24 1.41 1.42L7 13h2v2l-4.66 4.66 1.42 1.41L11 17.83V22h2v-4.17l3.24 3.24 1.42-1.41L13 15v-2h2l4.66 4.66 1.41-1.42L17.83 13H22z"></path>
-      <!-- frozen: overlay a diagonal cross so the same icon reads as "click to unfreeze" -->
-      <line v-if="isFrozen(client)" x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"></line>
-    </svg>
-  </a-tooltip>
-  <a-tooltip>
-    <template slot="title">
-      <span :style="{ color: '#FF4D4F' }"> {{ i18n "delete"}}</span>
-    </template>
-    <a-popconfirm @confirm="delClient(record.id,client,false)" title='{{ i18n "pages.inbounds.deleteClientContent"}}' :overlay-class-name="themeSwitcher.currentTheme" ok-text='{{ i18n "delete"}}' ok-type="danger" cancel-text='{{ i18n "cancel"}}'>
-      <a-icon slot="icon" type="question-circle-o" :style="{ color: '#e04141' }"></a-icon>
-      <a-icon :style="{ fontSize: '22px', cursor: 'pointer' }" class="delete-icon" type="delete" v-if="isRemovable(record.id)"></a-icon>
-    </a-popconfirm>
-  </a-tooltip>
-  <a-tooltip>
-    <template slot="title">{{ i18n "pages.inbounds.exportTxt" }}</template>
-    <a-icon :style="{ fontSize: '22px' }" class="normal-icon" type="file-text" @click="exportClientTxt(record,client);"></a-icon>
-  </a-tooltip>
-  <a-tooltip>
-    <template slot="title">{{ i18n "pages.inbounds.exportPdf" }}</template>
-    <a-icon :style="{ fontSize: '22px' }" class="normal-icon" type="file-pdf" @click="exportClientPdf(record,client);"></a-icon>
-  </a-tooltip>
+  <div class="bo-client-actions">
+    <a-tooltip>
+      <template slot="title">{{ i18n "qrCode" }}</template>
+      <!-- MTProto: an account with every mode off has no usable link, so it gets no QR
+           at all rather than a QR modal that opens empty. -->
+      <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="qrcode" v-if="record.hasLink() && (record.protocol !== Protocols.MTPROTO || client.modeClassic || client.modeSecure || client.modeTls)" @click="showQrcode(record.id,client);"></a-icon>
+    </a-tooltip>
+    <a-tooltip>
+      <template slot="title">WireGuard Config</template>
+      <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="qrcode" v-if="record.protocol === Protocols.WGC" @click="showWgcConfig(record.id,client);"></a-icon>
+    </a-tooltip>
+    <a-tooltip>
+      <template slot="title">AmneziaWG Config</template>
+      <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="qrcode" v-if="record.protocol === Protocols.AWG" @click="showAwgConfig(record.id,client);"></a-icon>
+    </a-tooltip>
+    <a-tooltip>
+      <template slot="title">SSH Config</template>
+      <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="qrcode" v-if="record.protocol === Protocols.SSH" @click="showSshConfig(record.id,client);"></a-icon>
+    </a-tooltip>
+    <a-tooltip>
+      <template slot="title">{{ i18n "pages.client.edit" }}</template>
+      <a-icon :style="{ fontSize: '22px' }" class="normal-icon" type="edit" @click="openEditClient(record.id,client);"></a-icon>
+    </a-tooltip>
+    <a-tooltip>
+      <template slot="title">{{ i18n "info" }}</template>
+      <a-icon :style="{ fontSize: '22px' }" class="normal-icon" type="info-circle" @click="showInfo(record.id,client);"></a-icon>
+    </a-tooltip>
+    <a-tooltip>
+      <template slot="title">{{ i18n "pages.inbounds.resetTraffic" }}</template>
+      <a-popconfirm @confirm="resetClientTraffic(client,record.id,false)" title='{{ i18n "pages.inbounds.resetTrafficContent"}}' :overlay-class-name="themeSwitcher.currentTheme" ok-text='{{ i18n "reset"}}' cancel-text='{{ i18n "cancel"}}'>
+        <a-icon slot="icon" type="question-circle-o" :style="{ color: 'var(--color-primary-100)'}"></a-icon>
+        <a-icon :style="{ fontSize: '22px', cursor: 'pointer' }" class="normal-icon" type="retweet" v-if="client.email.length > 0"></a-icon>
+      </a-popconfirm>
+    </a-tooltip>
+    <a-tooltip>
+      <template slot="title">[[ isFrozen(client) ? '{{ i18n "pages.client.unfreeze" }}' : '{{ i18n "pages.client.freeze" }}' ]]</template>
+      <svg viewBox="0 0 24 24" width="22" height="22" class="normal-icon" v-if="client.email.length > 0" @click="toggleFreeze(record.id, client)" :style="{ cursor: 'pointer', verticalAlign: 'text-bottom', fill: isFrozen(client) ? 'var(--color-primary-100)' : 'currentColor' }">
+        <path d="M22 11h-4.17l3.24-3.24-1.41-1.42L15 11h-2V9l4.66-4.66-1.42-1.41L13 6.17V2h-2v4.17L7.76 2.93 6.34 4.34 11 9v2H9L4.34 6.34 2.93 7.76 6.17 11H2v2h4.17l-3.24 3.24 1.41 1.42L7 13h2v2l-4.66 4.66 1.42 1.41L11 17.83V22h2v-4.17l3.24 3.24 1.42-1.41L13 15v-2h2l4.66 4.66 1.41-1.42L17.83 13H22z"></path>
+        <!-- frozen: overlay a diagonal cross so the same icon reads as "click to unfreeze" -->
+        <line v-if="isFrozen(client)" x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"></line>
+      </svg>
+    </a-tooltip>
+    <a-tooltip>
+      <template slot="title">
+        <span :style="{ color: '#FF4D4F' }"> {{ i18n "delete"}}</span>
+      </template>
+      <a-popconfirm @confirm="delClient(record.id,client,false)" title='{{ i18n "pages.inbounds.deleteClientContent"}}' :overlay-class-name="themeSwitcher.currentTheme" ok-text='{{ i18n "delete"}}' ok-type="danger" cancel-text='{{ i18n "cancel"}}'>
+        <a-icon slot="icon" type="question-circle-o" :style="{ color: '#e04141' }"></a-icon>
+        <a-icon :style="{ fontSize: '22px', cursor: 'pointer' }" class="delete-icon" type="delete" v-if="isRemovable(record.id)"></a-icon>
+      </a-popconfirm>
+    </a-tooltip>
+    <a-tooltip>
+      <template slot="title">{{ i18n "pages.inbounds.exportTxt" }}</template>
+      <a-icon :style="{ fontSize: '22px' }" class="normal-icon" type="file-text" @click="exportClientTxt(record,client);"></a-icon>
+    </a-tooltip>
+    <a-tooltip>
+      <template slot="title">{{ i18n "pages.inbounds.exportPdf" }}</template>
+      <a-icon :style="{ fontSize: '22px' }" class="normal-icon" type="file-pdf" @click="exportClientPdf(record,client);"></a-icon>
+    </a-tooltip>
+  </div>
 </template>
 <template slot="enable" slot-scope="text, client, index">
   <a-switch v-model="client.enable" @change="switchEnableClient(record.id, client, $event)"></a-switch>

@@ -1,71 +1,37 @@
 {{define "component/sidebar/content"}}
 <template>
-    <div class="ant-sidebar">
-        <a-layout-sider :theme="themeSwitcher.currentTheme" collapsible :collapsed="collapsed"
-            @collapse="(isCollapsed, type) => collapseHandle(isCollapsed, type)" breakpoint="md">
-            <div class="sidebar-brand">
-                <a href="{{ .base_path }}panel/" aria-label="VPN-UI">
-                    <img src="{{ .base_path }}assets/img/logo.png" alt="VPN-UI" />
-                </a>
-            </div>
+    <nav class="bo-rail" :class="{ 'bo-rail--collapsed': collapsed }"
+        aria-label='{{ i18n "menu.navigation"}}'>
+        <div class="bo-rail-brand">
+            <a href="{{ .base_path }}panel/" aria-label="VPN-UI">
+                <img src="{{ .base_path }}assets/img/logo.png" alt="VPN-UI" />
+            </a>
+        </div>
+
+        <div class="bo-rail-nav">
+            <a v-for="tab in tabs" :key="tab.key" class="bo-rail-item"
+                :class="{ 'is-active': isActive(tab.key) }" :href="tab.key"
+                :aria-current="isActive(tab.key) ? 'page' : false"
+                :title="collapsed ? tab.title : false"
+                @click.prevent="openLink(tab.key)">
+                <a-icon :type="tab.icon"></a-icon>
+                <span v-text="tab.title"></span>
+            </a>
+        </div>
+
+        <div class="bo-rail-foot">
             <a-theme-switch></a-theme-switch>
-            <a-menu :theme="themeSwitcher.currentTheme" mode="inline" :selected-keys="activeTab"
-                @click="({key}) => openLink(key)">
-                <a-menu-item v-for="tab in tabs" :key="tab.key">
-                    <a-icon :type="tab.icon"></a-icon>
-                    <span v-text="tab.title"></span>
-                </a-menu-item>
-            </a-menu>
-        </a-layout-sider>
-        <a-drawer placement="left" :closable="false" @close="closeDrawer" :visible="visible"
-            :wrap-class-name="themeSwitcher.currentTheme" :wrap-style="{ padding: 0 }" :style="{ height: '100%' }">
-            <div class="drawer-handle" @click="toggleDrawer" slot="handle">
-                <a-icon :type="visible ? 'close' : 'menu-fold'"></a-icon>
-            </div>
-            <div class="sidebar-brand">
-                <a href="{{ .base_path }}panel/" aria-label="VPN-UI">
-                    <img src="{{ .base_path }}assets/img/logo.png" alt="VPN-UI" />
-                </a>
-            </div>
-            <a-theme-switch></a-theme-switch>
-            <a-menu :theme="themeSwitcher.currentTheme" mode="inline" :selected-keys="activeTab"
-                @click="({key}) => openLink(key)">
-                <a-menu-item v-for="tab in tabs" :key="tab.key">
-                    <a-icon :type="tab.icon"></a-icon>
-                    <span v-text="tab.title"></span>
-                </a-menu-item>
-            </a-menu>
-        </a-drawer>
-    </div>
+            <button type="button" class="bo-rail-collapse" @click="toggleCollapse"
+                :aria-expanded="!collapsed" :aria-label="collapsed ? expandLabel : collapseLabel"
+                :title="collapsed ? expandLabel : collapseLabel">
+                <a-icon :type="collapsed ? 'right' : 'left'"></a-icon>
+            </button>
+        </div>
+    </nav>
 </template>
 {{end}}
 
 {{define "component/aSidebar"}}
-<style>
-    .ant-sidebar>.ant-layout-sider {
-        height: 100%;
-    }
-
-    .sidebar-brand {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 18px 16px 10px;
-    }
-
-    .sidebar-brand img {
-        display: block;
-        height: 24px;
-        width: auto;
-        max-width: 100%;
-    }
-
-    /* Collapsed rail (~80px) can't fit the wordmark — hide it there. */
-    .ant-layout-sider-collapsed .sidebar-brand {
-        display: none;
-    }
-</style>
-
 <script>
     const SIDEBAR_COLLAPSED_KEY = "isSidebarCollapsed"
 
@@ -123,32 +89,30 @@
                         title: '{{ i18n "menu.logout"}}'
                     },
                 ],
-                activeTab: [
-                    '{{ .request_uri }}'
-                ],
-                visible: false,
-                collapsed: JSON.parse(localStorage.getItem(SIDEBAR_COLLAPSED_KEY)),
+                requestUri: '{{ .request_uri }}',
+                collapsed: JSON.parse(localStorage.getItem(SIDEBAR_COLLAPSED_KEY)) === true,
+                collapseLabel: '{{ i18n "menu.collapse"}}',
+                expandLabel: '{{ i18n "menu.expand"}}',
             }
         },
         methods: {
+            // The active tab used to be handed to ant's a-menu as selected-keys.
+            // With plain anchors we compare against the request URI ourselves.
+            // Trailing slashes vary between the emitted keys and the served URI,
+            // so both sides are normalised before comparing.
+            isActive(key) {
+                const norm = (s) => (s || '').replace(/\/+$/, '');
+                return norm(key) === norm(this.requestUri);
+            },
             openLink(key) {
-                return key.startsWith('http') ? 
-                    window.open(key) : 
+                return key.startsWith('http') ?
+                    window.open(key) :
                     location.href = key
             },
-            closeDrawer() {
-                this.visible = false;
+            toggleCollapse() {
+                this.collapsed = !this.collapsed;
+                localStorage.setItem(SIDEBAR_COLLAPSED_KEY, this.collapsed);
             },
-            toggleDrawer() {
-                this.visible = !this.visible;
-            },
-            collapseHandle(collapsed, type) {
-                if (type === "clickTrigger") {
-                    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed);
-
-                    this.collapsed = JSON.parse(localStorage.getItem(SIDEBAR_COLLAPSED_KEY));
-                }
-            }
         },
         template: `{{template "component/sidebar/content" .}}`,
     });

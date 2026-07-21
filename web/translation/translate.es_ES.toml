@@ -90,6 +90,9 @@
 "noExpiry" = "Sin caducidad"
 
 [menu]
+"navigation" = "Navegación principal"
+"collapse" = "Contraer barra lateral"
+"expand" = "Expandir barra lateral"
 "theme" = "Tema"
 "dark" = "Oscuro"
 "ultraDark" = "Ultra Oscuro"
@@ -116,6 +119,8 @@
 "successLogin" = "Has iniciado sesión en tu cuenta correctamente."
 
 [pages.index]
+"restore" = "Restaurar"
+"systemStatus" = "Estado del sistema"
 "title" = "Estado del Sistema"
 "cpu" = "CPU"
 "logicalProcessors" = "Procesadores lógicos"
@@ -218,6 +223,7 @@
 "customGeoErrUpdateAllIncomplete" = "No se pudieron actualizar una o más fuentes geo personalizadas"
 
 [pages.inbounds]
+"totalUsers" = "Usuarios totales"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

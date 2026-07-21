@@ -90,6 +90,9 @@
 "noExpiry" = "Без строку"
 
 [menu]
+"navigation" = "Основна навігація"
+"collapse" = "Згорнути бічну панель"
+"expand" = "Розгорнути бічну панель"
 "theme" = "Тема"
 "dark" = "Темна"
 "ultraDark" = "Ультра темна"
@@ -116,6 +119,8 @@
 "successLogin" = "Ви успішно увійшли до свого облікового запису."
 
 [pages.index]
+"restore" = "Відновити"
+"systemStatus" = "Стан системи"
 "title" = "Огляд"
 "cpu" = "ЦП"
 "logicalProcessors" = "Логічні процесори"
@@ -218,6 +223,7 @@
 "customGeoErrUpdateAllIncomplete" = "Не вдалося оновити один або кілька користувацьких джерел"
 
 [pages.inbounds]
+"totalUsers" = "Всього користувачів"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

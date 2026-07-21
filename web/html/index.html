@@ -16,361 +16,388 @@
     border-color: var(--dark-color-stroke, #2c3950);
   }
 </style>
-<a-layout id="app" v-cloak :class="themeSwitcher.currentTheme + ' index-page'">
-  <a-sidebar></a-sidebar>
-  <a-layout id="content-layout">
-    <a-layout-content>
-      <a-spin :spinning="loadingStates.spinning" :delay="200" :tip="loadingTip" size="large">
-        <transition name="list" appear>
-          <a-alert type="error" v-if="showAlert && loadingStates.fetched" class="mb-10"
-            message='{{ i18n "secAlertTitle" }}' color="red" description='{{ i18n "secAlertSsl" }}' show-icon closable>
-          </a-alert>
-        </transition>
-        <transition name="list" appear>
-          <template>
-            <a-row v-if="!loadingStates.fetched">
-              <div :style="{ minHeight: 'calc(100vh - 120px)' }"></div>
+{{template "page/shell_start" . }}
+<a-spin :spinning="loadingStates.spinning" :delay="200" :tip="loadingTip" size="large">
+  <transition name="list" appear>
+    <a-alert type="error" v-if="showAlert && loadingStates.fetched" class="mb-10"
+      message='{{ i18n "secAlertTitle" }}' color="red" description='{{ i18n "secAlertSsl" }}' show-icon closable>
+    </a-alert>
+  </transition>
+
+  <!-- Reserve the viewport height on first paint so the bento grid does not
+       pop in against a collapsed container. -->
+  <div v-if="!loadingStates.fetched" :style="{ minHeight: 'calc(100vh - 160px)' }"></div>
+
+  <div class="bo-bento" v-else>
+
+    <!-- ===== identity ===== -->
+    <article class="bo-tile bo-t-ident" aria-label='{{ i18n "pages.index.systemStatus" }}'>
+      <div class="bo-ident-top">
+        <!-- The mark is painted as a CSS mask rather than an <svg><use>, so the
+             brand colour lives in components.css (where dark mode can override
+             the few brands that vanish on a dark surface) and only the one
+             logo the machine actually needs is ever fetched. -->
+        <span class="bo-ident-logo bo-distro" :class="'bo-distro--' + distroKey"
+          :style="{ maskImage: distroMask, WebkitMaskImage: distroMask }"
+          role="img" :aria-label="status.osName || 'Linux'"></span>
+        <div class="bo-ident-name">
+          <div class="bo-ident-nameline">
+            <p class="bo-ident-os">[[ serverLabel ]]</p>
+            <button type="button" class="bo-ident-edit" @click="openRenameServer"
+              title='{{ i18n "edit" }}' aria-label='{{ i18n "edit" }}'>
+              <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-pencil"></use></svg>
+            </button>
+          </div>
+          <p class="bo-ident-sub" v-if="status.osName">[[ status.osName ]] [[ status.osVersion ]]</p>
+        </div>
+      </div>
+
+      <!-- One labelled line per fact. Each row's icon is tinted so the eye can
+           find a row by colour before reading it. -->
+      <dl class="bo-spec">
+        <div class="bo-spec-row">
+          <span class="bo-spec-ico bo-spec-ico--os"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-server"></use></svg></span>
+          <dt class="bo-spec-key">{{ i18n "pages.index.operationHours" }}</dt>
+          <dd class="bo-spec-val num">[[ TimeFormatter.formatSecond(status.uptime) ]]</dd>
+        </div>
+        <div class="bo-spec-row" v-if="status.kernel">
+          <span class="bo-spec-ico bo-spec-ico--kernel"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-zap"></use></svg></span>
+          <dt class="bo-spec-key">Kernel</dt>
+          <dd class="bo-spec-val num">[[ status.kernel ]]</dd>
+        </div>
+        <div class="bo-spec-row" v-if="status.cpuModel">
+          <span class="bo-spec-ico bo-spec-ico--cpu"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-cpu"></use></svg></span>
+          <dt class="bo-spec-key">CPU</dt>
+          <dd class="bo-spec-val">[[ status.cpuModel ]]</dd>
+        </div>
+        <div class="bo-spec-row">
+          <span class="bo-spec-ico bo-spec-ico--cores"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-grid"></use></svg></span>
+          <dt class="bo-spec-key">Cores</dt>
+          <dd class="bo-spec-val num">[[ CPUFormatter.cpuCoreFormat(status.cpuCores) ]]<span v-if="status.cpuSpeedMhz"> at [[ CPUFormatter.cpuSpeedFormat(status.cpuSpeedMhz) ]]</span></dd>
+        </div>
+        <div class="bo-spec-row">
+          <span class="bo-spec-ico bo-spec-ico--health"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-shield"></use></svg></span>
+          <dt class="bo-spec-key">{{ i18n "pages.index.vpnServices" }}</dt>
+          <dd class="bo-spec-val num" :class="allCoresHealthy ? 'bo-ok' : 'bo-warn'">[[ healthSummary ]]</dd>
+        </div>
+      </dl>
+    </article>
+
+    <!-- ===== throughput ===== -->
+    <article class="bo-tile bo-t-flow" aria-label='{{ i18n "pages.index.overallSpeed" }}'>
+      <div class="bo-tile-head">
+        <h3 class="bo-tile-title">{{ i18n "pages.index.overallSpeed" }}</h3>
+        <!-- Interface picker. "All" is the default and sums every non-loopback
+             NIC, which is what the aggregate netIO already reports. -->
+        <span class="bo-iface-pick">
+          <a-select size="small" v-model="ifaceFilter" :style="{ minWidth: '120px' }"
+            :dropdown-class-name="themeSwitcher.currentTheme" @change="onIfaceChange">
+            <a-select-option value="">{{ i18n "all" }}</a-select-option>
+            <a-select-option v-for="n in ifaceNames" :key="n" :value="n">[[ n ]]</a-select-option>
+          </a-select>
+        </span>
+      </div>
+      <div class="bo-flow-cols">
+        <div class="bo-flow-col bo-flow-col--up">
+          <div class="bo-flow-label">
+            <svg class="bo-icon bo-icon-16" aria-hidden="true"><use href="#bo-i-arrow-up"></use></svg>
+            {{ i18n "pages.index.upload" }}
+          </div>
+          <div class="bo-flow-value num" aria-live="polite">
+            [[ SizeFormatter.sizeFormat(status.netIO.up) ]]<span class="bo-unit">/s</span>
+          </div>
+          <div class="bo-flow-chart">
+            <sparkline :data="history.up" :vb-width="420" :height="130" :autoscale="true"
+              :max-points="HISTORY_POINTS" :fill-opacity="0.14" :stroke="chartColors.accent"
+              :show-grid="false" :padding-left="2" :padding-right="2"
+              :padding-top="6" :padding-bottom="6" />
+          </div>
+        </div>
+        <div class="bo-flow-col bo-flow-col--down">
+          <div class="bo-flow-label">
+            <svg class="bo-icon bo-icon-16" aria-hidden="true"><use href="#bo-i-arrow-down"></use></svg>
+            {{ i18n "pages.index.download" }}
+          </div>
+          <div class="bo-flow-value num" aria-live="polite">
+            [[ SizeFormatter.sizeFormat(status.netIO.down) ]]<span class="bo-unit">/s</span>
+          </div>
+          <div class="bo-flow-chart">
+            <sparkline :data="history.down" :vb-width="420" :height="130" :autoscale="true"
+              :max-points="HISTORY_POINTS" :fill-opacity="0.14" :stroke="chartColors.info"
+              :show-grid="false" :padding-left="2" :padding-right="2"
+              :padding-top="6" :padding-bottom="6" />
+          </div>
+        </div>
+      </div>
+      <div class="bo-divider"></div>
+      <div class="bo-flow-footer">
+        <div class="bo-mini-stat">
+          <span class="bo-mini-stat-label">{{ i18n "pages.index.sent" }}</span>
+          <span class="bo-mini-stat-value num">[[ SizeFormatter.sizeFormat(status.netTraffic.sent) ]]</span>
+        </div>
+        <div class="bo-mini-stat bo-mini-stat--end">
+          <span class="bo-mini-stat-label">{{ i18n "pages.index.received" }}</span>
+          <span class="bo-mini-stat-value num">[[ SizeFormatter.sizeFormat(status.netTraffic.recv) ]]</span>
+        </div>
+      </div>
+    </article>
+
+    <!-- ===== user status ===== -->
+    <article class="bo-tile bo-t-users" aria-label='{{ i18n "clients" }}'>
+      <div class="bo-tile-head"><h3 class="bo-tile-title">{{ i18n "clients" }}</h3></div>
+      <div class="bo-people">
+        <div class="bo-person bo-person--total">
+          <svg class="bo-person-ico" aria-hidden="true"><use href="#bo-i-user"></use></svg>
+          <span class="bo-person-val num">[[ userStats.total ]]</span>
+          <span class="bo-person-key">{{ i18n "pages.inbounds.totalUsers" }}</span>
+        </div>
+        <div class="bo-person bo-person--online">
+          <svg class="bo-person-ico" aria-hidden="true"><use href="#bo-i-user"></use></svg>
+          <span class="bo-person-val num">[[ userStats.online ]]</span>
+          <span class="bo-person-key">{{ i18n "online" }}</span>
+        </div>
+        <div class="bo-person bo-person--depleted">
+          <svg class="bo-person-ico" aria-hidden="true"><use href="#bo-i-user"></use></svg>
+          <span class="bo-person-val num">[[ userStats.depleted ]]</span>
+          <span class="bo-person-key">{{ i18n "depleted" }}</span>
+        </div>
+      </div>
+    </article>
+
+    <!-- ===== vitals ===== -->
+    <article class="bo-tile bo-t-vit" aria-label='{{ i18n "pages.index.systemStatus" }}'>
+      <div class="bo-tile-head"><h3 class="bo-tile-title">{{ i18n "pages.index.systemStatus" }}</h3></div>
+      <div class="bo-vit-list">
+
+        <div class="bo-vit-item" v-for="v in vitals" :key="v.key">
+          <div class="bo-vit-row">
+            <div class="bo-ring-wrap">
+              <svg viewBox="0 0 40 40" aria-hidden="true">
+                <circle class="bo-ring-track" cx="20" cy="20" r="16"></circle>
+                <circle class="bo-ring-progress" :class="ringClass(v.percent)" cx="20" cy="20" r="16"
+                  :style="{ strokeDashoffset: ringOffset(v.percent) }"></circle>
+              </svg>
+              <span class="bo-ring-icon">
+                <svg class="bo-icon" aria-hidden="true"><use :href="'#bo-i-' + v.icon"></use></svg>
+              </span>
+            </div>
+            <div class="bo-vit-info">
+              <div class="bo-vit-top">
+                <span class="bo-vit-name">[[ v.label ]]</span>
+                <span class="bo-vit-pct num">[[ v.percent ]]%</span>
+              </div>
+              <p class="bo-vit-meta">[[ v.meta ]]</p>
+            </div>
+          </div>
+          <!-- The component's default paddings (32 left, 20 bottom) assume a
+               full-size chart with axes; at 24px tall they leave a negative
+               draw area, so they are zeroed out here. -->
+          <div class="bo-vit-spark">
+            <sparkline :data="history[v.key]" :vb-width="240" :height="24"
+              :max-points="HISTORY_POINTS" :fill-opacity="0.14" :stroke="chartColors.accent"
+              :show-grid="false" :show-marker="false" :stroke-width="1.5"
+              :padding-left="0" :padding-right="0" :padding-top="2" :padding-bottom="2" />
+          </div>
+        </div>
+
+      </div>
+      <div class="bo-divider"></div>
+      <div class="bo-tile-head bo-tile-head--sub"><h3 class="bo-tile-title">{{ i18n "pages.index.connectionCount" }}</h3></div>
+      <div class="bo-conn-body">
+        <div class="bo-conn-stat bo-conn-stat--tcp">
+          <span class="bo-conn-label">
+            <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-link"></use></svg>TCP
+          </span>
+          <span class="bo-conn-value num">[[ status.tcpCount ]]</span>
+        </div>
+        <div class="bo-conn-stat bo-conn-stat--udp">
+          <span class="bo-conn-label">
+            <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-link"></use></svg>UDP
+          </span>
+          <span class="bo-conn-value num">[[ status.udpCount ]]</span>
+        </div>
+      </div>
+      <div class="bo-conn-ratio">
+        <span class="bo-conn-ratio-seg bo-conn-ratio-seg--tcp" :style="{ width: connRatio.tcp }"></span>
+        <span class="bo-conn-ratio-seg bo-conn-ratio-seg--udp" :style="{ width: connRatio.udp }"></span>
+      </div>
+
+      <div class="bo-divider"></div>
+      <div class="bo-tile-head">
+        <h3 class="bo-tile-title">{{ i18n "pages.index.ipAddresses" }}</h3>
+        <button type="button" class="bo-icon-btn bo-icon-btn--ghost" @click="showIp = !showIp"
+          :aria-label='`{{ i18n "pages.index.toggleIpVisibility" }}`' :aria-pressed="String(!showIp)">
+          <svg class="bo-icon bo-icon-16" aria-hidden="true">
+            <use :href="showIp ? '#bo-i-eye' : '#bo-i-eye-off'"></use>
+          </svg>
+        </button>
+      </div>
+      <div class="bo-ip-row">
+        <span class="bo-ip-label">IPv4</span>
+        <span class="bo-ip-value num">[[ showIp ? status.publicIP.ipv4 : maskIp(status.publicIP.ipv4) ]]</span>
+      </div>
+      <div class="bo-ip-row">
+        <span class="bo-ip-label">IPv6</span>
+        <span class="bo-ip-value num">[[ showIp ? status.publicIP.ipv6 : maskIp(status.publicIP.ipv6) ]]</span>
+      </div>
+    </article>
+
+    <!-- ===== VPN services ===== -->
+    <article class="bo-tile bo-t-svc" aria-label='{{ i18n "pages.index.vpnServices" }}'>
+      <div class="bo-tile-head">
+        <h3 class="bo-tile-title">{{ i18n "pages.index.vpnServices" }}</h3>
+        <span class="bo-tile-meta">[[ vpnSummary ]]</span>
+      </div>
+      <div class="bo-svc-grid">
+        <button type="button" class="bo-svc-chip" v-for="c in vpnCoreStatuses()" :key="c.name"
+          :data-state="coreStateKey(c.state)"
+          :aria-label="coreLabel(c.name) + ': ' + coreStateText(c.state)"
+          @click="openCore(c.name)">
+          <span class="bo-svc-led"></span>
+          <span class="bo-svc-name">[[ coreLabel(c.name) ]]</span>
+          <span class="bo-svc-state">[[ coreStateText(c.state) ]]</span>
+        </button>
+      </div>
+    </article>
+
+    <!-- ===== Xray ===== -->
+    <article class="bo-tile bo-t-xray" aria-label='{{ i18n "pages.index.xrayStatus" }}'>
+      <div class="bo-tile-head">
+        <h3 class="bo-tile-title">{{ i18n "pages.index.xrayStatus" }}</h3>
+        <a-popover v-if="status.xray.state == 'error'" :overlay-class-name="themeSwitcher.currentTheme">
+          <span slot="title">
+            <a-row type="flex" align="middle" justify="space-between">
+              <a-col><span>{{ i18n "pages.index.xrayErrorPopoverTitle" }}</span></a-col>
+              <a-col><a-icon type="bars" class="cursor-pointer float-right" @click="openLogs()"></a-icon></a-col>
             </a-row>
-            <!-- type="flex": ant-design-vue 1.7.8's default a-row is a FLOAT grid
-                 (.ant-row is display:block, cols float:left), so unequal-height cards
-                 (Xray/Manage have #actions bars; the rest are short) snag on the floats
-                 and leave a staircase gap. Flexbox wrap lays them in clean locked rows. -->
-            <a-row type="flex" :gutter="[isMobile ? 8 : 16, isMobile ? 0 : 12]" v-else>
-              <a-col :span="24">
-                <a-card hoverable>
-                  <a-row :gutter="[0, isMobile ? 16 : 0]">
-                    <a-col :sm="24" :md="12">
-                      <a-row>
-                        <a-col :span="12" class="text-center">
-                          <a-progress type="dashboard" status="normal" :stroke-color="status.cpu.color"
-                            :percent="status.cpu.percent"></a-progress>
-                          <div>
-                            <b>{{ i18n "pages.index.cpu" }}:</b> [[ CPUFormatter.cpuCoreFormat(status.cpuCores) ]]
-                            <a-tooltip>
-                              <a-icon type="area-chart"></a-icon>
-                              <template slot="title">
-                                <div><b>{{ i18n "pages.index.logicalProcessors" }}:</b> [[ (status.logicalPro) ]]</div>
-                                <div><b>{{ i18n "pages.index.frequency" }}:</b> [[
-                                  CPUFormatter.cpuSpeedFormat(status.cpuSpeedMhz) ]]</div>
-                              </template>
-                            </a-tooltip>
-                            <a-tooltip :overlay-class-name="themeSwitcher.currentTheme">
-                              <a-button size="small" shape="circle" class="ml-8" @click="openCpuHistory()">
-                                <a-icon type="history" />
-                              </a-button>
-                            </a-tooltip>
-                          </div>
-                        </a-col>
-                        <a-col :span="12" class="text-center">
-                          <a-progress type="dashboard" status="normal" :stroke-color="status.mem.color"
-                            :percent="status.mem.percent"></a-progress>
-                          <div>
-                            <b>{{ i18n "pages.index.memory"}}:</b> [[ SizeFormatter.sizeFormat(status.mem.current) ]] /
-                            [[ SizeFormatter.sizeFormat(status.mem.total) ]]
-                          </div>
-                        </a-col>
-                      </a-row>
-                    </a-col>
-                    <a-col :sm="24" :md="12">
-                      <a-row>
-                        <a-col :span="12" class="text-center">
-                          <a-progress type="dashboard" status="normal" :stroke-color="status.swap.color"
-                            :percent="status.swap.percent"></a-progress>
-                          <div>
-                            <b>{{ i18n "pages.index.swap" }}:</b> [[ SizeFormatter.sizeFormat(status.swap.current) ]] /
-                            [[ SizeFormatter.sizeFormat(status.swap.total) ]]
-                          </div>
-                        </a-col>
-                        <a-col :span="12" class="text-center">
-                          <a-progress type="dashboard" status="normal" :stroke-color="status.disk.color"
-                            :percent="status.disk.percent"></a-progress>
-                          <div>
-                            <b>{{ i18n "pages.index.storage"}}:</b> [[ SizeFormatter.sizeFormat(status.disk.current) ]]
-                            / [[ SizeFormatter.sizeFormat(status.disk.total) ]]
-                          </div>
-                        </a-col>
-                      </a-row>
-                    </a-col>
-                  </a-row>
-                </a-card>
-              </a-col>
-              <a-col :sm="24" :lg="24">
-                <a-card hoverable :title="'{{ i18n "pages.index.vpnServices" }}'">
-                  <div :style="{ display: 'flex', flexWrap: 'wrap', gap: '16px' }">
-                    <div v-for="c in vpnCoreStatuses()" :key="c.name"
-                      :style="{ flex: '1 1 0', minWidth: '72px', textAlign: 'center', whiteSpace: 'normal', wordBreak: 'break-word' }">
-                      <div :style="{ fontWeight: 600, marginBottom: '8px', whiteSpace: 'normal', wordBreak: 'break-word' }">[[ coreLabel(c.name) ]]</div>
-                      <a-badge :color="coreStateColor(c.state)" :text="coreStateText(c.state)"></a-badge>
-                    </div>
-                  </div>
-                </a-card>
-              </a-col>
-              <a-col :sm="24" :lg="12">
-                <a-card hoverable>
-                  <template #title>
-                    <a-space direction="horizontal">
-                      <span>{{ i18n "pages.index.xrayStatus" }}</span>
-                      <a-tag v-if="isMobile && status.xray.version != 'Unknown'" color="green">
-                        v[[ status.xray.version ]]
-                      </a-tag>
-                    </a-space>
-                  </template>
-                  <template #extra>
-                    <template v-if="status.xray.state != 'error'">
-                      <a-badge status="processing"
-                        :class="({ green: 'xray-running-animation', orange: 'xray-stop-animation' }[status.xray.color]) || 'xray-processing-animation'"
-                        :text="status.xray.stateMsg" :color="status.xray.color" />
-                    </template>
-                    <template v-else>
-                      <a-popover :overlay-class-name="themeSwitcher.currentTheme">
-                        <span slot="title">
-                          <a-row type="flex" align="middle" justify="space-between">
-                            <a-col>
-                              <span>{{ i18n "pages.index.xrayErrorPopoverTitle" }}</span>
-                            </a-col>
-                            <a-col>
-                              <a-icon type="bars" class="cursor-pointer float-right" @click="openLogs()"></a-icon>
-                            </a-col>
-                          </a-row>
-                        </span>
-                        <template slot="content">
-                          <span class="max-w-400" v-for="line in (status.xray.errorMsg || '').split('\n')">[[ line ]]</span>
-                        </template>
-                        <a-badge :text="status.xray.stateMsg" :color="status.xray.color"
-                          :class="status.xray.color === 'red' ? 'xray-error-animation' : ''" />
-                      </a-popover>
-                    </template>
-                  </template>
-                  <template #actions>
-                    <a-space v-if="ipLimitEnable" direction="horizontal" @click="openXrayLogs()" class="jc-center">
-                      <a-icon type="bars"></a-icon>
-                      <span v-if="!isMobile">{{ i18n "pages.index.logs" }}</span>
-                    </a-space>
-                    <a-space direction="horizontal" @click="stopXrayService" class="jc-center">
-                      <a-icon type="poweroff"></a-icon>
-                      <span v-if="!isMobile">{{ i18n "pages.index.stopXray" }}</span>
-                    </a-space>
-                    <a-space direction="horizontal" @click="restartXrayService" class="jc-center">
-                      <a-icon type="reload"></a-icon>
-                      <span v-if="!isMobile">{{ i18n "pages.index.restartXray" }}</span>
-                    </a-space>
-                    <a-space direction="horizontal" @click="openGeofiles()" class="jc-center">
-                      <a-icon type="global"></a-icon>
-                      <span v-if="!isMobile">{{ i18n "pages.index.geofiles" }}</span>
-                    </a-space>
-                    <a-space direction="horizontal" @click="openSelectV2rayVersion" class="jc-center">
-                      <a-icon type="tool"></a-icon>
-                      <span v-if="!isMobile">
-                        [[ status.xray.version != 'Unknown' ? `v${status.xray.version}` : '{{ i18n
-                        "pages.index.xraySwitch" }}' ]]
-                      </span>
-                    </a-space>
-                  </template>
-                </a-card>
-              </a-col>
-              <a-col :sm="24" :lg="12">
-                <a-card title='{{ i18n "menu.link" }}' hoverable>
-                  <template #actions>
-                    <a-space direction="horizontal" @click="openLogs()" class="jc-center">
-                      <a-icon type="bars"></a-icon>
-                      <span v-if="!isMobile">{{ i18n "pages.index.logs" }}</span>
-                    </a-space>
-                    <a-space direction="horizontal" @click="openConfig" class="jc-center">
-                      <a-icon type="control"></a-icon>
-                      <span v-if="!isMobile">{{ i18n "pages.index.config" }}</span>
-                    </a-space>
-                    <a-space direction="horizontal" @click="openBackup" class="jc-center">
-                      <a-icon type="cloud-server"></a-icon>
-                      <span v-if="!isMobile">{{ i18n "pages.index.backup" }}</span>
-                    </a-space>
-                  </template>
-                </a-card>
-              </a-col>
-              <a-col :sm="24" :lg="12">
-                <a-card title='VPN-UI' hoverable>
-                  <!-- Single wrapping row so the card stays as short as its grid
-                       neighbours (a tall vertical stack staggered the card grid). The
-                       update UI appears inline only when relevant. Native flex-wrap:
-                       ant-design-vue 1.7.8's a-space has no `wrap` and is inline-flex,
-                       so it can't wrap — use the same flex div as the VPN Services card. -->
-                  <div :style="{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }">
-                    <a rel="noopener" href="https://github.com/Sir-MmD/vpn-ui" target="_blank">
-                      <a-tag color="green">
-                        <span>v{{ .cur_ver }}</span>
-                      </a-tag>
-                    </a>
-                    <a-button size="small" icon="reload" :loading="panelUpdate.checking"
-                      @click="checkForUpdate(true)">
-                      {{ i18n "pages.index.checkUpdate" }}
-                    </a-button>
-                    <a-tag v-if="panelUpdate.checked && !panelUpdate.available && !panelUpdate.checking"
-                      color="green">
-                      <a-icon type="check-circle"></a-icon> {{ i18n "pages.index.upToDate" }}
-                    </a-tag>
-                    <a-tag v-if="panelUpdate.available" color="orange">
-                      {{ i18n "pages.index.updateAvailable" }} v[[ panelUpdate.latest ]]
-                    </a-tag>
-                    <a-popconfirm v-if="panelUpdate.available && !panelUpdate.updating"
-                      title='{{ i18n "pages.index.updateConfirm" }}' @confirm="doPanelUpdate"
-                      ok-text='{{ i18n "confirm" }}' cancel-text='{{ i18n "cancel" }}'>
-                      <a-button type="primary" size="small" icon="cloud-download">
-                        {{ i18n "pages.index.updateNow" }}
-                      </a-button>
-                    </a-popconfirm>
-                    <span v-if="panelUpdate.updating"
-                      :style="{ display: 'inline-flex', alignItems: 'center', gap: '8px', minWidth: '210px' }">
-                      <a-progress :percent="panelUpdate.percent"
-                        :status="panelUpdate.phase === 'error' ? 'exception' : (panelUpdate.phase === 'restarting' ? 'success' : 'active')"
-                        size="small" :style="{ width: '130px', margin: 0 }"></a-progress>
-                      <span :style="{ color: '#1890ff', whiteSpace: 'nowrap' }">[[ panelUpdatePhaseText() ]]</span>
-                      <span v-if="panelUpdateSpeedText()"
-                        :style="{ color: '#8c8c8c', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }">
-                        [[ panelUpdateSpeedText() ]]
-                      </span>
-                      <a-button v-if="panelUpdate.phase === 'downloading'" size="small" icon="close"
-                        :loading="panelUpdate.cancelling" @click="cancelPanelUpdate">
-                        {{ i18n "cancel" }}
-                      </a-button>
-                    </span>
-                    <a-tooltip v-if="panelUpdate.error" :title="panelUpdate.error">
-                      <a-tag color="red" :style="{ cursor: 'help', margin: 0 }">
-                        <a-icon type="warning"></a-icon>
-                      </a-tag>
-                    </a-tooltip>
-                  </div>
-                </a-card>
-              </a-col>
-              <a-col :sm="24" :lg="12">
-                <a-card title='{{ i18n "pages.index.operationHours" }}' hoverable>
-                  <a-tag :color="status.xray.color">Xray: [[ TimeFormatter.formatSecond(status.appStats.uptime)
-                    ]]</a-tag>
-                  <a-tag color="green">OS: [[ TimeFormatter.formatSecond(status.uptime) ]]</a-tag>
-                </a-card>
-              </a-col>
-              <a-col :sm="24" :lg="12">
-                <a-card title='{{ i18n "pages.index.systemLoad" }}' hoverable>
-                  <a-tag color="green">
-                    <a-tooltip>
-                      [[ status.loads[0] ]] | [[ status.loads[1] ]] | [[ status.loads[2] ]]
-                      <template slot="title">
-                        {{ i18n "pages.index.systemLoadDesc" }}
-                      </template>
-                    </a-tooltip>
-                  </a-tag>
-                </a-card>
-              </a-col>
-              <a-col :sm="24" :lg="12">
-                <a-card title='{{ i18n "usage"}}' hoverable>
-                  <a-tag color="green"> {{ i18n "pages.index.memory" }}: [[
-                    SizeFormatter.sizeFormat(status.appStats.mem) ]] </a-tag>
-                  <a-tag color="green"> {{ i18n "pages.index.threads" }}: [[ status.appStats.threads ]] </a-tag>
-                </a-card>
-              </a-col>
-              <a-col :sm="24" :lg="12">
-                <a-card title='{{ i18n "pages.index.overallSpeed" }}' hoverable>
-                  <a-row :gutter="isMobile ? [8,8] : 0">
-                    <a-col :span="12">
-                      <a-custom-statistic title='{{ i18n "pages.index.upload" }}'
-                        :value="SizeFormatter.sizeFormat(status.netIO.up)">
-                        <template #prefix>
-                          <a-icon type="arrow-up" />
-                        </template>
-                        <template #suffix>
-                          /s
-                        </template>
-                      </a-custom-statistic>
-                    </a-col>
-                    <a-col :span="12">
-                      <a-custom-statistic title='{{ i18n "pages.index.download" }}'
-                        :value="SizeFormatter.sizeFormat(status.netIO.down)">
-                        <template #prefix>
-                          <a-icon type="arrow-down" />
-                        </template>
-                        <template #suffix>
-                          /s
-                        </template>
-                      </a-custom-statistic>
-                    </a-col>
-                  </a-row>
-                </a-card>
-              </a-col>
-              <a-col :sm="24" :lg="12">
-                <a-card title='{{ i18n "pages.index.totalData" }}' hoverable>
-                  <a-row :gutter="isMobile ? [8,8] : 0">
-                    <a-col :span="12">
-                      <a-custom-statistic title='{{ i18n "pages.index.sent" }}'
-                        :value="SizeFormatter.sizeFormat(status.netTraffic.sent)">
-                        <template #prefix>
-                          <a-icon type="cloud-upload" />
-                        </template>
-                      </a-custom-statistic>
-                    </a-col>
-                    <a-col :span="12">
-                      <a-custom-statistic title='{{ i18n "pages.index.received" }}'
-                        :value="SizeFormatter.sizeFormat(status.netTraffic.recv)">
-                        <template #prefix>
-                          <a-icon type="cloud-download" />
-                        </template>
-                      </a-custom-statistic>
-                    </a-col>
-                  </a-row>
-                </a-card>
-              </a-col>
-              <a-col :sm="24" :lg="12">
-                <a-card title='{{ i18n "pages.index.ipAddresses" }}' hoverable>
-                  <template #extra>
-                    <a-tooltip :placement="isMobile ? 'topRight' : 'top'">
-                      <template #title>
-                        {{ i18n "pages.index.toggleIpVisibility" }}
-                      </template>
-                      <a-icon :type="showIp ? 'eye' : 'eye-invisible'" class="fs-1rem"
-                        @click="showIp = !showIp"></a-icon>
-                    </a-tooltip>
-                  </template>
-                  <a-row :class="showIp ? 'ip-visible' : 'ip-hidden'" :gutter="isMobile ? [8,8] : 0">
-                    <a-col :span="isMobile ? 24 : 12">
-                      <a-custom-statistic title="IPv4" :value="status.publicIP.ipv4">
-                        <template #prefix>
-                          <a-icon type="global" />
-                        </template>
-                      </a-custom-statistic>
-                    </a-col>
-                    <a-col :span="isMobile ? 24 : 12">
-                      <a-custom-statistic title="IPv6" :value="status.publicIP.ipv6">
-                        <template #prefix>
-                          <a-icon type="global" />
-                        </template>
-                      </a-custom-statistic>
-                    </a-col>
-                  </a-row>
-                </a-card>
-              </a-col>
-              <a-col :sm="24" :lg="12">
-                <a-card title='{{ i18n "pages.index.connectionCount" }}' hoverable>
-                  <a-row :gutter="isMobile ? [8,8] : 0">
-                    <a-col :span="12">
-                      <a-custom-statistic title="TCP" :value="status.tcpCount">
-                        <template #prefix>
-                          <a-icon type="swap" />
-                        </template>
-                      </a-custom-statistic>
-                    </a-col>
-                    <a-col :span="12">
-                      <a-custom-statistic title="UDP" :value="status.udpCount">
-                        <template #prefix>
-                          <a-icon type="swap" />
-                        </template>
-                      </a-custom-statistic>
-                    </a-col>
-                  </a-row>
-                </a-card>
-              </a-col>
-            </a-row>
+          </span>
+          <template slot="content">
+            <span class="max-w-400" v-for="line in (status.xray.errorMsg || '').split('\n')">[[ line ]]</span>
           </template>
-        </transition>
-      </a-spin>
-    </a-layout-content>
-  </a-layout>
+          <span class="bo-status-pill bo-status-pill--error">
+            <span class="bo-dot bo-dot--error"></span>[[ status.xray.stateMsg ]]
+          </span>
+        </a-popover>
+        <span v-else class="bo-status-pill" :class="xrayPillClass" aria-live="polite">
+          <span class="bo-dot" :class="xrayDotClass"></span>[[ status.xray.stateMsg ]]
+        </span>
+      </div>
+      <div class="bo-kv-row">
+        <span class="bo-kv-label">{{ i18n "pages.index.xrayStatus" }}</span>
+        <span class="bo-kv-value num bo-kv-with-action">
+          [[ status.xray.version != 'Unknown' ? 'v' + status.xray.version : '-' ]]
+          <button type="button" class="bo-inline-btn" @click="openSelectV2rayVersion"
+            title='{{ i18n "pages.index.xraySwitch" }}' aria-label='{{ i18n "pages.index.xraySwitch" }}'>
+            <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-info"></use></svg>
+          </button>
+        </span>
+      </div>
+      <div class="bo-kv-row">
+        <span class="bo-kv-label">{{ i18n "pages.index.operationHours" }}</span>
+        <span class="bo-kv-value num">[[ TimeFormatter.formatSecond(status.appStats.uptime) ]]</span>
+      </div>
+      <div class="bo-divider"></div>
+      <div class="bo-btn-row">
+        <button type="button" class="bo-icon-btn" v-if="ipLimitEnable" @click="openXrayLogs()">
+          <svg class="bo-icon bo-icon-16" aria-hidden="true"><use href="#bo-i-file"></use></svg>{{ i18n "pages.index.logs" }}
+        </button>
+        <button type="button" class="bo-icon-btn bo-icon-btn--danger" @click="stopXrayService">
+          <svg class="bo-icon bo-icon-16" aria-hidden="true"><use href="#bo-i-stop"></use></svg>{{ i18n "pages.index.stopXray" }}
+        </button>
+        <button type="button" class="bo-icon-btn" @click="restartXrayService">
+          <svg class="bo-icon bo-icon-16" aria-hidden="true"><use href="#bo-i-refresh"></use></svg>{{ i18n "pages.index.restartXray" }}
+        </button>
+        <button type="button" class="bo-icon-btn" @click="openGeofiles()">
+          <svg class="bo-icon bo-icon-16" aria-hidden="true"><use href="#bo-i-globe"></use></svg>{{ i18n "pages.index.geofiles" }}
+        </button>
+      </div>
+    </article>
+
+    <!-- ===== manage ===== -->
+    <article class="bo-tile bo-t-manage" aria-label='{{ i18n "menu.link" }}'>
+      <div class="bo-tile-head"><h3 class="bo-tile-title">{{ i18n "menu.link" }}</h3></div>
+      <div class="bo-btn-row bo-btn-row--compact">
+        <button type="button" class="bo-icon-btn" @click="openAllLogs()">
+          <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-file"></use></svg>{{ i18n "pages.index.logs" }}
+        </button>
+        <button type="button" class="bo-icon-btn" @click="openConfig">
+          <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-sliders"></use></svg>{{ i18n "pages.index.config" }}
+        </button>
+        <button type="button" class="bo-icon-btn" @click="openBackup">
+          <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-download"></use></svg>{{ i18n "pages.index.backup" }}
+        </button>
+        <button type="button" class="bo-icon-btn" @click="openRestore">
+          <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-refresh"></use></svg>{{ i18n "pages.index.restore" }}
+        </button>
+      </div>
+    </article>
+
+    <!-- ===== VPN-UI panel + updater ===== -->
+    <article class="bo-tile bo-t-vpnui" aria-label="VPN-UI">
+      <div class="bo-tile-head">
+        <h3 class="bo-tile-title">VPN-UI</h3>
+        <button type="button" class="bo-icon-btn bo-icon-btn--accent"
+          :disabled="panelUpdate.checking" @click="checkForUpdate(true)">
+          <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-refresh"></use></svg>
+          {{ i18n "pages.index.checkUpdate" }}
+        </button>
+      </div>
+      <div class="bo-vpnui-body">
+        <div>
+          <a rel="noopener" href="https://github.com/Sir-MmD/vpn-ui" target="_blank"
+            :style="{ color: 'inherit', textDecoration: 'none' }">
+            <div class="bo-vpnui-version num">v{{ .cur_ver }}</div>
+          </a>
+          <p v-if="panelUpdate.checked && !panelUpdate.available && !panelUpdate.checking"
+            class="bo-status-line bo-status-line--ok">
+            <svg class="bo-icon bo-icon-16" aria-hidden="true"><use href="#bo-i-check-circle"></use></svg>
+            {{ i18n "pages.index.upToDate" }}
+          </p>
+          <p v-else-if="panelUpdate.available" class="bo-status-line bo-status-line--warn">
+            <svg class="bo-icon bo-icon-16" aria-hidden="true"><use href="#bo-i-download"></use></svg>
+            {{ i18n "pages.index.updateAvailable" }} <span class="num">v[[ panelUpdate.latest ]]</span>
+          </p>
+          <a-tooltip v-if="panelUpdate.error" :title="panelUpdate.error">
+            <p class="bo-status-line" :style="{ color: 'var(--error)', cursor: 'help' }">
+              <a-icon type="warning"></a-icon>
+            </p>
+          </a-tooltip>
+
+          <div v-if="panelUpdate.updating" :style="{ marginTop: '12px' }">
+            <a-progress :percent="panelUpdate.percent"
+              :status="panelUpdate.phase === 'error' ? 'exception' : (panelUpdate.phase === 'restarting' ? 'success' : 'active')"
+              size="small"></a-progress>
+            <div :style="{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: '6px' }">
+              <span :style="{ color: 'var(--info)', whiteSpace: 'nowrap', fontSize: '12.5px' }">
+                [[ panelUpdatePhaseText() ]]
+              </span>
+              <span v-if="panelUpdateSpeedText()" class="num"
+                :style="{ color: 'var(--text-3)', whiteSpace: 'nowrap', fontSize: '12.5px' }">
+                [[ panelUpdateSpeedText() ]]
+              </span>
+              <button type="button" class="bo-icon-btn" v-if="panelUpdate.phase === 'downloading'"
+                :disabled="panelUpdate.cancelling" @click="cancelPanelUpdate">
+                {{ i18n "cancel" }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="bo-btn-row">
+          <a-popconfirm v-if="panelUpdate.available && !panelUpdate.updating"
+            title='{{ i18n "pages.index.updateConfirm" }}' @confirm="doPanelUpdate"
+            ok-text='{{ i18n "confirm" }}' cancel-text='{{ i18n "cancel" }}'>
+            <button type="button" class="bo-btn bo-btn--primary">{{ i18n "pages.index.updateNow" }}</button>
+          </a-popconfirm>
+        </div>
+      </div>
+    </article>
+
+
+    <!-- ===== connections ===== -->
+
+  </div>
+</a-spin>
   <a-modal id="version-modal" v-model="versionModal.visible" title='{{ i18n "pages.index.xraySwitch" }}'
     :closable="true" @ok="() => versionModal.visible = false" :class="themeSwitcher.currentTheme" footer="">
     <a-collapse default-active-key="1">
@@ -644,13 +671,49 @@
       <a-button type="primary" @click="dismissDistroWarning(true)">Close and don't show again</a-button>
     </template>
   </a-modal>
-</a-layout>
+{{template "page/shell_end" . }}
 {{template "page/body_scripts" .}}
 {{template "component/aSidebar" .}}
 {{template "component/aThemeSwitch" .}}
 {{template "component/aCustomStatistic" .}}
 {{template "modals/textModal"}}
+{{/* Needed by openRenameServer(); defines the global `promptModal`. */}}
+{{template "modals/promptModal"}}
 <script>
+  // [needle, mark] pairs tested in order against a lowercased os-release
+  // NAME. Order is load-bearing: every derivative must precede the name it
+  // contains, so the *buntu flavours come before "ubuntu" and the Arch
+  // derivatives before "arch". A mark here must have a matching
+  // web/assets/img/distro/<mark>.svg and a .bo-distro--<mark> rule in
+  // components.css; see the header of that file's distro section.
+  const DISTRO_MARKS = [
+    ['ubuntu mate', 'ubuntu-mate'], ['ubuntu-mate', 'ubuntu-mate'],
+    ['kubuntu', 'kubuntu'], ['xubuntu', 'xubuntu'], ['lubuntu', 'lubuntu'],
+    ['pop!_os', 'pop'], ['pop_os', 'pop'], ['pop os', 'pop'],
+    ['linux mint', 'linuxmint'], ['linuxmint', 'linuxmint'], ['lmde', 'linuxmint'],
+    ['elementary', 'elementary'], ['zorin', 'zorin'],
+    ['raspbian', 'raspbian'], ['raspberry', 'raspbian'],
+    ['kde neon', 'neon'], ['neon', 'neon'],
+    ['ubuntu', 'ubuntu'],
+    ['devuan', 'devuan'], ['deepin', 'deepin'], ['kali', 'kali'],
+    ['parrot', 'parrot'], ['proxmox', 'proxmox'], ['debian', 'debian'],
+    ['almalinux', 'almalinux'], ['alma', 'almalinux'],
+    ['rocky', 'rocky'], ['centos', 'centos'],
+    ['nobara', 'nobara'], ['fedora', 'fedora'],
+    ['red hat', 'rhel'], ['redhat', 'rhel'], ['rhel', 'rhel'],
+    ['opensuse', 'opensuse'], ['suse', 'sles'], ['sles', 'sles'],
+    ['alpine', 'alpine'], ['manjaro', 'manjaro'],
+    ['endeavour', 'endeavouros'], ['garuda', 'garuda'], ['artix', 'artix'],
+    ['cachy', 'cachyos'], ['omarchy', 'omarchy'], ['asahi', 'asahi'],
+    ['arch', 'arch'],
+    ['gentoo', 'gentoo'], ['nixos', 'nixos'], ['void', 'void'],
+    ['slackware', 'slackware'], ['solus', 'solus'],
+    ['mx linux', 'mx'], ['mx-', 'mx'],
+    ['qubes', 'qubes'], ['tails', 'tails'], ['photon', 'photon'],
+    ['openwrt', 'openwrt'],
+    ['freebsd', 'freebsd'], ['openbsd', 'openbsd'], ['netbsd', 'netbsd'],
+  ];
+
   // Tiny Sparkline component using an inline SVG polyline
   Vue.component('sparkline', {
     props: {
@@ -676,10 +739,20 @@
       paddingTop: { type: Number, default: 6 },
       paddingBottom: { type: Number, default: 20 },
       showTooltip: { type: Boolean, default: false },
+      // The component was written for CPU percent and hard-clamped values to
+      // 0..100. Throughput is bytes/sec, which pinned every point to the
+      // ceiling and drew a filled block. Opt in to scaling against the series'
+      // own maximum instead. Percent charts keep the fixed 0..100 axis so they
+      // stay comparable with each other.
+      autoscale: { type: Boolean, default: false },
     },
     data() {
       return {
         hoverIdx: -1,
+        // The fill gradient is referenced by id. With more than one sparkline
+        // on a page a shared id makes every chart resolve to whichever
+        // <defs> was inserted last, so each instance gets its own.
+        gradId: 'spkGrad-' + (Vue.__spkUid = (Vue.__spkUid || 0) + 1),
       }
     },
     computed: {
@@ -706,17 +779,24 @@
         const start = Math.max(0, this.labels.length - n)
         return this.labels.slice(start)
       },
+      scaleMax() {
+        if (!this.autoscale) return 100
+        // 15% headroom so the peak does not sit flush against the top edge.
+        const peak = this.dataSlice.reduce((a, b) => Math.max(a, Number(b) || 0), 0)
+        return peak > 0 ? peak * 1.15 : 1
+      },
       pointsArr() {
         const n = this.nPoints
         if (n === 0) return []
         const slice = this.dataSlice
-        const max = 100
+        const max = this.scaleMax
         const w = this.drawWidth
         const h = this.drawHeight
         const dx = n > 1 ? w / (n - 1) : 0
         return slice.map((v, i) => {
           const x = Math.round(this.paddingLeft + i * dx)
-          const y = Math.round(this.paddingTop + (h - (Math.max(0, Math.min(100, v)) / max) * h))
+          const clamped = Math.max(0, Math.min(max, Number(v) || 0))
+          const y = Math.round(this.paddingTop + (h - (clamped / max) * h))
           return [x, y]
         })
       },
@@ -805,7 +885,7 @@
       <svg width="100%" :height="height" :viewBox="viewBoxAttr" preserveAspectRatio="none" class="idx-cpu-history-svg"
            @mousemove="onMouseMove" @mouseleave="onMouseLeave">
         <defs>
-          <linearGradient id="spkGrad" x1="0" y1="0" x2="0" y2="1">
+          <linearGradient :id="gradId" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" :stop-color="stroke" :stop-opacity="fillOpacity"/>
             <stop offset="100%" :stop-color="stroke" stop-opacity="0"/>
           </linearGradient>
@@ -823,7 +903,7 @@
             <text class="cpu-grid-x-text" :x="t.x" :y="paddingTop + drawHeight + 22" text-anchor="middle" font-size="10" fill="rgba(0,0,0,0.3)" v-text="t.label"></text>
           </g>
         </g>
-        <path v-if="areaPath" :d="areaPath" fill="url(#spkGrad)" stroke="none" />
+        <path v-if="areaPath" :d="areaPath" :fill="'url(#' + gradId + ')'" stroke="none" />
         <polyline :points="points" fill="none" :stroke="stroke" :stroke-width="strokeWidth" stroke-linecap="round" stroke-linejoin="round"/>
         <circle v-if="showMarker && lastPoint" :cx="lastPoint[0]" :cy="lastPoint[1]" :r="markerRadius" :fill="stroke" />
         <!-- Hover marker/tooltip -->
@@ -881,6 +961,14 @@
       this.uptime = 0;
       this.appUptime = 0;
       this.appStats = { threads: 0, mem: 0, uptime: 0 };
+      // This class copies fields explicitly, so anything added to the Go
+      // Status struct must be listed here too or it is silently dropped.
+      this.cpuModel = "";
+      this.osName = "";
+      this.osVersion = "";
+      this.kernel = "";
+      this.hostname = "";
+      this.netIOByIface = [];
 
       this.xray = { state: 'stop', stateMsg: "", errorMsg: "", version: "", color: "" };
 
@@ -892,6 +980,12 @@
       this.cpuCores = data.cpuCores;
       this.logicalPro = data.logicalPro;
       this.cpuSpeedMhz = data.cpuSpeedMhz;
+      this.cpuModel = data.cpuModel || "";
+      this.osName = data.osName || "";
+      this.osVersion = data.osVersion || "";
+      this.kernel = data.kernel || "";
+      this.hostname = data.hostname || "";
+      this.netIOByIface = data.netIOByIface || [];
       this.disk = new CurTotal(data.disk.current, data.disk.total);
       this.loads = data.loads.map(load => NumberFormatter.toFixed(load, 2));
       this.mem = new CurTotal(data.mem.current, data.mem.total);
@@ -1122,8 +1216,268 @@
       panelUpdate: { checking: false, checked: false, available: false, latest: '', current: '', updating: false, cancelling: false, error: '', percent: 0, phase: '', speed: 0, bytes: 0, total: 0 },
       geofilesModal: { visible: false },
       distroModal: { visible: false, pretty: '', tested: '' },
+
+      // --- redesign shell + bento tiles ---------------------------------
+      pageTitle: '{{ i18n "menu.dashboard" }}',
+      pageClass: 'index-page',
+      // Distro name for the identity tile. Populated by checkDistroSupport()
+      // regardless of whether the unsupported-distro warning fires.
+      distroPretty: '',
+      // Rolling client-side history for the vitals sparklines and the
+      // throughput chart. The server only persists CPU history
+      // (/panel/api/server/cpuHistory); everything else is accumulated here
+      // from the same websocket status push that already drives the page, so
+      // it starts empty and fills in over roughly two minutes.
+      HISTORY_POINTS: 60,
+      history: { cpu: [], mem: [], swap: [], disk: [], up: [], down: [] },
+      // Custom server name, persisted server-side. Falls back to the distro
+      // name, then the hostname.
+      serverName: '',
+      // '' means every interface, which is what the aggregate netIO already is.
+      ifaceFilter: '',
+      userStats: { total: 0, online: 0, depleted: 0, expiring: 0 },
+    },
+    computed: {
+      // Identity tile. A user-set name wins; otherwise the distro name; the
+      // hostname is the last resort so the tile is never blank.
+      // Hostname, not distro: the distro now has its own line below, and
+      // printing it twice was the old behaviour this replaced.
+      // The machine's own hostname, not the browser Host header ({{ .host }}),
+      // which is usually just the IP the admin typed.
+      serverLabel() {
+        return this.serverName || this.status.hostname || '{{ .host }}';
+      },
+      // "Ubuntu 24.04 - kernel 6.8.0-31-generic", degrading gracefully when the
+      // backend has not supplied a field.
+      osLine() {
+        const s = this.status;
+        const os = [s.osName, s.osVersion].filter(Boolean).join(' ');
+        const kern = s.kernel ? 'kernel ' + s.kernel : '';
+        return [os || this.distroPretty, kern].filter(Boolean).join('  ·  ');
+      },
+      cpuLine() {
+        const s = this.status;
+        const parts = [];
+        if (s.cpuModel) parts.push(s.cpuModel);
+        parts.push(CPUFormatter.cpuCoreFormat(s.cpuCores));
+        if (s.cpuSpeedMhz) parts.push(CPUFormatter.cpuSpeedFormat(s.cpuSpeedMhz));
+        return parts.filter(Boolean).join('  ·  ');
+      },
+      // status.osName is os-release NAME, falling back to ID, so it is a
+      // display string ("Arch Linux", "Pop!_OS", "Red Hat Enterprise Linux")
+      // rather than a stable key. Match it against DISTRO_MARKS, which is
+      // ordered so that derivatives win over what they derive from: "Kubuntu"
+      // contains "ubuntu" and "Omarchy" contains "arch", so those two would
+      // otherwise be swallowed. Falls back to Tux.
+      distroKey() {
+        const hay = (this.status.osName + ' ' + this.distroPretty).toLowerCase();
+        const hit = DISTRO_MARKS.find(([needle]) => hay.includes(needle));
+        return hit ? hit[1] : 'linux';
+      },
+      distroMask() {
+        return 'url("' + basePath + 'assets/img/distro/' + this.distroKey + '.svg")';
+      },
+      ifaceNames() {
+        const m = this.status.netIOByIface;
+        if (!m) return [];
+        return Array.isArray(m) ? m.map(x => x.name) : Object.keys(m);
+      },
+      // Ring + sparkline rows, so the template can v-for instead of repeating
+      // four near-identical blocks.
+      vitals() {
+        // Called through the object, not detached: sizeFormat reads this.ONE_KB,
+        // so `const sz = SizeFormatter.sizeFormat` loses its receiver and throws.
+        const sz = (v) => SizeFormatter.sizeFormat(v);
+        return [
+          {
+            key: 'cpu', icon: 'cpu', label: '{{ i18n "pages.index.cpu" }}',
+            percent: this.status.cpu.percent,
+            meta: CPUFormatter.cpuCoreFormat(this.status.cpuCores),
+          },
+          {
+            key: 'mem', icon: 'ram', label: '{{ i18n "pages.index.memory" }}',
+            percent: this.status.mem.percent,
+            meta: sz(this.status.mem.current) + ' / ' + sz(this.status.mem.total),
+          },
+          {
+            key: 'swap', icon: 'swap', label: '{{ i18n "pages.index.swap" }}',
+            percent: this.status.swap.percent,
+            meta: sz(this.status.swap.current) + ' / ' + sz(this.status.swap.total),
+          },
+          {
+            key: 'disk', icon: 'disk', label: '{{ i18n "pages.index.storage" }}',
+            percent: this.status.disk.percent,
+            meta: sz(this.status.disk.current) + ' / ' + sz(this.status.disk.total),
+          },
+        ];
+      },
+      coreStateCounts() {
+        const cores = this.vpnCoreStatuses();
+        const n = (k) => cores.filter(c => this.coreStateKey(c.state) === k).length;
+        return {
+          total: cores.length,
+          running: n('running'), idle: n('idle'),
+          stopped: n('stopped'), error: n('error'), off: n('off'),
+        };
+      },
+      allCoresHealthy() {
+        return this.coreStateCounts.error === 0;
+      },
+      // Counts rather than prose, so the tile stays honest without needing new
+      // translated strings for every health phrasing.
+      healthSummary() {
+        const c = this.coreStateCounts;
+        return c.running + ' / ' + c.total;
+      },
+      vpnSummary() {
+        const c = this.coreStateCounts;
+        return [c.running, c.idle, c.stopped + c.error].join(' / ');
+      },
+      xrayPillClass() {
+        return {
+          green: 'bo-status-pill--ok',
+          orange: 'bo-status-pill--warn',
+          red: 'bo-status-pill--error',
+        }[this.status.xray.color] || '';
+      },
+      xrayDotClass() {
+        return {
+          green: 'bo-dot--ok',
+          orange: 'bo-dot--warn',
+          red: 'bo-dot--error',
+        }[this.status.xray.color] || '';
+      },
+      // The sparkline paints `stroke` as an SVG presentation attribute, where
+      // a CSS var() never resolves, so the token has to be read out to a
+      // concrete colour here. Touching currentTheme/isUltra keeps this
+      // reactive, so the charts recolour when the theme is toggled.
+      chartColors() {
+        const _theme = themeSwitcher.currentTheme + String(themeSwitcher.isUltra);
+        const read = (name, fallback) => {
+          try {
+            const v = getComputedStyle(document.body).getPropertyValue(name).trim();
+            return v || fallback;
+          } catch (e) { return fallback; }
+        };
+        return {
+          accent: read('--accent', '#008771'),
+          info: read('--info', '#1890ff'),
+        };
+      },
+      connRatio() {
+        const t = Number(this.status.tcpCount) || 0;
+        const u = Number(this.status.udpCount) || 0;
+        const total = t + u;
+        if (!total) return { tcp: '50%', udp: '50%' };
+        return { tcp: (t / total * 100) + '%', udp: (u / total * 100) + '%' };
+      },
     },
     methods: {
+      // --- bento tile helpers -------------------------------------------
+      // 2*pi*r for the r=16 ring in the markup. components.css sets the same
+      // number as stroke-dasharray; both derive from that one radius.
+      ringOffset(pct) {
+        const C = 2 * Math.PI * 16;
+        const p = Math.max(0, Math.min(100, Number(pct) || 0));
+        return C - (C * p / 100);
+      },
+      ringClass(pct) {
+        const p = Number(pct) || 0;
+        if (p >= 90) return 'bo-ring-progress--error';
+        if (p >= 75) return 'bo-ring-progress--warn';
+        return '';
+      },
+      loadBarWidth(load) {
+        // Load average is per-core, so full bar = one fully saturated core set.
+        const cores = Math.max(1, Number(this.status.cpuCores) || 1);
+        const pct = Math.max(0, Math.min(100, (Number(load) || 0) / cores * 100));
+        return pct + '%';
+      },
+      // Maps a daemon state onto the data-state values components.css styles.
+      // Keyed off the raw state, NOT off coreStateColor(): that returns hex
+      // literals rather than palette names, so mapping through it silently
+      // collapsed every service to 'stopped'.
+      coreStateKey(state) {
+        return {
+          running: 'running',
+          idle: 'idle',
+          stopped: 'stopped',
+          error: 'error',
+          not_installed: 'off',
+        }[state] || 'off';
+      },
+      openCore(name) {
+        location.href = basePath + 'panel/core#' + encodeURIComponent(name);
+      },
+      // Preserves the dot/colon shape so a masked address still reads as an
+      // address rather than a blob.
+      maskIp(ip) {
+        return (ip || '').replace(/[^:.]/g, '•');
+      },
+      // Rate for the selected interface, falling back to the aggregate when
+      // "All" is chosen or the backend has not sent per-NIC counters yet.
+      ifaceRate(dir) {
+        const m = this.status.netIOByIface;
+        if (!this.ifaceFilter || !m) return this.status.netIO[dir];
+        const row = Array.isArray(m)
+          ? m.find(x => x.name === this.ifaceFilter)
+          : m[this.ifaceFilter];
+        return row ? (row[dir] || 0) : this.status.netIO[dir];
+      },
+      onIfaceChange() {
+        // The chart is a rolling window of one series; switching interface
+        // makes the retained points meaningless, so start it over.
+        this.history.up = [];
+        this.history.down = [];
+      },
+      openRenameServer() {
+        promptModal.open({
+          title: '{{ i18n "edit" }}',
+          type: 'text',
+          value: this.serverName || '',
+          okText: '{{ i18n "confirm" }}',
+          confirm: async (name) => {
+            const msg = await HttpUtil.post('/panel/api/server/serverName',
+              { serverName: (name || '').trim() });
+            if (msg && msg.success) this.serverName = (name || '').trim();
+            promptModal.close();
+          },
+        });
+      },
+      async fetchServerName() {
+        try {
+          const msg = await HttpUtil.get('/panel/api/server/serverName');
+          if (msg && msg.success && msg.obj) this.serverName = msg.obj.serverName || '';
+        } catch (e) { /* best-effort */ }
+      },
+      async fetchUserStats() {
+        try {
+          const msg = await HttpUtil.get('/panel/api/server/userStats');
+          if (msg && msg.success && msg.obj) this.userStats = msg.obj;
+        } catch (e) { /* best-effort */ }
+      },
+      openAllLogs() {
+        // The Manage tile's log button shows every core's log, not only the
+        // panel's, so a user does not have to visit Core Settings per daemon.
+        this.openLogs();
+      },
+      openRestore() {
+        this.openBackup();
+      },
+      pushHistory() {
+        const cap = this.HISTORY_POINTS;
+        const add = (arr, v) => {
+          arr.push(Number(v) || 0);
+          if (arr.length > cap) arr.splice(0, arr.length - cap);
+        };
+        add(this.history.cpu, this.status.cpu.percent);
+        add(this.history.mem, this.status.mem.percent);
+        add(this.history.swap, this.status.swap.percent);
+        add(this.history.disk, this.status.disk.percent);
+        add(this.history.up, this.status.netIO.up);
+        add(this.history.down, this.status.netIO.down);
+      },
+
       // --- VPN daemon statuses (dashboard card) --------------------------
       async getCoreStatuses() {
         try {
@@ -1257,7 +1611,11 @@
       async checkDistroSupport() {
         try {
           const msg = await HttpUtil.get('/panel/api/server/distroStatus');
-          if (!msg || !msg.success || !msg.obj || msg.obj.supported) return;
+          if (!msg || !msg.success || !msg.obj) return;
+          // The identity tile shows the distro name whether or not it is a
+          // supported one, so capture it before the supported-case early return.
+          this.distroPretty = msg.obj.pretty || '';
+          if (msg.obj.supported) return;
           // "don't show again" is keyed by the distro name, so moving to a
           // different unsupported distro warns again.
           if (localStorage.getItem('vpnui.distroWarnDismissed') === msg.obj.pretty) return;
@@ -1311,6 +1669,9 @@
       },
       setStatus(data) {
         this.status = new Status(data);
+        // Feed the bento vitals sparklines and throughput chart. Runs off the
+        // same push that already updates the page, so it costs no extra request.
+        this.pushHistory();
         // Push CPU percent into history (clamped 0..100)
         const v = Math.max(0, Math.min(100, Number(data?.cpu ?? 0)))
         this.cpuHistory.push(v)
@@ -1651,6 +2012,8 @@
       await this.getStatus();
       await this.getCoreStatuses();
       this.checkDistroSupport();
+      this.fetchUserStats();
+      this.fetchServerName();
       this.checkForUpdate(false); // best-effort update check on every overview load
 
       // Setup WebSocket for real-time updates

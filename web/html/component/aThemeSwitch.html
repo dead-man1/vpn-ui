@@ -1,24 +1,37 @@
+{{/*
+  Rail theme control. This used to be an <a-menu> + <a-sub-menu>, which only
+  renders correctly inside ant's own sider; in the 96px rail it collapsed to a
+  stray bulb, an ellipsis and a chevron.
+
+  The two ids are load-bearing: aThemeSwitch's animationsOff/animationsOffUltra
+  look them up with document.querySelector('#change-theme') and
+  '#change-theme-ultra' to attach the anti-flicker listeners. Do not rename them.
+*/}}
 {{define "component/themeSwitchTemplate"}}
 <template>
-  <a-menu :theme="themeSwitcher.currentTheme" mode="inline" selected-keys="">
-    <a-sub-menu>
-      <span slot="title">
-        <a-icon type="bulb" :theme="themeSwitcher.isDarkTheme ? 'filled' : 'outlined'"></a-icon>
-        <span>{{ i18n "menu.theme" }}</span>
-      </span>
-      <a-menu-item id="change-theme" class="ant-menu-theme-switch" @mousedown="themeSwitcher.animationsOff()">
-        <span>{{ i18n "menu.dark" }}</span>
-        <a-switch :style="{ marginLeft: '2px' }" size="small" :default-checked="themeSwitcher.isDarkTheme"
-          @change="themeSwitcher.toggleTheme()"></a-switch>
-      </a-menu-item>
-      <a-menu-item id="change-theme-ultra" v-if="themeSwitcher.isDarkTheme" class="ant-menu-theme-switch"
-        @mousedown="themeSwitcher.animationsOffUltra()">
-        <span>{{ i18n "menu.ultraDark" }}</span>
-        <a-checkbox :style="{ marginLeft: '2px' }" :checked="themeSwitcher.isUltra"
-          @click="themeSwitcher.toggleUltra()"></a-checkbox>
-      </a-menu-item>
-    </a-sub-menu>
-  </a-menu>
+  <a-popover placement="rightBottom" trigger="click"
+    :overlay-class-name="themeSwitcher.currentTheme">
+    <template slot="content">
+      <div class="bo-theme-menu">
+        <div id="change-theme" class="bo-theme-row" @mousedown="themeSwitcher.animationsOff()">
+          <span>{{ i18n "menu.dark" }}</span>
+          <a-switch size="small" :checked="themeSwitcher.isDarkTheme"
+            @change="themeSwitcher.toggleTheme()"></a-switch>
+        </div>
+        <div id="change-theme-ultra" class="bo-theme-row" v-if="themeSwitcher.isDarkTheme"
+          @mousedown="themeSwitcher.animationsOffUltra()">
+          <span>{{ i18n "menu.ultraDark" }}</span>
+          <a-checkbox :checked="themeSwitcher.isUltra"
+            @click="themeSwitcher.toggleUltra()"></a-checkbox>
+        </div>
+      </div>
+    </template>
+    <button type="button" class="bo-theme-toggle"
+      title='{{ i18n "menu.theme" }}' aria-label='{{ i18n "menu.theme" }}'>
+      <svg class="bo-icon bo-icon-16 bo-i-sun" aria-hidden="true"><use href="#bo-i-sun"></use></svg>
+      <svg class="bo-icon bo-icon-16 bo-i-moon" aria-hidden="true"><use href="#bo-i-moon"></use></svg>
+    </button>
+  </a-popover>
 </template>
 {{end}}
 

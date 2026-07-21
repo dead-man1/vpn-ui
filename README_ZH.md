@@ -79,7 +79,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 ## 截图
 
 ![总览](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-![内核设置](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/core_Settings.png)
 
 
 ## 新增协议与 Xray-core 内核的交互方式

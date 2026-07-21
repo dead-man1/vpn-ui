@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/web/global"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
+	"github.com/mhsanaei/3x-ui/v2/web/session"
 	"github.com/mhsanaei/3x-ui/v2/web/websocket"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +27,7 @@ type ServerController struct {
 
 	serverService  service.ServerService
 	settingService service.SettingService
+	inboundService service.InboundService
 
 	lastStatus *service.Status
 
@@ -48,6 +51,8 @@ func NewServerController(g *gin.RouterGroup) *ServerController {
 func (a *ServerController) initRouter(g *gin.RouterGroup) {
 
 	g.GET("/status", a.status)
+	g.GET("/userStats", a.userStats)
+	g.GET("/serverName", a.getServerName)
 	g.GET("/cpuHistory/:bucket", a.getCpuHistoryBucket)
 	g.GET("/getXrayVersion", a.getXrayVersion)
 	// Escalation-class: these hand over the whole panel regardless of any
@@ -64,6 +69,11 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.GET("/distroStatus", a.distroStatus)
 	g.GET("/checkUpdate", a.checkUpdate)
 	g.GET("/updateProgress", a.updateProgress)
+
+	// Renaming the server relabels the panel for every admin, so it follows the panel
+	// settings permission. Reading it stays open: the overview shows the label, and
+	// every admin can see the overview.
+	g.POST("/serverName", requirePerm(model.PermPanelSettings), a.setServerName)
 
 	// Panel-wide effects rather than per-inbound, so they follow the Xray permission.
 	g.POST("/stopXrayService", requirePerm(model.PermXraySettings), a.stopXrayService)
@@ -104,6 +114,42 @@ func (a *ServerController) startTask() {
 
 // status returns the current server status information.
 func (a *ServerController) status(c *gin.Context) { jsonObj(c, a.lastStatus, nil) }
+
+// userStats returns the overview's account roll-up (total, online, depleted and
+// expiring) for the logged-in admin. The inbounds page derives the same four
+// numbers in the browser from the full inbound list; the overview wants only the
+// counts, so it gets them without shipping every client.
+func (a *ServerController) userStats(c *gin.Context) {
+	stats, err := a.inboundService.GetClientStatsFor(session.GetLoginUser(c))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.obtain"), err)
+		return
+	}
+	jsonObj(c, stats, nil)
+}
+
+// getServerName returns the operator's label for this server, empty when unset.
+func (a *ServerController) getServerName(c *gin.Context) {
+	name, err := a.settingService.GetServerName()
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
+		return
+	}
+	jsonObj(c, gin.H{"serverName": name}, nil)
+}
+
+// setServerName persists the operator's label for this server. Posting an empty
+// value clears it and returns the overview to the host name.
+func (a *ServerController) setServerName(c *gin.Context) {
+	name := strings.TrimSpace(c.PostForm("serverName"))
+	if len([]rune(name)) > 64 {
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"),
+			errors.New("server name is limited to 64 characters"))
+		return
+	}
+	err := a.settingService.SetServerName(name)
+	jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+}
 
 // distroStatus reports whether the running host distro is on vpn-ui's tested list,
 // for the dashboard's unsupported-distro warning modal.

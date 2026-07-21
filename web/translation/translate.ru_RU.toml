@@ -90,6 +90,9 @@
 "noExpiry" = "Бессрочно"
 
 [menu]
+"navigation" = "Основная навигация"
+"collapse" = "Свернуть боковую панель"
+"expand" = "Развернуть боковую панель"
 "theme" = "Тема"
 "dark" = "Темная"
 "ultraDark" = "Очень темная"
@@ -116,6 +119,8 @@
 "successLogin" = "Вход выполнен успешно"
 
 [pages.index]
+"restore" = "Восстановить"
+"systemStatus" = "Состояние системы"
 "title" = "Дашборд"
 "cpu" = "ЦП"
 "logicalProcessors" = "Логические процессоры"
@@ -218,6 +223,7 @@
 "getConfigError" = "Произошла ошибка при получении конфигурационного файла"
 
 [pages.inbounds]
+"totalUsers" = "Всего пользователей"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

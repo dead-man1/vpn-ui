@@ -79,7 +79,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 ## Скриншоты
 
 ![Общий вид](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-![Настройки ядра](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/core_Settings.png)
 
 
 ## Как новые протоколы взаимодействуют с ядром Xray-core

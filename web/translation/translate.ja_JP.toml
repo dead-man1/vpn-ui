@@ -90,6 +90,9 @@
 "noExpiry" = "期限なし"
 
 [menu]
+"navigation" = "メインナビゲーション"
+"collapse" = "サイドバーを折りたたむ"
+"expand" = "サイドバーを展開"
 "theme" = "テーマ"
 "dark" = "ダーク"
 "ultraDark" = "ウルトラダーク"
@@ -116,6 +119,8 @@
 "successLogin" = "アカウントに正常にログインしました。"
 
 [pages.index]
+"restore" = "復元"
+"systemStatus" = "システム状態"
 "title" = "システムステータス"
 "cpu" = "CPU"
 "logicalProcessors" = "論理プロセッサ"
@@ -218,6 +223,7 @@
 "customGeoErrUpdateAllIncomplete" = "カスタム geo ソースの 1 件以上を更新できませんでした"
 
 [pages.inbounds]
+"totalUsers" = "ユーザー総数"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

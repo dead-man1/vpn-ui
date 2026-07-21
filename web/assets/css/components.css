@@ -1,0 +1,912 @@
+/*
+ * components.css - the redesign component layer, ported from redesign/bento.html
+ * with the VPN Services treatment from redesign/aurora.html.
+ *
+ * Load order: tokens.css -> custom.css -> components.css.
+ * Everything here is `bo-` prefixed and consumes only the semantic tokens from
+ * tokens.css, never a raw colour and never a legacy --dark-color-* name.
+ *
+ * Deliberate divergences from the mockups, all reasoned in redesign-plan.md:
+ *
+ *   - Theme selectors are body.dark, not :root[data-theme="dark"]. The mockups
+ *     stamp data-theme on <html>; the panel puts the theme class on <body>
+ *     (aThemeSwitch.html:50) and reserves html[data-theme] for ultra-dark.
+ *   - The rail is 96px, not 84px. Menu labels do not fit at 84px in every
+ *     locale: "Администраторы", "Настройки Xray", "Panel Settings" and
+ *     "پیکربندی ایکس‌ری" all overrun. Labels wrap to two lines here.
+ *   - Physical direction properties are logical throughout, for fa_IR/ar_EG.
+ *     Charts and numeric strings are explicitly pinned LTR: a mirrored time
+ *     axis is wrong, and bidi reordering mangles IPs and version numbers.
+ *   - Durations come from --dur-fast/--dur-med so the anti-flicker guard
+ *     (html[data-theme-animations='off']) and prefers-reduced-motion both
+ *     apply without per-rule overrides.
+ *   - No global reset. antd.min.css already sets box-sizing:border-box
+ *     globally; re-declaring it would only risk fighting ant.
+ */
+
+/* ================================================================== *
+ * base
+ * ================================================================== */
+
+/*
+ * custom.css:164-171 pins html and body to height:100vh with overflow:hidden,
+ * so the document itself never scrolls. Before the redesign the scroll
+ * container was ant's .ant-layout-content. It is now .bo-main. Getting this
+ * wrong does not produce a scrollbar in the wrong place, it silently CLIPS
+ * every page longer than the viewport.
+ */
+.bo-shell {
+  display:flex;
+  height:100vh;
+  overflow:hidden;
+  font-family:var(--font-sans);
+  background:var(--bg);
+  color:var(--text);
+  font-variant-numeric:tabular-nums;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+
+.bo-shell svg { display:block; }
+.bo-shell button { font-family:inherit; }
+
+.bo-shell :is(ul,p,h1,h2,h3) { margin:0; padding:0; }
+
+.bo-shell :is(button,[tabindex],a):focus-visible {
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+  border-radius:6px;
+}
+
+/* Numerals, IPs, versions: pin LTR so bidi cannot reorder them, and keep the
+   figures tabular so columns of numbers line up. */
+.bo-shell .num {
+  font-variant-numeric:tabular-nums;
+  font-feature-settings:'tnum';
+  direction:ltr;
+  unicode-bidi:isolate;
+}
+
+/* ================================================================== *
+ * icons and dots
+ * ================================================================== */
+
+.bo-icon {
+  width:18px; height:18px; flex-shrink:0;
+  fill:none; stroke:currentColor; stroke-width:1.8;
+  stroke-linecap:round; stroke-linejoin:round;
+}
+.bo-icon-14 { width:14px; height:14px; }
+.bo-icon-16 { width:16px; height:16px; }
+.bo-icon-fill { fill:currentColor; stroke:none; }
+
+.bo-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; background:var(--off); }
+.bo-dot--ok { background:var(--ok); }
+.bo-dot--info { background:var(--info); }
+.bo-dot--warn { background:var(--warn); }
+.bo-dot--error { background:var(--error); }
+
+/* ================================================================== *
+ * shell: rail nav
+ * ================================================================== */
+
+/* height:100% of the fixed-height .bo-shell, not 100vh + sticky as in the
+   mockup: the shell is the scroll boundary here, so the rail is simply a
+   full-height flex child that scrolls its own overflow. */
+.bo-rail {
+  flex:0 0 124px; width:124px;
+  height:100%;
+  background:var(--surface);
+  border-inline-end:1px solid var(--border);
+  display:flex; flex-direction:column; align-items:center;
+  padding:20px 0; gap:26px; overflow-y:auto;
+  z-index:20;
+}
+
+.bo-rail-brand {
+  display:flex; flex-direction:column; align-items:center; gap:6px;
+  color:var(--accent); width:100%; padding-inline:14px;
+}
+.bo-rail-brand span {
+  font-size:var(--fs-sm); font-weight:var(--fw-bold);
+  color:var(--text); letter-spacing:.01em;
+}
+/* logo.png is 1456x368, a 3.96:1 wordmark. Sizing it by HEIGHT overflows the
+   rail (40px tall needs 158px of width against a 124px rail), and max-width
+   then squashed it horizontally because the height stayed fixed. Size by
+   width and let the height follow, so it can never distort. */
+.bo-rail-brand img { display:block; width:100%; max-width:88px; height:auto; }
+
+.bo-rail-nav {
+  display:flex; flex-direction:column; gap:5px;
+  width:100%; align-items:center;
+  flex:1 1 auto;
+}
+
+/* Theme switch and collapse control, pinned to the bottom of the rail. */
+.bo-rail-foot {
+  display:flex; flex-direction:column; align-items:center; gap:10px;
+  width:100%; margin-top:auto;
+}
+
+.bo-rail-collapse {
+  width:30px; height:30px; border-radius:50%;
+  border:1px solid var(--border); background:var(--surface-2);
+  color:var(--text-3); cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:background var(--dur-fast) var(--ease),
+             color var(--dur-fast) var(--ease),
+             border-color var(--dur-fast) var(--ease);
+}
+.bo-rail-collapse:hover {
+  background:var(--accent-weak); color:var(--accent); border-color:var(--accent);
+}
+/* The chevron points inward/outward, so it must mirror in RTL. */
+[dir="rtl"] .bo-rail-collapse { transform:scaleX(-1); }
+
+/* User-toggled collapse, persisted in localStorage. Distinct from the
+   automatic narrow-screen collapse in the media query at the foot of
+   this file. */
+.bo-rail--collapsed { flex-basis:76px; width:76px; }
+.bo-rail--collapsed .bo-rail-item { width:64px; }
+.bo-rail--collapsed .bo-rail-item span,
+.bo-rail--collapsed .bo-rail-brand span { display:none; }
+.bo-rail--collapsed .bo-rail-brand img { max-width:52px; }
+
+.bo-rail-item {
+  display:flex; flex-direction:column; align-items:center; gap:7px;
+  width:108px; padding:11px 6px 10px;
+  border-radius:var(--radius-md); border:none; background:transparent;
+  color:var(--text-3); cursor:pointer; text-decoration:none;
+  transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+/* Two lines, because one is not enough for ru/fa/ar menu labels. */
+.bo-rail-item span {
+  font-size:12px; font-weight:var(--fw-semibold); letter-spacing:.01em;
+  text-align:center; line-height:1.25;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+  overflow:hidden; overflow-wrap:anywhere;
+}
+/* The nav glyphs are ant <a-icon>, which renders at ~14px by default and looked
+   undersized next to the 12px labels. */
+.bo-rail-item .anticon { font-size:21px; line-height:1; }
+.bo-rail-item:hover { color:var(--text-2); background:var(--surface-2); }
+.bo-rail-item.is-active { background:var(--accent-weak); color:var(--accent); }
+
+/* ================================================================== *
+ * shell: topbar and content
+ * ================================================================== */
+
+/* The page scroll container. See the note on .bo-shell. */
+.bo-main {
+  flex:1 1 auto; min-width:0;
+  display:flex; flex-direction:column;
+  overflow-y:auto; overflow-x:hidden;
+}
+
+.bo-topbar {
+  background:var(--surface); border-bottom:1px solid var(--border);
+  position:sticky; top:0; z-index:10;
+}
+.bo-topbar-inner {
+  max-width:1320px; margin:0 auto; padding:10px 24px;
+  display:flex; align-items:center; justify-content:space-between;
+  gap:var(--gap-sm); flex-wrap:wrap;
+}
+.bo-topbar-left {
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap; min-width:0;
+}
+
+.bo-host-chip,
+.bo-health-pill {
+  display:inline-flex; align-items:center; gap:7px;
+  font-size:var(--fs-sm); font-weight:var(--fw-semibold);
+  padding:6px 12px; border-radius:var(--radius-pill); white-space:nowrap;
+}
+.bo-host-chip { background:var(--surface-2); color:var(--text-2); }
+.bo-host-chip .bo-icon { color:var(--text-3); }
+.bo-health-pill { background:var(--ok-weak); color:var(--ok); }
+.bo-health-pill--warn { background:var(--warn-weak); color:var(--warn); }
+.bo-health-pill--error { background:var(--error-weak); color:var(--error); }
+
+.bo-theme-toggle {
+  width:34px; height:34px; border-radius:50%;
+  border:1px solid var(--border); background:var(--surface-2);
+  color:var(--text-2); display:flex; align-items:center; justify-content:center;
+  cursor:pointer; flex:0 0 auto;
+  transition:background var(--dur-fast) var(--ease),
+             border-color var(--dur-fast) var(--ease),
+             color var(--dur-fast) var(--ease);
+}
+.bo-theme-toggle:hover {
+  background:var(--accent-weak); border-color:var(--accent); color:var(--accent);
+}
+/* Sun in light, moon in dark. The panel themes on body, not html. */
+.bo-theme-toggle .bo-i-moon { display:none; }
+body.dark .bo-theme-toggle .bo-i-sun { display:none; }
+body.dark .bo-theme-toggle .bo-i-moon { display:block; }
+
+/* Popover body for the rail theme control. */
+.bo-theme-menu { display:flex; flex-direction:column; gap:var(--sp-2); min-width:150px; }
+.bo-theme-row {
+  display:flex; align-items:center; justify-content:space-between;
+  gap:var(--sp-4); font-size:var(--fs-sm); color:var(--text-2);
+  font-weight:var(--fw-medium); cursor:pointer;
+}
+
+.bo-topbar-title {
+  font-size:var(--fs-md); font-weight:var(--fw-semibold);
+  color:var(--text); margin:0; text-wrap:balance;
+}
+
+.bo-content { max-width:1320px; width:100%; margin:0 auto; padding:12px 22px 8px; }
+.bo-page-title {
+  font-size:24px; font-weight:var(--fw-semibold);
+  margin-bottom:var(--sp-5); text-wrap:balance;
+}
+
+/* Section heading inside a page body, between tiles. */
+.bo-section-head {
+  display:flex; align-items:baseline; justify-content:space-between;
+  gap:12px; margin-bottom:12px; flex-wrap:wrap;
+}
+.bo-section-title { font-size:var(--fs-md); font-weight:var(--fw-semibold); color:var(--text); }
+.bo-section-meta { font-size:var(--fs-sm); color:var(--text-3); }
+
+/* ================================================================== *
+ * bento grid
+ * ================================================================== */
+
+.bo-bento {
+  display:grid; grid-template-columns:1fr; gap:var(--gap-sm);
+  grid-template-areas:
+    "ident" "flow" "xray" "users" "manage" "vpnui" "vit" "svc";
+}
+@media (min-width:760px) {
+  .bo-bento {
+    grid-template-columns:repeat(4,1fr); gap:var(--gap-md);
+    grid-template-areas:
+      "ident ident ident ident"
+      "flow flow flow flow"
+      "xray xray users users"
+      "manage manage vpnui vpnui"
+      "vit vit vit vit"
+      "svc svc svc svc";
+  }
+}
+@media (min-width:1180px) {
+  .bo-bento {
+    grid-template-columns:repeat(12,1fr); gap:var(--gap-lg);
+    grid-template-areas:
+      "ident ident ident ident flow flow flow flow vit vit vit vit"
+      "xray xray xray xray users users users users vit vit vit vit"
+      "manage manage manage manage vpnui vpnui vpnui vpnui vit vit vit vit"
+      "svc svc svc svc svc svc svc svc svc svc svc svc";
+    /* Tiles STRETCH to fill their row (grid's default) rather than sizing to
+       content. align-items:start was tried and is worse: it removes the dead
+       space inside a card but dumps it between the cards instead, leaving
+       ragged holes under Identity, Clients and System Status. The three
+       columns carry near-equal total content (roughly 700 / 725 / 730px), so
+       stretching lands them flush. .bo-tile distributes its own content, see
+       the justify-content rule there. */
+  }
+}
+
+.bo-t-ident { grid-area:ident; }
+.bo-t-flow { grid-area:flow; }
+.bo-t-vit { grid-area:vit; }
+.bo-t-svc { grid-area:svc; }
+.bo-t-xray { grid-area:xray; }
+.bo-t-vpnui { grid-area:vpnui; }
+.bo-t-users { grid-area:users; }
+.bo-t-manage { grid-area:manage; }
+
+/* ================================================================== *
+ * tile
+ * ================================================================== */
+
+.bo-tile {
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius-xl); padding:14px 16px;
+  box-shadow:var(--shadow-md); min-width:0;
+  display:flex; flex-direction:column;
+  transition:transform var(--dur-fast) var(--ease),
+             box-shadow var(--dur-fast) var(--ease),
+             border-color var(--dur-fast) var(--ease);
+}
+.bo-tile:hover { transform:translateY(-2px); border-color:var(--border-strong); }
+/* Content sits at the top of a stretched tile. space-between was tried and
+   looks worse: it strands the heading at the top and the body at the very
+   bottom with a hole in the middle.
+   For the tiles whose body is a grid of cells, that body grows to absorb the
+   slack instead, so the card is filled rather than padded. */
+.bo-tile > :last-child { margin-bottom:0; }
+.bo-t-users .bo-people,
+.bo-t-users .bo-person { flex:1 1 auto; }
+.bo-t-users .bo-person { justify-content:center; }
+.bo-t-xray .bo-btn-row,
+.bo-t-manage .bo-btn-row { margin-top:auto; }
+/* System Status spans three rows. Its own content is shorter, so the vitals
+   list takes the slack. Capped growth (space-around, not space-between) keeps
+   the four rows from being flung to the card edges. */
+.bo-t-vit .bo-vit-list { flex:1 1 auto; justify-content:space-around; }
+
+.bo-tile-head {
+  display:flex; align-items:center; justify-content:space-between;
+  gap:10px; margin-bottom:10px;
+}
+.bo-tile-title {
+  font-size:var(--fs-sm); font-weight:var(--fw-bold);
+  text-transform:uppercase; letter-spacing:.05em; color:var(--text-2);
+  display:flex; align-items:center; gap:7px;
+}
+.bo-tile-meta { font-size:var(--fs-xs); color:var(--text-3); white-space:nowrap; }
+/* Section heading inside a tile. Carries its own top spacing instead of a
+   divider: the block above already ends on a rule, and two lines in one gap
+   read as a duplicate. */
+.bo-tile-head--sub { margin-top:12px; }
+.bo-tile-caption { font-size:var(--fs-sm); color:var(--text-3); line-height:var(--lh-base); }
+.bo-divider { height:1px; background:var(--border); margin:9px 0; }
+
+/* ================================================================== *
+ * identity tile
+ * ================================================================== */
+
+.bo-t-ident { justify-content:flex-start; }
+.bo-ident-top { display:flex; align-items:center; gap:var(--gap-sm); }
+.bo-ident-logo { width:58px; height:58px; flex:0 0 auto; }
+.bo-ident-name { min-width:0; }
+.bo-ident-os { font-size:24px; font-weight:var(--fw-bold); color:var(--text); line-height:1.15; }
+.bo-ident-kernel { font-size:var(--fs-sm); color:var(--text-3); margin-top:5px; }
+.bo-ident-chips { display:flex; flex-wrap:wrap; gap:var(--sp-2); margin-top:var(--sp-5); }
+
+/* Identity metadata pill. Distinct from .bo-svc-chip below. */
+.bo-chip {
+  display:inline-flex; align-items:center; gap:7px;
+  font-size:var(--fs-xs); font-weight:var(--fw-semibold);
+  padding:6px 12px; border-radius:var(--radius-pill);
+  background:var(--surface-2); color:var(--text-2);
+}
+.bo-chip .bo-icon { color:var(--text-3); }
+.bo-chip--ok { background:var(--ok-weak); color:var(--ok); }
+.bo-chip--ok .bo-dot { background:var(--ok); }
+
+/* ================================================================== *
+ * throughput
+ * ================================================================== */
+
+.bo-flow-cols { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+@media (max-width:479px) { .bo-flow-cols { grid-template-columns:1fr; } }
+
+.bo-flow-label {
+  display:flex; align-items:center; gap:6px;
+  font-size:11.5px; font-weight:var(--fw-bold);
+  text-transform:uppercase; letter-spacing:.04em; color:var(--text-3);
+}
+.bo-flow-col--up .bo-flow-label .bo-icon { color:var(--accent); }
+.bo-flow-col--down .bo-flow-label .bo-icon { color:var(--info); }
+/* nowrap + a fixed line box: without these the figure re-wraps when the value
+   grows a digit ("38.07 KB" -> "382.40 KB"), which resized the whole card on
+   every 2-second poll. clamp() shrinks the type instead of wrapping. */
+.bo-flow-value {
+  font-size:clamp(18px,1.7vw,24px); font-weight:var(--fw-bold);
+  letter-spacing:-.01em; margin-top:6px;
+  white-space:nowrap; line-height:1.2; min-height:1.2em;
+}
+.bo-flow-col--up .bo-flow-value { color:var(--accent); }
+.bo-flow-col--down .bo-flow-value { color:var(--info); }
+.bo-unit { font-size:13px; font-weight:var(--fw-semibold); color:var(--text-3); margin-inline-start:3px; white-space:nowrap; }
+
+/* Time flows left-to-right in every locale. Never mirror a chart. */
+.bo-flow-chart { width:100%; height:96px; flex:0 0 96px; margin-top:10px; direction:ltr; }
+.bo-flow-chart svg { display:block; width:100%; height:100%; overflow:visible; }
+
+/* One total centred beneath each chart. The column template mirrors
+   .bo-flow-cols exactly so each figure lines up under its own graph. */
+.bo-flow-footer { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+@media (max-width:479px) { .bo-flow-footer { grid-template-columns:1fr; } }
+.bo-mini-stat { align-items:center; text-align:center; }
+.bo-mini-stat--end { align-items:center; text-align:center; }
+.bo-mini-stat { display:flex; flex-direction:column; gap:3px; }
+.bo-mini-stat-label {
+  font-size:var(--fs-xs); color:var(--text-3); font-weight:var(--fw-bold);
+  text-transform:uppercase; letter-spacing:.04em;
+}
+.bo-mini-stat-value { font-size:18px; font-weight:var(--fw-bold); color:var(--text); }
+
+/* ================================================================== *
+ * vitals
+ * ================================================================== */
+
+.bo-vit-list { display:flex; flex-direction:column; gap:var(--gap-sm); }
+@media (max-width:1179px) {
+  .bo-vit-list { display:grid; grid-template-columns:repeat(2,1fr); gap:16px 22px; }
+}
+@media (max-width:479px) { .bo-vit-list { grid-template-columns:1fr; } }
+
+.bo-vit-item { display:flex; flex-direction:column; gap:6px; }
+.bo-vit-row { display:flex; align-items:center; gap:12px; }
+
+.bo-ring-wrap { position:relative; width:44px; height:44px; flex:0 0 auto; }
+.bo-ring-wrap svg { width:100%; height:100%; transform:rotate(-90deg); }
+.bo-ring-track { fill:none; stroke:var(--border); stroke-width:4; }
+/* The circumference below is 2*pi*r for r=16. Any JS that animates
+   stroke-dashoffset MUST derive it from the same radius, not re-hardcode it. */
+.bo-ring-progress {
+  fill:none; stroke:var(--accent); stroke-width:4; stroke-linecap:round;
+  stroke-dasharray:100.53; stroke-dashoffset:100.53;
+  transition:stroke-dashoffset .8s cubic-bezier(.22,1,.36,1);
+}
+.bo-ring-progress--warn { stroke:var(--warn); }
+.bo-ring-progress--error { stroke:var(--error); }
+.bo-ring-icon {
+  position:absolute; inset:0; display:flex;
+  align-items:center; justify-content:center; color:var(--text-2);
+}
+.bo-ring-icon .bo-icon { width:15px; height:15px; }
+
+.bo-vit-info { flex:1; min-width:0; }
+.bo-vit-top { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+.bo-vit-name { font-size:13px; font-weight:var(--fw-semibold); color:var(--text); }
+.bo-vit-pct { font-size:var(--fs-base); font-weight:var(--fw-bold); color:var(--text); }
+.bo-vit-meta { font-size:11.5px; color:var(--text-3); margin-top:2px; }
+.bo-vit-spark { width:100%; height:24px; direction:ltr; }
+.bo-vit-spark svg { display:block; width:100%; height:100%; overflow:visible; }
+
+.bo-load-row { display:flex; align-items:center; gap:var(--sp-2); padding:4px 0; }
+.bo-load-label { font-size:var(--fs-xs); color:var(--text-3); width:22px; flex:0 0 22px; }
+.bo-load-bar { flex:1; height:4px; border-radius:2px; background:var(--border); overflow:hidden; display:block; }
+.bo-load-bar > span { display:block; height:100%; border-radius:2px; background:var(--accent); }
+.bo-load-val {
+  font-size:var(--fs-xs); font-weight:var(--fw-semibold); color:var(--text);
+  width:36px; flex:0 0 36px; text-align:end;
+}
+
+/* ================================================================== *
+ * VPN services
+ *
+ * aurora's detached-chip treatment (redesign/aurora.html:423-440) on bento's
+ * single-attribute state mechanism. aurora encoded state twice, as parallel
+ * modifier classes on both the dot and the label; one data-state attribute is
+ * what you actually want to bind from Vue.
+ *
+ * These are buttons, not divs: the mockups' chips are inert, but a status chip
+ * here navigates to that service on the Core Settings page.
+ * ================================================================== */
+
+/* 208px, not 178px: at the narrower track "OpenConnect", "AmneziaWG",
+   "WireGuard (C)" and "MTProto Proxy" all ellipsised to nonsense
+   ("OpenConn...", "Amn..."). The state label is pushed to its own line so the
+   name gets the full width. */
+/* Full-width band with the state label restored. 190px keeps the longest
+   names ("OpenConnect (cisco)", "MTProto Proxy") off the ellipsis. */
+.bo-svc-grid {
+  display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr));
+  gap:8px; align-content:start;
+}
+
+.bo-svc-chip {
+  display:flex; align-items:center; gap:8px;
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius-md); padding:6px 9px;
+  cursor:pointer; text-align:start; width:100%; font-family:inherit;
+  transition:transform var(--dur-fast) var(--ease),
+             border-color var(--dur-fast) var(--ease),
+             box-shadow var(--dur-fast) var(--ease);
+}
+.bo-svc-chip:hover {
+  transform:translateY(-1px);
+  border-color:var(--border-strong);
+  box-shadow:var(--shadow-sm);
+}
+
+.bo-svc-led { width:9px; height:9px; border-radius:50%; flex:0 0 auto; background:var(--off); }
+/* Wraps rather than ellipsising: a truncated protocol name is useless, and
+   these names are the whole point of the tile. */
+.bo-svc-name {
+  font-size:13.5px; font-weight:var(--fw-semibold); color:var(--text);
+  flex:1; min-width:0; overflow-wrap:anywhere; line-height:1.3;
+}
+.bo-svc-state {
+  font-size:var(--fs-xs); font-weight:var(--fw-bold);
+  text-transform:uppercase; letter-spacing:.03em; color:var(--off);
+  white-space:nowrap; flex:0 0 auto;
+}
+
+.bo-svc-chip[data-state="running"] .bo-svc-led { background:var(--ok); box-shadow:0 0 0 3px var(--ok-weak); }
+.bo-svc-chip[data-state="running"] .bo-svc-state { color:var(--ok); }
+.bo-svc-chip[data-state="idle"] .bo-svc-led { background:var(--info); box-shadow:0 0 0 3px var(--info-weak); }
+.bo-svc-chip[data-state="idle"] .bo-svc-state { color:var(--info); }
+.bo-svc-chip[data-state="stopped"] .bo-svc-led { background:var(--warn); box-shadow:0 0 0 3px var(--warn-weak); }
+.bo-svc-chip[data-state="stopped"] .bo-svc-state { color:var(--warn); }
+.bo-svc-chip[data-state="error"] .bo-svc-led { background:var(--error); box-shadow:0 0 0 3px var(--error-weak); }
+.bo-svc-chip[data-state="error"] .bo-svc-state { color:var(--error); }
+/* Not installed: present in the list but never started, so it reads as absent
+   rather than as a fault. */
+.bo-svc-chip[data-state="off"] { opacity:.6; }
+.bo-svc-chip[data-state="off"] .bo-svc-led { background:var(--off); box-shadow:0 0 0 3px var(--off-weak); }
+.bo-svc-chip[data-state="off"] .bo-svc-state { color:var(--off); }
+
+/* ================================================================== *
+ * status pills, key-value rows, buttons
+ * ================================================================== */
+
+.bo-status-pill {
+  display:inline-flex; align-items:center; gap:6px;
+  font-size:var(--fs-xs); font-weight:var(--fw-semibold);
+  padding-block:4px; padding-inline:8px 10px;
+  border-radius:var(--radius-pill);
+  background:var(--off-weak); color:var(--off);
+}
+.bo-status-pill--ok { background:var(--ok-weak); color:var(--ok); }
+.bo-status-pill--warn { background:var(--warn-weak); color:var(--warn); }
+.bo-status-pill--error { background:var(--error-weak); color:var(--error); }
+
+.bo-kv-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:3px 0; }
+.bo-kv-label { font-size:var(--fs-sm); color:var(--text-2); font-weight:var(--fw-medium); }
+.bo-kv-value { font-size:var(--fs-base); font-weight:var(--fw-bold); color:var(--text); }
+
+.bo-btn-row { display:flex; flex-wrap:wrap; gap:var(--sp-2); }
+/* Compact action rows: four small buttons on ONE line, so a card is not made
+   tall by a wrapped second row. Used by the merged Manage actions inside the
+   identity card and by Xray. */
+.bo-btn-row--compact,
+.bo-t-xray .bo-btn-row { gap:6px; flex-wrap:nowrap; }
+.bo-btn-row--compact .bo-icon-btn,
+.bo-t-xray .bo-icon-btn {
+  padding:6px 8px; font-size:var(--fs-xs);
+  white-space:nowrap; min-width:0;
+}
+
+.bo-icon-btn {
+  display:inline-flex; align-items:center; gap:6px;
+  font-size:var(--fs-sm); font-weight:var(--fw-semibold);
+  color:var(--text-2); background:var(--surface-2);
+  border:1px solid var(--border); border-radius:var(--radius-sm);
+  padding:7px 12px; cursor:pointer; font-family:inherit;
+  transition:background var(--dur-fast) var(--ease),
+             color var(--dur-fast) var(--ease),
+             border-color var(--dur-fast) var(--ease),
+             transform var(--dur-fast) var(--ease);
+}
+.bo-icon-btn:hover {
+  background:var(--accent-weak); color:var(--accent);
+  border-color:var(--accent); transform:translateY(-1px);
+}
+.bo-icon-btn--danger:hover { background:var(--error-weak); color:var(--error); border-color:var(--error); }
+.bo-icon-btn--ghost { background:transparent; border-color:transparent; padding:5px 10px; }
+.bo-icon-btn--accent {
+  background:var(--accent-weak); border-color:var(--accent); color:var(--accent);
+  padding:5px 10px; font-size:var(--fs-xs);
+}
+.bo-icon-btn--accent:hover { background:var(--accent); color:var(--on-accent); border-color:var(--accent); }
+
+/* Info affordance sitting inline with a value. */
+.bo-kv-with-action { display:inline-flex; align-items:center; gap:7px; }
+.bo-inline-btn {
+  border:none; background:transparent; color:var(--text-3); cursor:pointer;
+  padding:0; display:inline-flex; align-items:center;
+  transition:color var(--dur-fast) var(--ease);
+}
+.bo-inline-btn:hover { color:var(--accent); }
+.bo-icon-btn--ghost:hover { border-color:var(--accent); }
+.bo-icon-btn[disabled] { opacity:.5; cursor:not-allowed; transform:none; }
+
+.bo-btn {
+  font-size:13.5px; font-weight:var(--fw-semibold);
+  border-radius:9px; padding:10px 18px; cursor:pointer;
+  border:1px solid transparent; font-family:inherit;
+  transition:filter var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+/* --accent-strong, not --accent: white on the brand green is 4.46:1 and misses
+   WCAG AA. The two greens are visually near-identical. */
+.bo-btn--primary { background:var(--accent-strong); color:var(--on-accent); align-self:flex-start; }
+.bo-btn--icon { display:inline-flex; align-items:center; gap:7px; }
+.bo-btn--primary:hover { filter:brightness(1.06); transform:translateY(-1px); }
+.bo-btn[disabled] { opacity:.5; cursor:not-allowed; transform:none; filter:none; }
+
+.bo-vpnui-body { display:flex; flex-direction:column; justify-content:space-between; gap:18px; flex:1; }
+.bo-vpnui-version { font-size:23px; font-weight:var(--fw-bold); color:var(--text); }
+.bo-status-line { display:flex; align-items:center; gap:6px; font-size:13px; font-weight:var(--fw-semibold); margin-top:var(--sp-2); }
+.bo-status-line--ok { color:var(--ok); }
+.bo-status-line--warn { color:var(--warn); }
+
+/* ================================================================== *
+ * stat grids
+ *
+ * The hairline trick: 1px gap over a --border background, with opaque cells,
+ * gives dividers without per-cell border arithmetic.
+ * ================================================================== */
+
+.bo-stat-grid {
+  display:grid; grid-template-columns:repeat(2,1fr); gap:1px;
+  background:var(--border); border:1px solid var(--border);
+  border-radius:var(--radius-lg); overflow:hidden;
+}
+/* User status tile: total / online / depleted. Three equal cells on the same
+   hairline-grid trick as .bo-stat-grid. */
+.bo-users-grid { grid-template-columns:repeat(3,1fr); }
+@media (max-width:520px) { .bo-users-grid { grid-template-columns:1fr; } }
+.bo-users-value--online { color:var(--ok); }
+.bo-users-value--depleted { color:var(--error); }
+
+/* Editable server name. Always visible: a hover-only affordance is
+   undiscoverable, and this is the one control on the tile. */
+.bo-ident-nameline { display:flex; align-items:center; gap:8px; min-width:0; }
+.bo-ident-edit {
+  border:1px solid var(--border); background:var(--surface-2); color:var(--text-3);
+  cursor:pointer; padding:4px; border-radius:6px; flex:0 0 auto;
+  display:inline-flex; align-items:center; justify-content:center;
+  transition:color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+             background var(--dur-fast) var(--ease);
+}
+.bo-ident-edit:hover { color:var(--accent); border-color:var(--accent); background:var(--accent-weak); }
+.bo-ident-sub { font-size:var(--fs-base); color:var(--text-3); margin-top:4px; }
+
+/* Labelled spec rows: tinted icon, key, value. One fact per line. */
+.bo-spec { display:flex; flex-direction:column; gap:0; margin:12px 0 0; }
+.bo-spec-row {
+  display:grid; grid-template-columns:22px minmax(70px,auto) 1fr;
+  align-items:center; gap:9px; padding:3px 0;
+}
+.bo-spec-row + .bo-spec-row { border-top:1px solid var(--border); }
+.bo-spec-ico { display:inline-flex; align-items:center; justify-content:center; }
+.bo-spec-key {
+  font-size:var(--fs-sm); font-weight:var(--fw-bold); color:var(--text-3);
+  text-transform:uppercase; letter-spacing:.04em; margin:0;
+}
+.bo-spec-val {
+  font-size:var(--fs-base); font-weight:var(--fw-semibold); color:var(--text);
+  margin:0; min-width:0; overflow-wrap:anywhere; text-align:end;
+}
+.bo-spec-val.bo-ok { color:var(--ok); }
+.bo-spec-val.bo-warn { color:var(--warn); }
+/* Each row's icon gets its own tint so a row can be found by colour first.
+   These are the reserved status hues plus the accent, not new colours. */
+.bo-spec-ico--os { color:var(--accent); }
+.bo-spec-ico--kernel { color:var(--warn); }
+.bo-spec-ico--cpu { color:var(--info); }
+.bo-spec-ico--cores { color:var(--text-3); }
+.bo-spec-ico--health { color:var(--ok); }
+
+/* Clients: three people marks, no column rules. Colour carries the state -
+   accent for the total, ok for online, error for depleted. */
+.bo-people {
+  display:grid; grid-template-columns:repeat(3,1fr);
+  gap:var(--sp-3); text-align:center;
+}
+@media (max-width:520px) { .bo-people { grid-template-columns:1fr; } }
+.bo-person {
+  display:flex; flex-direction:column; align-items:center; gap:4px;
+  padding:9px 8px; border-radius:var(--radius-lg);
+  background:var(--surface-2); border:1px solid var(--border);
+}
+.bo-person-ico { width:21px; height:21px; fill:none; stroke:currentColor;
+  stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.bo-person-val { font-size:21px; font-weight:var(--fw-bold); line-height:1.1; color:var(--text); }
+.bo-person-key {
+  font-size:var(--fs-xs); font-weight:var(--fw-semibold); color:var(--text-3);
+  text-transform:uppercase; letter-spacing:.04em;
+}
+.bo-person--total { color:var(--text-2); }
+.bo-person--online { color:var(--ok); }
+.bo-person--online .bo-person-val { color:var(--ok); }
+.bo-person--depleted { color:var(--error); }
+.bo-person--depleted .bo-person-val { color:var(--error); }
+
+/* Interface picker sitting in the throughput tile head. */
+.bo-iface-pick { display:flex; align-items:center; gap:6px; }
+
+/* Wider bands, e.g. the inbounds totals row. Collapses to 2-up then 1-up so
+   the cells never crush their values. */
+.bo-stat-grid--5 { grid-template-columns:repeat(5,1fr); }
+@media (max-width:1100px) { .bo-stat-grid--5 { grid-template-columns:repeat(2,1fr); } }
+@media (max-width:560px) { .bo-stat-grid--5 { grid-template-columns:1fr; } }
+
+.bo-stat-cell { background:var(--surface); padding:14px 16px; display:flex; flex-direction:column; gap:5px; min-width:0; }
+.bo-stat-cell-label {
+  font-size:var(--fs-xs); font-weight:var(--fw-semibold);
+  text-transform:uppercase; letter-spacing:.04em; color:var(--text-3);
+}
+.bo-stat-cell-value { font-size:15.5px; font-weight:var(--fw-bold); color:var(--text); }
+
+/* Same centred-pair shape as the throughput totals, so the two cards rhyme.
+   Figures are smaller than the throughput headline: these are secondary. */
+.bo-conn-body { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; }
+.bo-conn-stat { display:flex; flex-direction:column; align-items:center; gap:3px; }
+.bo-conn-label {
+  display:flex; align-items:center; gap:6px;
+  font-size:11.5px; font-weight:var(--fw-bold);
+  text-transform:uppercase; letter-spacing:.04em; color:var(--text-3);
+}
+.bo-conn-label .bo-icon { color:var(--text-3); }
+.bo-conn-stat--tcp .bo-conn-label .bo-icon { color:var(--accent); }
+.bo-conn-stat--udp .bo-conn-label .bo-icon { color:var(--info); }
+.bo-conn-value { font-size:17px; font-weight:var(--fw-bold); color:var(--text); }
+/* Sits directly under the figures, not pushed to the foot of a stretched
+   tile, which left a visible void between them. */
+.bo-conn-ratio {
+  display:flex; gap:2px; height:6px; border-radius:3px;
+  overflow:hidden; background:var(--surface); margin-top:0;
+}
+.bo-conn-ratio-seg { display:block; height:100%; }
+.bo-conn-ratio-seg--tcp { background:var(--accent); }
+.bo-conn-ratio-seg--udp { background:var(--info); }
+
+/* ================================================================== *
+ * IP addresses
+ * ================================================================== */
+
+.bo-ip-row { display:flex; align-items:baseline; justify-content:space-between; gap:12px; padding:8px 0; }
+.bo-ip-row + .bo-ip-row { border-top:1px solid var(--border); }
+.bo-ip-label { font-size:var(--fs-sm); font-weight:var(--fw-medium); color:var(--text-2); flex:0 0 auto; }
+.bo-ip-value {
+  font-size:var(--fs-base); font-weight:var(--fw-semibold); color:var(--text);
+  text-align:end; overflow-wrap:anywhere;
+  direction:ltr; unicode-bidi:isolate;
+}
+/* bento lacked this; aurora had it. Long IPv6 crowds the label on narrow screens. */
+@media (max-width:479px) {
+  .bo-ip-row { flex-direction:column; align-items:flex-start; gap:2px; }
+  .bo-ip-value { text-align:start; }
+}
+
+.bo-foot {
+  margin-top:34px; padding-top:var(--sp-4);
+  border-top:1px solid var(--border);
+  font-size:11.5px; color:var(--text-3); text-align:start;
+}
+
+/* ================================================================== *
+ * narrow screens: rail collapses to icons only
+ * ================================================================== */
+
+@media (max-width:560px) {
+  .bo-rail { flex-basis:76px; width:76px; padding:16px 0; gap:20px; }
+  .bo-rail-item { width:64px; }
+  .bo-rail-item span,
+  .bo-rail-brand span { display:none; }
+  .bo-topbar-inner { padding:12px 16px; }
+  .bo-content { padding:20px 16px 40px; }
+}
+
+/* ================================================================== *
+ * client action row
+ *
+ * The eight per-client actions (QR, edit, info, reset, freeze, delete, TXT,
+ * PDF) were bare inline siblings in the table cell, so a narrow Menu column
+ * wrapped them onto three ragged lines. One nowrap flex row keeps them on a
+ * single line and lets the column size itself from their real width.
+ * ================================================================== */
+
+.bo-client-actions {
+  display:flex; flex-wrap:nowrap; align-items:center;
+  gap:7px; white-space:nowrap;
+}
+/* The markup sets fontSize:22px inline on each icon, which at eight icons is
+   wider than any sane column. 18px keeps them comfortably tappable and fits
+   the 200px the column now reserves. !important is needed to beat the inline
+   style, not to win a specificity fight. */
+.bo-client-actions .anticon { font-size:18px !important; }
+.bo-client-actions svg { width:18px; height:18px; }
+/* The inline marginInlineStart on the QR icons existed to space them apart by
+   hand; the flex gap does that now, so neutralise it or the row is lopsided. */
+.bo-client-actions .anticon { margin-inline-start:0 !important; }
+.bo-client-actions .anticon,
+.bo-client-actions svg { flex:0 0 auto; }
+
+/* ================================================================== *
+ * distro marks
+ *
+ * The Overview identity tile paints its distro logo as a CSS mask over
+ * a solid --distro-ink, not as an <svg><use>. Two reasons: the browser
+ * fetches only the one mark the machine needs (48 inlined symbols came
+ * to 83KB), and the colour stays in CSS, where a theme can override it.
+ *
+ * Sources are web/assets/img/distro/<mark>.svg, generated from the
+ * Simple Icons project (https://simpleicons.org, 16.27.0), which
+ * publishes these marks under CC0 1.0. The path data is unmodified.
+ * The brands themselves belong to their respective owners.
+ *
+ * Adding a distro means three things in step: the SVG file, a
+ * .bo-distro--<mark> rule here, and a DISTRO_MARKS entry in index.html.
+ * ================================================================== */
+
+.bo-distro {
+  display:block;
+  background-color:var(--distro-ink,var(--text-2));
+  /* -webkit- duplicates are for Safari before 15.4; the unprefixed
+     longhands must stay paired with them or one engine sees a half
+     configured mask and paints the full box. */
+  -webkit-mask-repeat:no-repeat;   mask-repeat:no-repeat;
+  -webkit-mask-position:center;    mask-position:center;
+  -webkit-mask-size:contain;       mask-size:contain;
+  /* No mask-mode: the source is an image, not an SVG <mask> element, so
+     the default match-source already resolves to alpha. The marks are
+     opaque on transparent, which is exactly what alpha wants. */
+}
+
+/* Brand hex, verbatim from Simple Icons. */
+.bo-distro--ubuntu{--distro-ink:#E95420}
+.bo-distro--debian{--distro-ink:#A81D33}
+.bo-distro--fedora{--distro-ink:#51A2DA}
+.bo-distro--arch{--distro-ink:#1793D1}
+.bo-distro--centos{--distro-ink:#262577}
+.bo-distro--almalinux{--distro-ink:#000000}
+.bo-distro--rocky{--distro-ink:#10B981}
+.bo-distro--rhel{--distro-ink:#EE0000}
+.bo-distro--opensuse{--distro-ink:#73BA25}
+.bo-distro--sles{--distro-ink:#0C322C}
+.bo-distro--alpine{--distro-ink:#0D597F}
+.bo-distro--linuxmint{--distro-ink:#86BE43}
+.bo-distro--manjaro{--distro-ink:#35BFA4}
+.bo-distro--gentoo{--distro-ink:#54487A}
+.bo-distro--kali{--distro-ink:#557C94}
+.bo-distro--pop{--distro-ink:#48B9C7}
+.bo-distro--elementary{--distro-ink:#64BAFF}
+.bo-distro--zorin{--distro-ink:#15A6F0}
+.bo-distro--nixos{--distro-ink:#5277C3}
+.bo-distro--void{--distro-ink:#478061}
+.bo-distro--artix{--distro-ink:#10A0CC}
+.bo-distro--endeavouros{--distro-ink:#7F7FFF}
+.bo-distro--garuda{--distro-ink:#8839EF}
+.bo-distro--devuan{--distro-ink:#004489}
+.bo-distro--deepin{--distro-ink:#007CFF}
+.bo-distro--mx{--distro-ink:#000000}
+.bo-distro--parrot{--distro-ink:#15E0ED}
+.bo-distro--raspbian{--distro-ink:#A22846}
+.bo-distro--slackware{--distro-ink:#000000}
+.bo-distro--solus{--distro-ink:#5294E2}
+.bo-distro--neon{--distro-ink:#3DC08D}
+.bo-distro--kubuntu{--distro-ink:#0079C1}
+.bo-distro--xubuntu{--distro-ink:#0044AA}
+.bo-distro--lubuntu{--distro-ink:#0068C8}
+.bo-distro--ubuntu-mate{--distro-ink:#84A454}
+.bo-distro--cachyos{--distro-ink:#00AA88}
+.bo-distro--nobara{--distro-ink:#000000}
+.bo-distro--asahi{--distro-ink:#A61200}
+.bo-distro--omarchy{--distro-ink:#9ECE6A}
+.bo-distro--qubes{--distro-ink:#3874D8}
+.bo-distro--tails{--distro-ink:#56347C}
+.bo-distro--photon{--distro-ink:#004480}
+.bo-distro--openwrt{--distro-ink:#00B5E2}
+.bo-distro--proxmox{--distro-ink:#E57000}
+.bo-distro--freebsd{--distro-ink:#AB2B28}
+.bo-distro--openbsd{--distro-ink:#F2CA30}
+.bo-distro--netbsd{--distro-ink:#FF6600}
+.bo-distro--linux{--distro-ink:#FCC624}
+
+/* A logotype is exempt from WCAG contrast and these are not carrying
+   meaning on their own, so the bar is legibility, not AA: a mark is
+   only re-stepped when it drops under 2.2:1 on the surface it sits on,
+   and then only as far as 2.8:1. Hue and chroma are held, so the brand
+   still reads. 43 of 48 marks are exact in light, 35 in dark. */
+
+/* Too pale on white. Scoped to :not(.dark) rather than left unscoped:
+   these sit after the base block, so an unscoped rule would also hold
+   in dark mode, where the brand hex is legible and should win. Tux at
+   #FCC624 is 10.4:1 on the dark surface and only needs darkening on
+   white. .light is not relied on: aThemeSwitch replaces the whole body
+   class list, and light is the no-class default. */
+body:not(.dark) .bo-distro--elementary{--distro-ink:#4AA0E4}
+body:not(.dark) .bo-distro--parrot{--distro-ink:#0DAAB5}
+body:not(.dark) .bo-distro--omarchy{--distro-ink:#7AA743}
+body:not(.dark) .bo-distro--openbsd{--distro-ink:#B8970E}
+body:not(.dark) .bo-distro--linux{--distro-ink:#BE9515}
+
+/* Too dark on --surface. The four pure-black brands (AlmaLinux, MX,
+   Nobara, Slackware) invert to near-white instead of lifting to grey,
+   which is what those projects do with their own marks on dark. */
+body.dark .bo-distro--centos{--distro-ink:#545DB4}
+body.dark .bo-distro--almalinux{--distro-ink:#E9EDF3}
+body.dark .bo-distro--sles{--distro-ink:#476C65}
+body.dark .bo-distro--alpine{--distro-ink:#256A91}
+body.dark .bo-distro--gentoo{--distro-ink:#695D91}
+body.dark .bo-distro--devuan{--distro-ink:#2A66AE}
+body.dark .bo-distro--mx{--distro-ink:#E9EDF3}
+body.dark .bo-distro--slackware{--distro-ink:#E9EDF3}
+body.dark .bo-distro--xubuntu{--distro-ink:#2260C8}
+body.dark .bo-distro--nobara{--distro-ink:#E9EDF3}
+body.dark .bo-distro--asahi{--distro-ink:#BD2F1D}
+body.dark .bo-distro--tails{--distro-ink:#7655A0}
+body.dark .bo-distro--photon{--distro-ink:#2C67A6}

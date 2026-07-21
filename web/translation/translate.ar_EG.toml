@@ -90,6 +90,9 @@
 "noExpiry" = "بدون انتهاء"
 
 [menu]
+"navigation" = "التنقل الرئيسي"
+"collapse" = "طي الشريط الجانبي"
+"expand" = "توسيع الشريط الجانبي"
 "theme" = "الثيم"
 "dark" = "داكن"
 "ultraDark" = "داكن جدًا"
@@ -116,6 +119,8 @@
 "successLogin" = "لقد تم تسجيل الدخول إلى حسابك بنجاح."
 
 [pages.index]
+"restore" = "استعادة"
+"systemStatus" = "حالة النظام"
 "title" = "نظرة عامة"
 "cpu" = "المعالج"
 "logicalProcessors" = "المعالجات المنطقية"
@@ -218,6 +223,7 @@
 "customGeoErrUpdateAllIncomplete" = "تعذر تحديث مصدر واحد أو أكثر من مصادر geo المخصصة"
 
 [pages.inbounds]
+"totalUsers" = "إجمالي المستخدمين"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

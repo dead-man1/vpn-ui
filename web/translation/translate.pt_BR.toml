@@ -90,6 +90,9 @@
 "noExpiry" = "Sem validade"
 
 [menu]
+"navigation" = "Navegação principal"
+"collapse" = "Recolher barra lateral"
+"expand" = "Expandir barra lateral"
 "theme" = "Tema"
 "dark" = "Escuro"
 "ultraDark" = "Ultra Escuro"
@@ -116,6 +119,8 @@
 "successLogin" = "Você entrou na sua conta com sucesso."
 
 [pages.index]
+"restore" = "Restaurar"
+"systemStatus" = "Status do sistema"
 "title" = "Visão Geral"
 "cpu" = "CPU"
 "logicalProcessors" = "Processadores lógicos"
@@ -218,6 +223,7 @@
 "customGeoErrUpdateAllIncomplete" = "Falha ao atualizar uma ou mais fontes geo personalizadas"
 
 [pages.inbounds]
+"totalUsers" = "Total de usuários"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

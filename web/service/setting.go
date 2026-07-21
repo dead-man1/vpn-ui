@@ -37,6 +37,7 @@ var defaultValueMap = map[string]string{
 	"expireDiff":                  "0",
 	"trafficDiff":                 "0",
 	"remarkModel":                 "-ieo",
+	"serverName":                  "",
 	"timeLocation":                "Local",
 	"tgBotEnable":                 "false",
 	"tgBotToken":                  "",
@@ -420,6 +421,22 @@ func (s *SettingService) GetSystemdServiceName() (string, error) {
 // SetSystemdServiceName persists the systemd unit name for the panel.
 func (s *SettingService) SetSystemdServiceName(value string) error {
 	return s.setString("systemdServiceName", value)
+}
+
+// GetServerName returns the operator's own label for this server. Empty is the
+// default and means the overview falls back to the host it was reached on.
+//
+// Deliberately NOT part of AllSetting: that struct is bound wholesale from the
+// settings form, so a field the form does not post is written back as its zero
+// value. A label edited from the overview would be wiped by the next unrelated
+// save on the settings page.
+func (s *SettingService) GetServerName() (string, error) {
+	return s.getString("serverName")
+}
+
+// SetServerName persists the operator's label for this server. Empty clears it.
+func (s *SettingService) SetServerName(value string) error {
+	return s.setString("serverName", value)
 }
 
 func (s *SettingService) GetTwoFactorToken() (string, error) {

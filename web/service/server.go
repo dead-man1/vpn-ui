@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +53,11 @@ type Status struct {
 	CpuCores    int       `json:"cpuCores"`
 	LogicalPro  int       `json:"logicalPro"`
 	CpuSpeedMhz float64   `json:"cpuSpeedMhz"`
+	CpuModel    string    `json:"cpuModel"`
+	OsName      string    `json:"osName"`
+	OsVersion   string    `json:"osVersion"`
+	Kernel      string    `json:"kernel"`
+	Hostname    string    `json:"hostname"`
 	Mem         struct {
 		Current uint64 `json:"current"`
 		Total   uint64 `json:"total"`
@@ -77,7 +83,13 @@ type Status struct {
 		Up   uint64 `json:"up"`
 		Down uint64 `json:"down"`
 	} `json:"netIO"`
-	NetTraffic struct {
+	NetIOByIface []NetIOIface `json:"netIOByIface"`
+	// netIfaceTotals is the previous poll's CUMULATIVE per-interface counters. It
+	// rides along on the Status because that is where the delta partner already
+	// lives (see NetTraffic below), but it stays off the wire: the dashboard wants
+	// rates, and shipping both would only invite the two to be confused.
+	netIfaceTotals map[string]netIfaceTotal
+	NetTraffic     struct {
 		Sent uint64 `json:"sent"`
 		Recv uint64 `json:"recv"`
 	} `json:"netTraffic"`
@@ -90,6 +102,21 @@ type Status struct {
 		Mem     uint64 `json:"mem"`
 		Uptime  uint64 `json:"uptime"`
 	} `json:"appStats"`
+}
+
+// NetIOIface is one network interface's throughput. Up and Down are RATES in
+// bytes per second, matching the aggregate NetIO, so the dashboard's interface
+// picker can swap between them without rescaling anything.
+type NetIOIface struct {
+	Name string `json:"name"`
+	Up   uint64 `json:"up"`
+	Down uint64 `json:"down"`
+}
+
+// netIfaceTotal holds one interface's cumulative byte counters between polls.
+type netIfaceTotal struct {
+	sent uint64
+	recv uint64
 }
 
 // Release represents information about a software release from GitHub.
@@ -114,7 +141,15 @@ type ServerService struct {
 	emaCPU             float64
 	cpuHistory         []CPUSample
 	cachedCpuSpeedMhz  float64
+	cachedCpuModel     string
 	lastCpuInfoAttempt time.Time
+	// Host identity: distro name/version and kernel release. None of them change
+	// while the panel runs, so they are read once instead of on every 2s poll.
+	hostInfoLoaded  bool
+	cachedOsName    string
+	cachedOsVersion string
+	cachedKernel    string
+	cachedHostname  string
 }
 
 // AggregateCpuHistory returns up to maxPoints averaged buckets of size bucketSeconds over recent data.
@@ -282,6 +317,9 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 			}
 			if len(cpuInfos) > 0 {
 				s.cachedCpuSpeedMhz = cpuInfos[0].Mhz
+				// The model name comes out of the SAME query, so it is cached here rather
+				// than costing a second cpu.Info() on a poll that runs every 2 seconds.
+				s.cachedCpuModel = strings.TrimSpace(cpuInfos[0].ModelName)
 				status.CpuSpeedMhz = s.cachedCpuSpeedMhz
 			} else {
 				logger.Warning("could not find cpu info")
@@ -295,6 +333,7 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	} else if s.cachedCpuSpeedMhz != 0 {
 		status.CpuSpeedMhz = s.cachedCpuSpeedMhz
 	}
+	status.CpuModel = s.cachedCpuModel
 
 	// Uptime
 	upTime, err := host.Uptime()
@@ -303,6 +342,37 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	} else {
 		status.Uptime = upTime
 	}
+
+	// Host identity, read once. osReleaseField is the same /etc/os-release reader the
+	// distro-support check uses (pkgmgr.go), so the dashboard and the unsupported-distro
+	// warning cannot disagree about what this host is.
+	if !s.hostInfoLoaded {
+		s.hostInfoLoaded = true
+		// NAME is the plain distro name ("Ubuntu", "Debian GNU/Linux"); ID is the
+		// lowercase fallback for the rare image that ships no NAME.
+		if s.cachedOsName = osReleaseField("NAME"); s.cachedOsName == "" {
+			s.cachedOsName = osReleaseField("ID")
+		}
+		s.cachedOsVersion = osReleaseField("VERSION_ID")
+		kernel, err := host.KernelVersion()
+		if err != nil {
+			logger.Warning("get kernel version failed:", err)
+		} else {
+			s.cachedKernel = kernel
+		}
+		// The machine's own hostname. Distinct from the browser Host header the
+		// templates expose as {{ .host }}, which is whatever address the admin
+		// typed and is often an IP.
+		if hn, err := os.Hostname(); err != nil {
+			logger.Warning("get hostname failed:", err)
+		} else {
+			s.cachedHostname = hn
+		}
+	}
+	status.OsName = s.cachedOsName
+	status.OsVersion = s.cachedOsVersion
+	status.Kernel = s.cachedKernel
+	status.Hostname = s.cachedHostname
 
 	// Memory stats
 	memInfo, err := mem.VirtualMemory()
@@ -357,6 +427,47 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 		}
 	} else {
 		logger.Warning("can not find io counters")
+	}
+
+	// Per-interface network stats, for the dashboard's interface picker. Derived from
+	// the delta against the previous poll exactly like the aggregate above, so these
+	// are rates and not the cumulative counters gopsutil hands back.
+	ifaceStats, err := net.IOCounters(true)
+	if err != nil {
+		logger.Warning("get per-interface io counters failed:", err)
+	} else {
+		selectable := s.selectableInterfaces()
+		status.netIfaceTotals = make(map[string]netIfaceTotal, len(ifaceStats))
+		status.NetIOByIface = make([]NetIOIface, 0, len(ifaceStats))
+		seconds := 0.0
+		if lastStatus != nil {
+			seconds = float64(now.Sub(lastStatus.T)) / float64(time.Second)
+		}
+		for _, ifaceStat := range ifaceStats {
+			if !selectable[ifaceStat.Name] {
+				continue
+			}
+			status.netIfaceTotals[ifaceStat.Name] = netIfaceTotal{sent: ifaceStat.BytesSent, recv: ifaceStat.BytesRecv}
+			row := NetIOIface{Name: ifaceStat.Name}
+			if prev, ok := lastStatus.netIfaceTotal(ifaceStat.Name); ok && seconds > 0 {
+				// A counter that went BACKWARDS means the interface was torn down and
+				// recreated between polls (routine here: every VPN protocol brings its own
+				// up and down). Report 0 for that poll instead of an unsigned underflow
+				// that would render as an exabyte-per-second spike.
+				if ifaceStat.BytesSent >= prev.sent {
+					row.Up = uint64(float64(ifaceStat.BytesSent-prev.sent) / seconds)
+				}
+				if ifaceStat.BytesRecv >= prev.recv {
+					row.Down = uint64(float64(ifaceStat.BytesRecv-prev.recv) / seconds)
+				}
+			}
+			status.NetIOByIface = append(status.NetIOByIface, row)
+		}
+		// /proc/net/dev order is not stable across polls, and a picker that reshuffles
+		// itself under the cursor is unusable.
+		sort.Slice(status.NetIOByIface, func(i, j int) bool {
+			return status.NetIOByIface[i].Name < status.NetIOByIface[j].Name
+		})
 	}
 
 	// TCP/UDP connections
@@ -432,6 +543,44 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	}
 
 	return status
+}
+
+// netIfaceTotal looks up an interface's previous cumulative counters. It is
+// nil-safe on the receiver so the first poll, which has no predecessor, reads the
+// same as an interface that has only just appeared.
+func (s *Status) netIfaceTotal(name string) (netIfaceTotal, bool) {
+	if s == nil {
+		return netIfaceTotal{}, false
+	}
+	prev, ok := s.netIfaceTotals[name]
+	return prev, ok
+}
+
+// selectableInterfaces is the set of interface names worth offering in the
+// dashboard's picker: up, and not loopback. Loopback traffic is the panel talking
+// to itself, and a down interface only pads the list.
+func (s *ServerService) selectableInterfaces() map[string]bool {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		logger.Warning("get network interfaces failed:", err)
+		return nil
+	}
+	selectable := make(map[string]bool, len(ifaces))
+	for _, iface := range ifaces {
+		isUp, isLoopback := false, false
+		for _, flag := range iface.Flags {
+			switch flag {
+			case "up":
+				isUp = true
+			case "loopback":
+				isLoopback = true
+			}
+		}
+		if isUp && !isLoopback {
+			selectable[iface.Name] = true
+		}
+	}
+	return selectable
 }
 
 func (s *ServerService) AppendCpuSample(t time.Time, v float64) {

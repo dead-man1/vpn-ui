@@ -90,6 +90,9 @@
 "noExpiry" = "No expiry"
 
 [menu]
+"navigation" = "Main navigation"
+"collapse" = "Collapse sidebar"
+"expand" = "Expand sidebar"
 "theme" = "Theme"
 "dark" = "Dark"
 "ultraDark" = "Ultra Dark"
@@ -181,6 +184,8 @@
 "successLogin" = " You have successfully logged into your account."
 
 [pages.index]
+"restore" = "Restore"
+"systemStatus" = "System Status"
 "title" = "Overview"
 "checkUpdate" = "Check for Update"
 "upToDate" = "Up to date"
@@ -294,6 +299,7 @@
 "getConfigError" = "An error occurred while retrieving the config file."
 
 [pages.inbounds]
+"totalUsers" = "Total Users"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

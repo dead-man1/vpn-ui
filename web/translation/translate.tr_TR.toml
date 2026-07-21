@@ -90,6 +90,9 @@
 "noExpiry" = "Süresiz"
 
 [menu]
+"navigation" = "Ana gezinme"
+"collapse" = "Kenar çubuğunu daralt"
+"expand" = "Kenar çubuğunu genişlet"
 "theme" = "Tema"
 "dark" = "Koyu"
 "ultraDark" = "Ultra Koyu"
@@ -116,6 +119,8 @@
 "successLogin" = "Hesabınıza başarıyla giriş yaptınız."
 
 [pages.index]
+"restore" = "Geri yükle"
+"systemStatus" = "Sistem durumu"
 "title" = "Genel Bakış"
 "cpu" = "İşlemci"
 "logicalProcessors" = "Mantıksal işlemciler"
@@ -218,6 +223,7 @@
 "customGeoErrUpdateAllIncomplete" = "Bir veya daha fazla özel geo kaynağı güncellenemedi"
 
 [pages.inbounds]
+"totalUsers" = "Toplam kullanıcı"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

@@ -2,10 +2,7 @@
 {{ template "page/head_end" .}}
 
 {{ template "page/body_start" .}}
-<a-layout id="app" v-cloak :class="themeSwitcher.currentTheme + ' settings-page'">
-  <a-sidebar></a-sidebar>
-  <a-layout id="content-layout">
-    <a-layout-content>
+{{template "page/shell_start" . }}
       <a-spin :spinning="loadingStates.spinning" :delay="500" tip='{{ i18n "loading"}}' size="large">
         <transition name="list" appear>
           <a-alert type="error" v-if="confAlerts.length>0 && loadingStates.fetched" :style="{ marginBottom: '10px' }"
@@ -38,7 +35,7 @@
                     <a-col :xs="24" :sm="14">
                       <template>
                         <div>
-                          <a-back-top :target="() => document.getElementById('content-layout')"
+                          <a-back-top :target="() => document.querySelector('.bo-main')"
                             visibility-height="200"></a-back-top>
                           <a-alert type="warning" :style="{ float: 'right', width: 'fit-content' }"
                             message='{{ i18n "pages.settings.infoDesc" }}' show-icon>
@@ -99,9 +96,7 @@
           </template>
         </transition>
       </a-spin>
-    </a-layout-content>
-  </a-layout>
-</a-layout>
+{{template "page/shell_end" . }}
 {{template "page/body_scripts" .}}
 <script src="{{ .base_path }}assets/qrcode/qrious2.min.js?{{ .cur_ver }}"></script>
 <script src="{{ .base_path }}assets/otpauth/otpauth.umd.min.js?{{ .cur_ver }}"></script>
@@ -117,6 +112,8 @@
     el: '#app',
     data: {
       themeSwitcher,
+      pageTitle: '{{ i18n "menu.settings"}}',
+      pageClass: 'settings-page',
       // The caller's own 2FA state, rendered server-side. Not part of allSetting:
       // 2FA is per-admin now, and the settings blob goes to every logged-in admin.
       twoFactorEnable: {{ .two_factor }},

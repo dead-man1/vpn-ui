@@ -90,6 +90,9 @@
 "noExpiry" = "無到期"
 
 [menu]
+"navigation" = "主導覽"
+"collapse" = "收合側邊欄"
+"expand" = "展開側邊欄"
 "theme" = "主題"
 "dark" = "深色"
 "ultraDark" = "超深色"
@@ -116,6 +119,8 @@
 "successLogin" = "您已成功登入您的帳戶。"
 
 [pages.index]
+"restore" = "還原"
+"systemStatus" = "系統狀態"
 "title" = "系統狀態"
 "cpu" = "CPU"
 "logicalProcessors" = "邏輯處理器"
@@ -218,6 +223,7 @@
 "customGeoErrUpdateAllIncomplete" = "有一個或多個自訂 geo 來源更新失敗"
 
 [pages.inbounds]
+"totalUsers" = "使用者總數"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"

@@ -2,10 +2,7 @@
 {{ template "page/head_end" .}}
 
 {{ template "page/body_start" .}}
-<a-layout id="app" v-cloak :class="themeSwitcher.currentTheme">
-  <a-sidebar></a-sidebar>
-  <a-layout id="content-layout">
-    <a-layout-content>
+{{template "page/shell_start" . }}
       <a-spin :spinning="spinning" :delay="300" tip='{{ i18n "loading"}}' size="large">
         <transition name="list" appear>
           <a-row :gutter="[16, 16]" :style="{ margin: 0 }">
@@ -89,9 +86,7 @@
           </a-row>
         </transition>
       </a-spin>
-    </a-layout-content>
-  </a-layout>
-</a-layout>
+{{template "page/shell_end" . }}
 
 {{template "page/body_scripts" .}}
 {{template "component/aSidebar" .}}
@@ -115,6 +110,8 @@
     el: '#app',
     data: {
       themeSwitcher,
+      pageTitle: '{{ i18n "menu.admins"}}',
+      pageClass: '',
       spinning: false,
       admins: [],
       // Permission slugs come from the server rather than a hard-coded copy, so the

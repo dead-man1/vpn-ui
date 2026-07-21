@@ -3519,6 +3519,87 @@ func (s *InboundService) MigrateDB() {
 	s.MigrationRemoveOrphanedTraffics()
 }
 
+// ClientStatsSummary is the overview's account roll-up: how many accounts the
+// caller owns, how many are connected right now, how many have run out of traffic
+// or time, and how many are close to it.
+type ClientStatsSummary struct {
+	Total    int `json:"total"`
+	Online   int `json:"online"`
+	Depleted int `json:"depleted"`
+	Expiring int `json:"expiring"`
+}
+
+// GetClientStatsFor counts the caller's accounts by state. It is the server-side
+// twin of the tally the inbounds page builds in the browser, and follows the same
+// rules so the two pages cannot disagree:
+//
+//   - clients on a DISABLED inbound still count towards the total, but are neither
+//     online, depleted nor expiring;
+//   - depleted wins over expiring, so the two never double-count the same account;
+//   - the warning windows come from the expireDiff/trafficDiff settings, in the
+//     days and GB the settings form stores them as.
+//
+// Scoping is inherited from GetInboundsFor, so an admin sees only their own
+// accounts. That also scopes "online": the panel-wide online list is narrowed to
+// the emails on the inbounds the caller can see.
+func (s *InboundService) GetClientStatsFor(user *model.User) (*ClientStatsSummary, error) {
+	inbounds, err := s.GetInboundsFor(user)
+	if err != nil {
+		return nil, err
+	}
+
+	var settingService SettingService
+	expireDiff, err := settingService.GetExpireDiff()
+	if err != nil {
+		return nil, err
+	}
+	trafficDiff, err := settingService.GetTrafficDiff()
+	if err != nil {
+		return nil, err
+	}
+	expireWindow := int64(expireDiff) * 86400000     // days -> milliseconds
+	trafficWindow := int64(trafficDiff) * 1073741824 // GB -> bytes
+
+	online := make(map[string]bool)
+	for _, email := range s.GetOnlineClients() {
+		online[email] = true
+	}
+
+	summary := &ClientStatsSummary{}
+	now := time.Now().UnixMilli()
+	for _, inbound := range inbounds {
+		clients, err := s.GetClients(inbound)
+		if err != nil {
+			// One inbound with unparsable settings must not blank the whole roll-up.
+			logger.Warning("get clients for stats failed on inbound", inbound.Id, ":", err)
+			continue
+		}
+		summary.Total += len(clients)
+		if !inbound.Enable {
+			continue
+		}
+		for _, client := range clients {
+			if client.Enable && online[client.Email] {
+				summary.Online++
+			}
+		}
+		for _, stat := range inbound.ClientStats {
+			exhausted := stat.Total > 0 && (stat.Up+stat.Down) >= stat.Total
+			expired := stat.ExpiryTime > 0 && stat.ExpiryTime <= now
+			if exhausted || expired {
+				summary.Depleted++
+				continue
+			}
+			nearExpiry := stat.ExpiryTime > 0 && stat.ExpiryTime-now < expireWindow
+			nearQuota := stat.Total > 0 && stat.Total-(stat.Up+stat.Down) < trafficWindow
+			if nearExpiry || nearQuota {
+				summary.Expiring++
+			}
+		}
+	}
+	return summary, nil
+}
+
 func (s *InboundService) GetOnlineClients() []string {
 	// Nil-checked like the other p accesses: Xray may never have started (a
 	// VPN-only deployment, or a failed core), and an unguarded deref panics the

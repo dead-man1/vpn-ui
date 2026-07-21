@@ -542,13 +542,13 @@
     <template slot="title">
       {{ i18n "pages.index.logs" }}
       <a-icon :spin="logModal.loading" type="sync" class="va-middle ml-10" :disabled="logModal.loading"
-        @click="openLogs()">
+        @click="reloadLogs()">
       </a-icon>
     </template>
     <a-form layout="inline">
       <a-form-item class="mr-05">
         <a-input-group compact>
-          <a-select size="small" v-model="logModal.rows" :style="{ width: '70px' }" @change="openLogs()"
+          <a-select size="small" v-model="logModal.rows" :style="{ width: '70px' }" @change="reloadLogs()"
             :dropdown-class-name="themeSwitcher.currentTheme">
             <a-select-option value="10">10</a-select-option>
             <a-select-option value="20">20</a-select-option>
@@ -556,7 +556,7 @@
             <a-select-option value="100">100</a-select-option>
             <a-select-option value="500">500</a-select-option>
           </a-select>
-          <a-select size="small" v-model="logModal.level" :style="{ width: '95px' }" @change="openLogs()"
+          <a-select size="small" v-model="logModal.level" :style="{ width: '95px' }" @change="reloadLogs()"
             :dropdown-class-name="themeSwitcher.currentTheme">
             <a-select-option value="debug">Debug</a-select-option>
             <a-select-option value="info">Info</a-select-option>
@@ -567,10 +567,10 @@
         </a-input-group>
       </a-form-item>
       <a-form-item>
-        <a-checkbox v-model="logModal.syslog" @change="openLogs()">SysLog</a-checkbox>
+        <a-checkbox v-model="logModal.syslog" @change="reloadLogs()">SysLog</a-checkbox>
       </a-form-item>
       <a-form-item style="float: right;">
-        <a-button type="primary" icon="download" @click="FileManager.downloadTextFile(logModal.logs?.join('\n'), 'vpn-ui.log')"></a-button>
+        <a-button type="primary" icon="download" @click="FileManager.downloadTextFile(logModal.plain, 'vpn-ui.log')"></a-button>
       </a-form-item>
     </a-form>
     <div class="ant-input log-container" v-html="logModal.formattedLogs"></div>
@@ -1039,10 +1039,27 @@
     level: 'info',
     syslog: false,
     loading: false,
+    // 'panel' is the Xray tile's button (panel log only), 'all' is the Manage
+    // tile's (panel plus every core). The modal's own controls re-run whichever
+    // one opened it, so changing the row count cannot silently switch views.
+    mode: 'panel',
+    // Plain-text mirror of what is on screen, for the download button. The
+    // rendered copy is HTML and the aggregated view has no `logs` array.
+    plain: '',
     show(logs) {
       this.visible = true;
+      this.mode = 'panel';
       this.logs = logs;
+      this.plain = (logs || []).join('\n');
       this.formattedLogs = this.logs?.length > 0 ? this.formatLogs(this.logs) : "No Record...";
+    },
+    // The log pane renders with v-html, so every scrap of log text has to be
+    // escaped before it goes in. Log lines are not trusted input: they echo
+    // client-supplied names (VPN usernames, remarks, SNI), so an unescaped
+    // line carrying markup would run in the admin's browser.
+    esc(s) {
+      const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+      return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => map[c]);
     },
     formatLogs(logs) {
       let formattedLogs = '';
@@ -1061,24 +1078,41 @@
           const levelIndex = levels.indexOf(level, levels) || 5;
 
           //formattedLogs += `<span style="color: gray;">${index + 1}.</span>`;
-          formattedLogs += `<span style="color: ${levelColors[0]};">${d} ${t}</span> `;
-          formattedLogs += `<span style="color: ${levelColors[levelIndex]}">${level}</span>`;
+          formattedLogs += `<span style="color: ${levelColors[0]};">${this.esc(d)} ${this.esc(t)}</span> `;
+          formattedLogs += `<span style="color: ${levelColors[levelIndex]}">${this.esc(level)}</span>`;
         } else {
           const levelIndex = levels.indexOf(data, levels) || 5;
-          formattedLogs += `<span style="color: ${levelColors[levelIndex]}">${data}</span>`;
+          formattedLogs += `<span style="color: ${levelColors[levelIndex]}">${this.esc(data)}</span>`;
         }
 
         if (message) {
+          // The label is our markup; the message body around it is not.
           if (message.startsWith("XRAY:"))
-            message = "<b>XRAY: </b>" + message.substring(5);
+            message = "<b>XRAY: </b>" + this.esc(message.substring(5));
           else
-            message = "<b>VPN-UI: </b>" + message;
+            message = "<b>VPN-UI: </b>" + this.esc(message);
         }
 
         formattedLogs += message ? ' - ' + message : '';
       });
 
       return formattedLogs;
+    },
+    // Aggregated view for the Manage tile. Core logs are plain daemon output,
+    // not the panel's "date time LEVEL - message" shape, so running them
+    // through formatLogs would mislabel every line.
+    showSections(sections) {
+      this.visible = true;
+      this.mode = 'all';
+      this.logs = [];
+      this.plain = sections.map((s) => `===== ${s.name} =====\n${(s.text || '').trim()}`).join('\n\n');
+      this.formattedLogs = sections.map((s) => {
+        const head = `<div style="color:var(--accent);font-weight:600;margin:12px 0 4px">${this.esc(s.name)}</div>`;
+        const text = (s.text || '').trim();
+        return head + (text
+          ? `<div>${this.esc(text).replace(/\n/g, '<br>')}</div>`
+          : `<div style="color:var(--text-3)">No record</div>`);
+      }).join('') || "No Record...";
     },
     hide() {
       this.visible = false;
@@ -1456,10 +1490,42 @@
           if (msg && msg.success && msg.obj) this.userStats = msg.obj;
         } catch (e) { /* best-effort */ }
       },
-      openAllLogs() {
-        // The Manage tile's log button shows every core's log, not only the
-        // panel's, so a user does not have to visit Core Settings per daemon.
-        this.openLogs();
+      // The modal's row/level/syslog controls and its refresh icon go through
+      // here, so they re-run the loader that opened it instead of always
+      // dropping back to the panel-only view.
+      reloadLogs() {
+        return logModal.mode === 'all' ? this.openAllLogs() : this.openLogs();
+      },
+      async openAllLogs() {
+        // The Manage tile's log button aggregates the panel log and every
+        // core's log, so a user does not have to open Core Settings once per
+        // daemon.
+        logModal.loading = true;
+        logModal.showSections([]);
+        const sections = [];
+
+        const panel = await HttpUtil.post('/panel/api/server/logs/' + logModal.rows,
+          { level: logModal.level, syslog: logModal.syslog });
+        if (panel && panel.success) {
+          sections.push({ name: 'VPN-UI', text: (panel.obj || []).join('\n') });
+        }
+
+        // Core logs sit behind PermCoreSettings, which someone looking at
+        // Overview need not hold. These go through axios rather than HttpUtil
+        // because HttpUtil toasts on failure, and a 403 would raise one toast
+        // per core; the panel log on its own is still a useful answer.
+        const quiet = (url) => axios.get(url).then((r) => r.data).catch(() => null);
+        const status = await quiet('/panel/core/status');
+        const cores = (status && status.success && status.obj && status.obj.cores) || [];
+        const logs = await Promise.all(cores.map((c) =>
+          quiet('/panel/core/logs/' + encodeURIComponent(c.name))
+            .then((d) => ({ name: c.name, text: (d && d.success && d.obj) || '' }))));
+        for (const l of logs) {
+          if (l.text.trim()) sections.push(l);
+        }
+
+        logModal.showSections(sections);
+        logModal.loading = false;
       },
       openRestore() {
         this.openBackup();

@@ -6,6 +6,8 @@
 
 هذا المشروع هو نسخة مُطوّرة من لوحة **[3X-UI](https://github.com/MHSanaei/3x-ui)** (الإصدار 2.9.3). يهدف هذا المشروع إلى إضافة بروتوكولات مختلفة وتقديمه كلوحة شاملة مع دعم إمكانيات **Xray-core**.
 
+![نظرة عامة](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
+
 ## البروتوكولات الجديدة
 
 - PPTP
@@ -75,11 +77,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 
 > [!NOTE]
 > تم تغيير مسار قاعدة البيانات وخدمة systemd وجميع المنافذ الافتراضية، لذا يمكنك تثبيت هذه اللوحة بجانب لوحاتك الأخرى دون أي مشكلة.
-
-## لقطات الشاشة
-
-![نظرة عامة](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-
 
 ## كيفية تفاعل البروتوكولات الجديدة مع نواة Xray-core
 

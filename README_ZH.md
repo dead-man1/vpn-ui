@@ -6,6 +6,8 @@
 
 本项目是 **[3X-UI](https://github.com/MHSanaei/3x-ui)** 面板（2.9.3 版本）的增强版。本项目旨在添加多种协议，并将其打造成一个支持 **Xray-core** 各项功能的综合性面板。
 
+![总览](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
+
 ## 新增协议
 
 - PPTP
@@ -75,11 +77,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 
 > [!NOTE]
 > 数据库路径、systemd 服务以及所有默认端口均已更改，因此您可以将本面板与您的其他面板并存安装，而不会产生任何问题。
-
-## 截图
-
-![总览](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-
 
 ## 新增协议与 Xray-core 内核的交互方式
 

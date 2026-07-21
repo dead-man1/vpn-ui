@@ -6,6 +6,8 @@
 
 این پروژه، یک نسخه‌ی ارتقایافته از پنل **[3X-UI](https://github.com/MHSanaei/3x-ui)** (نسخه‌ی 2.9.3) هستش.  هدف این پروژه اضافه کردن پروتکل های مختلف و راه اندازی بصورت یک پنل جامعه با پشتیبانی از قابلیت های **Xray-core**  هستش
 
+![نمای کلی](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
+
 ## پروتکل‌های جدید
 
 - PPTP
@@ -76,11 +78,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 
 > [!NOTE]
 > مسیر دیتابیس، سرویس systemd و همه‌ی پورت‌های پیش‌فرض تغییر کرده‌اند، پس می‌تونید این پنل رو بدون هیچ مشکلی کنار پنل‌های دیگه‌تون نصب کنید.
-
-## اسکرین‌شات‌ها
-
-![نمای کلی](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-
 
 ## نحوه‌ی تعامل پروتکل‌های جدید با هسته‌ی Xray-core
 

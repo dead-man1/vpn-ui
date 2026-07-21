@@ -6,6 +6,8 @@
 
 Bu proje, **[3X-UI](https://github.com/MHSanaei/3x-ui)** panelinin (2.9.3 sürümü) geliştirilmiş bir versiyonudur. Projenin amacı; çeşitli protokoller eklemek ve **Xray-core** özelliklerini destekleyen kapsamlı bir panel olarak hayata geçirmektir.
 
+![Genel Görünüm](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
+
 ## Yeni Protokoller
 
 - PPTP
@@ -75,11 +77,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 
 > [!NOTE]
 > Veritabanı yolu, systemd servisi ve tüm varsayılan portlar değiştirildi; bu yüzden bu paneli hiçbir sorun yaşamadan diğer panellerinizin yanına kurabilirsiniz.
-
-## Ekran Görüntüleri
-
-![Genel Görünüm](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-
 
 ## Yeni Protokollerin Xray-core Çekirdeği ile Etkileşimi
 

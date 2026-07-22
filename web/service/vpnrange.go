@@ -391,16 +391,16 @@ func normalizeRanges(inbound *model.Inbound, excludeId int) error {
 	var err error
 	switch proto {
 	case "openvpn":
-		normalized, err = normalizeOvpnRanges(inbound.Id, clientCount, userLimit, used)
+		normalized, err = normalizeOvpnRanges(inbound.Id, clientCount, userLimit, used, ranges)
 	case "openconnect":
 		// Same aligned-block model as OpenVPN (single contiguous CIDR) but in the
 		// 10.4 /16 with no TCP mirror.
-		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, userLimit, protocolBase("openconnect"), -1, used)
+		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, userLimit, protocolBase("openconnect"), -1, used, ranges)
 	case "ikev2":
 		// Aligned-block model like OpenConnect (single contiguous CIDR, no mirror) in
 		// the 10.6 /16. One shared charon assigns each account its block IP via the
 		// RADIUS Framed-IP-Address, exactly like ocserv.
-		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, userLimit, protocolBase("ikev2"), -1, used)
+		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, userLimit, protocolBase("ikev2"), -1, used, ranges)
 	case "wg-c":
 		// Gateway model: each account owns ONE aligned power-of-two block (nextPow2 of the
 		// User Limit, e.g. 6 -> a /29) in the 10.7 /16. User Limit 0 = the maximum 64-device
@@ -408,10 +408,10 @@ func normalizeRanges(inbound *model.Inbound, excludeId int) error {
 		// Size the /24 allocation by that same block so the range never under-provisions
 		// relative to wgcAccountBlock; the kernel interface takes the /24 .1, one Xray
 		// source-route per account.
-		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, nextPow2(wgcDecodeUserLimit(raw)), protocolBase("wg-c"), -1, used)
+		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, nextPow2(wgcDecodeUserLimit(raw)), protocolBase("wg-c"), -1, used, ranges)
 	case "awg":
 		// AmneziaWG: identical gateway model to wg-c, in the 10.8 /16 (base 8).
-		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, nextPow2(wgcDecodeUserLimit(raw)), protocolBase("awg"), -1, used)
+		normalized, err = normalizeBlockRanges(inbound.Id, clientCount, nextPow2(wgcDecodeUserLimit(raw)), protocolBase("awg"), -1, used, ranges)
 	default:
 		normalized, err = normalizePppRanges(proto, ranges, clientCount, userLimit, used)
 	}
@@ -492,8 +492,8 @@ func normalizePppRanges(proto string, ranges []string, clientCount, userLimit in
 // yields the single legacy /24 (10.2.{id}) whenever that /24 is free, keeping
 // existing deployments byte-identical. Thin wrapper over normalizeBlockRanges in
 // the OpenVPN /16 (base 10.2) with its TCP mirror (10.3).
-func normalizeOvpnRanges(inboundId, clientCount, userLimit int, used map[string]bool) ([]string, error) {
-	return normalizeBlockRanges(inboundId, clientCount, userLimit, 2, 3, used)
+func normalizeOvpnRanges(inboundId, clientCount, userLimit int, used map[string]bool, current []string) ([]string, error) {
+	return normalizeBlockRanges(inboundId, clientCount, userLimit, 2, 3, used, current)
 }
 
 // normalizeBlockRanges (re)allocates a contiguous, aligned power-of-two block of
@@ -502,7 +502,7 @@ func normalizeOvpnRanges(inboundId, clientCount, userLimit int, used map[string]
 // must also stay free (OpenVPN's TCP mirror, 3), or -1 for none. For <=253 clients
 // it yields the single legacy /24 (10.{base}.{id}) whenever free, so existing
 // inbounds stay byte-identical.
-func normalizeBlockRanges(inboundId, clientCount, userLimit, base, mirrorBase int, used map[string]bool) ([]string, error) {
+func normalizeBlockRanges(inboundId, clientCount, userLimit, base, mirrorBase int, used map[string]bool, current []string) ([]string, error) {
 	needed := clientCount
 	if needed < 1 {
 		needed = 1
@@ -517,6 +517,26 @@ func normalizeBlockRanges(inboundId, clientCount, userLimit, base, mirrorBase in
 	if num24 > 64 {
 		num24 = 64 // cap the block at a /18 (16k+ hosts)
 	}
+
+	// An inbound that already owns a usable block KEEPS it.
+	//
+	// This is the whole reason `current` is threaded in. Allocation runs again on
+	// every reconcile (wgcChanged -> AutoExpandVpnRanges -> normalizeRanges), and
+	// allocateAlignedBlock prefers the slot matching the inbound id. On the create
+	// path the id is still 0, so inbounds are packed from slot 0 upward and then
+	// DRAGGED toward their id on the next reconcile: with two wg-c inbounds, #2
+	// moved 10.7.1 -> 10.7.2 on the first reconcile and #1 moved 10.7.0 -> 10.7.1
+	// on the second. Deleting any inbound shuffled the survivors again.
+	//
+	// For the daemon-assigned protocols that only wasted a renumber. For wg-c and
+	// awg it is fatal and silent: a WireGuard config hardcodes `Address = <block
+	// IP>/32` and the server cryptokey-routes exactly that address, so every config
+	// already handed out keeps sourcing an address the peer no longer allows. The
+	// handshake still succeeds and not one packet gets through.
+	if kept, ok := keepOwnedBlock(current, num24, base, mirrorBase, used); ok {
+		return kept, nil
+	}
+
 	thirds, ok := allocateAlignedBlock(inboundId, num24, base, mirrorBase, used)
 	if !ok {
 		return nil, fmt.Errorf("no free aligned block of %d /24s available in 10.%d.0.0/16", num24, base)
@@ -526,6 +546,45 @@ func normalizeBlockRanges(inboundId, clientCount, userLimit, base, mirrorBase in
 		out = append(out, ovpnRangeForSubnet(fmt.Sprintf("10.%d.%d", base, t)))
 	}
 	return out, nil
+}
+
+// keepOwnedBlock reports whether the inbound's CURRENT ranges are still a usable
+// block, and returns them re-rendered if so. Usable means: contiguous, a power-of-two
+// count, aligned to its own size, at least as big as the inbound now needs, and not
+// overlapping another inbound. `used` already excludes the inbound itself (see
+// usedVpnSubnets), so an inbound never collides with its own block here.
+//
+// An oversized block is deliberately kept rather than shrunk. Reclaiming the spare
+// /24s would be another reason for a live block to move, and address stability is
+// worth far more than a few unused /24s inside a /16.
+func keepOwnedBlock(current []string, num24, base, mirrorBase int, used map[string]bool) ([]string, bool) {
+	thirds := ovpnThirds(current)
+	have := len(thirds)
+	if have < num24 || have&(have-1) != 0 { // absent, too small, or not a power of two
+		return nil, false
+	}
+	if thirds[0]%have != 0 { // not aligned to its own size
+		return nil, false
+	}
+	for i, t := range thirds {
+		if t != thirds[0]+i { // not contiguous
+			return nil, false
+		}
+		if t > 254 {
+			return nil, false
+		}
+		if used[fmt.Sprintf("10.%d.%d", base, t)] {
+			return nil, false // another inbound moved in; this one has to move out
+		}
+		if mirrorBase >= 0 && used[fmt.Sprintf("10.%d.%d", mirrorBase, t)] {
+			return nil, false
+		}
+	}
+	out := make([]string, 0, have)
+	for _, t := range thirds {
+		out = append(out, ovpnRangeForSubnet(fmt.Sprintf("10.%d.%d", base, t)))
+	}
+	return out, true
 }
 
 // allocateAlignedBlock finds num24 consecutive, aligned free /24 third-octets in

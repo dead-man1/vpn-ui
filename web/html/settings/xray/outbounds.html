@@ -111,6 +111,19 @@
                         ([[ outboundTestStates[index].result.statusCode
                         ]])</span>
                 </a-tag>
+                <!-- Where the outbound actually egresses, probed through the
+                     outbound itself. Best-effort, so a successful test with no
+                     exit info simply shows the delay tag alone. -->
+                <div class="ob-exit" v-if="outboundTestStates[index].result.success && exitInfo(index)">
+                    <a-tooltip v-if="exitCountry(index)" :title="exitCountry(index)">
+                        <span class="ob-exit-flag">[[ exitFlag(index) ]]</span>
+                    </a-tooltip>
+                    <span class="ob-exit-ips">
+                        <span class="ob-exit-ip num" v-if="exitInfo(index).ipv4">[[ exitInfo(index).ipv4 ]]</span>
+                        <span class="ob-exit-ip num" v-if="exitInfo(index).ipv6"
+                            :title="exitInfo(index).ipv6">[[ exitInfo(index).ipv6 ]]</span>
+                    </span>
+                </div>
                 <a-tooltip v-else
                     :title="outboundTestStates[index].result.error">
                     <a-tag color="red">

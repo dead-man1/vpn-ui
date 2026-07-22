@@ -35,6 +35,10 @@ import (
 	"github.com/shirou/gopsutil/v4/net"
 )
 
+// panelStartedAt is when this panel process began. Captured at package init so
+// Panel Uptime measures the process, not the first status poll.
+var panelStartedAt = time.Now()
+
 // ProcessState represents the current state of a system process.
 type ProcessState string
 
@@ -58,6 +62,7 @@ type Status struct {
 	OsVersion   string    `json:"osVersion"`
 	Kernel      string    `json:"kernel"`
 	Hostname    string    `json:"hostname"`
+	Virt        VirtInfo  `json:"virt"`
 	Mem         struct {
 		Current uint64 `json:"current"`
 		Total   uint64 `json:"total"`
@@ -75,14 +80,37 @@ type Status struct {
 		ErrorMsg string       `json:"errorMsg"`
 		Version  string       `json:"version"`
 	} `json:"xray"`
-	Uptime   uint64    `json:"uptime"`
-	Loads    []float64 `json:"loads"`
-	TcpCount int       `json:"tcpCount"`
-	UdpCount int       `json:"udpCount"`
-	NetIO    struct {
+	// Uptime is the HOST's, AppUptime is this panel process's. The overview shows
+	// both: a panel that restarted an hour ago on a box up for months is a fact
+	// worth seeing, and one number cannot carry it.
+	Uptime    uint64    `json:"uptime"`
+	AppUptime uint64    `json:"appUptime"`
+	Loads     []float64 `json:"loads"`
+	TcpCount  int       `json:"tcpCount"`
+	UdpCount  int       `json:"udpCount"`
+	NetIO     struct {
 		Up   uint64 `json:"up"`
 		Down uint64 `json:"down"`
 	} `json:"netIO"`
+	// Swap and disk THROUGHPUT, as rates in bytes/sec, derived exactly like
+	// NetIO below. The dashboard graphs these rather than the usage percentages
+	// above: how full a disk is barely moves between two-second polls, so a
+	// usage sparkline is a flat line by construction, while read+write is the
+	// signal an operator actually wants from those two rows.
+	SwapIO struct {
+		In  uint64 `json:"in"`
+		Out uint64 `json:"out"`
+	} `json:"swapIO"`
+	DiskIO struct {
+		Read  uint64 `json:"read"`
+		Write uint64 `json:"write"`
+	} `json:"diskIO"`
+	// The cumulative counters those two rates are differenced against. Off the
+	// wire for the same reason netIfaceTotals is: the dashboard wants rates, and
+	// shipping both only invites the two to be confused.
+	swapTotals struct{ in, out uint64 }
+	diskTotals struct{ read, write uint64 }
+
 	NetIOByIface []NetIOIface `json:"netIOByIface"`
 	// netIfaceTotals is the previous poll's CUMULATIVE per-interface counters. It
 	// rides along on the Status because that is where the delta partner already
@@ -122,6 +150,13 @@ type netIfaceTotal struct {
 // Release represents information about a software release from GitHub.
 type Release struct {
 	TagName string `json:"tag_name"` // The tag name of the release
+	Name    string `json:"name"`     // The release title, usually just the version
+	// Body is the release notes, as Markdown. The panel's own releases keep to a
+	// short "## Added / ## Fixed" shape, which is what the overview's update
+	// dialog renders before the operator commits to installing.
+	Body        string `json:"body"`
+	PublishedAt string `json:"published_at"`
+	HTMLURL     string `json:"html_url"`
 }
 
 // ServerService provides business logic for server monitoring and management.
@@ -138,6 +173,11 @@ type ServerService struct {
 	lastCPUTimes       cpu.TimesStat
 	hasLastCPUSample   bool
 	hasNativeCPUSample bool
+	// Baseline for the native /proc/stat sampler, owned by THIS service so two
+	// ServerService instances polling on different schedules cannot consume each
+	// other's measurement interval (see sampleCPUUtilization).
+	lastCPUIdleAll     uint64
+	lastCPUTotal       uint64
 	emaCPU             float64
 	cpuHistory         []CPUSample
 	cachedCpuSpeedMhz  float64
@@ -150,6 +190,7 @@ type ServerService struct {
 	cachedOsVersion string
 	cachedKernel    string
 	cachedHostname  string
+	cachedVirt      VirtInfo
 }
 
 // AggregateCpuHistory returns up to maxPoints averaged buckets of size bucketSeconds over recent data.
@@ -284,6 +325,33 @@ func getPublicIP(url string) string {
 	return ipString
 }
 
+// wholeDiskRe matches whole block devices and deliberately NOT their partitions:
+// sda but not sda1, nvme0n1 but not nvme0n1p1, mmcblk0 but not mmcblk0p1. loop,
+// ram, device-mapper and md nodes are excluded entirely because their bytes are
+// already counted on the physical device underneath.
+var wholeDiskRe = regexp.MustCompile(`^(?:(?:[shvx]|xv)d[a-z]+|nvme\d+n\d+|mmcblk\d+)$`)
+
+func isWholeDisk(name string) bool { return wholeDiskRe.MatchString(name) }
+
+// pollSeconds is the interval between two status samples, in seconds.
+func pollSeconds(now time.Time, prev time.Time) float64 {
+	if prev.IsZero() {
+		return 0
+	}
+	return float64(now.Sub(prev)) / float64(time.Second)
+}
+
+// perSecond turns two readings of a cumulative counter into a rate. A counter
+// that went BACKWARDS means it was reset (a device reappeared, or the panel was
+// restarted); report 0 for that poll rather than an unsigned underflow, which
+// would render as an exabyte-per-second spike and wreck the chart's scale.
+func perSecond(current, previous uint64, seconds float64) uint64 {
+	if current < previous || seconds <= 0 {
+		return 0
+	}
+	return uint64(float64(current-previous) / seconds)
+}
+
 func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	now := time.Now()
 	status := &Status{
@@ -336,6 +404,9 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	status.CpuModel = s.cachedCpuModel
 
 	// Uptime
+	// This process's own uptime, alongside the host's below.
+	status.AppUptime = uint64(time.Since(panelStartedAt).Seconds())
+
 	upTime, err := host.Uptime()
 	if err != nil {
 		logger.Warning("get uptime failed:", err)
@@ -368,11 +439,13 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 		} else {
 			s.cachedHostname = hn
 		}
+		s.cachedVirt = DetectVirtualization()
 	}
 	status.OsName = s.cachedOsName
 	status.OsVersion = s.cachedOsVersion
 	status.Kernel = s.cachedKernel
 	status.Hostname = s.cachedHostname
+	status.Virt = s.cachedVirt
 
 	// Memory stats
 	memInfo, err := mem.VirtualMemory()
@@ -389,6 +462,15 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	} else {
 		status.Swap.Current = swapInfo.Used
 		status.Swap.Total = swapInfo.Total
+		// Sin/Sout are cumulative bytes paged in/out since boot (Linux reads them
+		// from /proc/vmstat), so the rate is their delta over the poll interval.
+		status.swapTotals.in, status.swapTotals.out = swapInfo.Sin, swapInfo.Sout
+		if lastStatus != nil {
+			if seconds := pollSeconds(now, lastStatus.T); seconds > 0 {
+				status.SwapIO.In = perSecond(swapInfo.Sin, lastStatus.swapTotals.in, seconds)
+				status.SwapIO.Out = perSecond(swapInfo.Sout, lastStatus.swapTotals.out, seconds)
+			}
+		}
 	}
 
 	// Disk stats
@@ -398,6 +480,29 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	} else {
 		status.Disk.Current = diskInfo.Used
 		status.Disk.Total = diskInfo.Total
+	}
+
+	// Disk THROUGHPUT, summed over whole disks only. /proc/diskstats lists
+	// partitions and device-mapper nodes alongside the disks they live on, so
+	// adding every row up would count the same bytes two or three times.
+	if ioCounters, err := disk.IOCounters(); err != nil {
+		logger.Warning("get disk io counters failed:", err)
+	} else {
+		var read, write uint64
+		for name, c := range ioCounters {
+			if !isWholeDisk(name) {
+				continue
+			}
+			read += c.ReadBytes
+			write += c.WriteBytes
+		}
+		status.diskTotals.read, status.diskTotals.write = read, write
+		if lastStatus != nil {
+			if seconds := pollSeconds(now, lastStatus.T); seconds > 0 {
+				status.DiskIO.Read = perSecond(read, lastStatus.diskTotals.read, seconds)
+				status.DiskIO.Write = perSecond(write, lastStatus.diskTotals.write, seconds)
+			}
+		}
 	}
 
 	// Load averages
@@ -599,14 +704,38 @@ func (s *ServerService) AppendCpuSample(t time.Time, v float64) {
 }
 
 func (s *ServerService) sampleCPUUtilization() (float64, error) {
-	// Try native platform-specific CPU implementation first (Windows, Linux, macOS)
-	if pct, err := sys.CPUPercentRaw(); err == nil {
+	// Try native platform-specific CPU implementation first (Linux, macOS).
+	//
+	// The baseline is per-ServerService. It used to live in the sys package as a
+	// package-level pair of counters, which meant the dashboard's 2s poll and the
+	// Telegram bot's usage report (a SEPARATE ServerService, web/service/tgbot.go)
+	// consumed each other's intervals: whichever ran second measured a window that
+	// started at the other one's read, and fed that bogus percentage into its own EMA.
+	if idleAll, total, err := sys.CPUTimesRaw(); err == nil {
 		s.mu.Lock()
-		// First call to native method returns 0 (initializes baseline)
+		prevIdle, prevTotal := s.lastCPUIdleAll, s.lastCPUTotal
+		s.lastCPUIdleAll, s.lastCPUTotal = idleAll, total
+		// First call establishes the baseline; there is no interval to measure yet.
 		if !s.hasNativeCPUSample {
 			s.hasNativeCPUSample = true
 			s.mu.Unlock()
 			return 0, nil
+		}
+		// A counter that went backwards (or stood still) has no usable delta; keep
+		// the last smoothed value rather than reporting a spurious 0%.
+		if total <= prevTotal || idleAll < prevIdle {
+			val := s.emaCPU
+			s.mu.Unlock()
+			return val, nil
+		}
+		totald := total - prevTotal
+		busy := totald - (idleAll - prevIdle)
+		pct := float64(busy) / float64(totald) * 100.0
+		if pct < 0 {
+			pct = 0
+		}
+		if pct > 100 {
+			pct = 100
 		}
 		// Smooth with EMA
 		const alpha = 0.3

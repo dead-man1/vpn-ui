@@ -2082,19 +2082,10 @@
         }
         return response;
       },
+      // Single definition in model/inbound.js, mirrored by clientIdentityKey() in
+      // web/service/inbound.go. Do not inline the switch here again.
       getClientId(protocol, client) {
-        switch (protocol) {
-          case Protocols.TROJAN: return client.password;
-          case Protocols.L2TP: return client.password;
-          case Protocols.PPTP: return client.password;
-          case Protocols.OPENVPN: return client.password;
-          case Protocols.OPENCONNECT: return client.password;
-          case Protocols.SSTP: return client.password;
-          case Protocols.IKEV2: return client.password;
-          case Protocols.SHADOWSOCKS: return client.email;
-          case Protocols.HYSTERIA: return client.auth;
-          default: return client.id;
-        }
+        return getClientIdentity(protocol, client);
       },
       checkFallback(dbInbound) {
         newDbInbound = new DBInbound(dbInbound);

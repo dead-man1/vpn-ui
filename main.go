@@ -218,8 +218,14 @@ func runWebServer() {
 	// A daemon somehow still running keeps its old inode (writeExecutable renames
 	// rather than overwrites, to dodge ETXTBSY) and picks the new one up on its next
 	// restart.
+	//
+	// Scoped to the cores this host actually installed: setup is per-core now, and
+	// "installed" is decided by the binary being present on disk, so refreshing the
+	// WHOLE bundle here would silently re-install every core on the next restart
+	// and undo any uninstall. See service.RefreshInstalledDaemons for the
+	// pre-per-core-tracking case, which still gets the full bundle.
 	if backend.Available() {
-		if files, exErr := backend.Extract(); exErr != nil {
+		if files, exErr := service.RefreshInstalledDaemons(); exErr != nil {
 			logger.Warning("could not extract bundled VPN daemons:", exErr)
 		} else if len(files) > 0 {
 			logger.Info("extracted bundled VPN daemons:", len(files), "files to", backend.BinDir())

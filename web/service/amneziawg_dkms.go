@@ -300,6 +300,36 @@ func awgRunCmd(name string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// removeAmneziawgModule unwinds ensureAmneziawg when the AmneziaWG core is
+// uninstalled: deregister the DKMS module (which removes the built .ko for every
+// kernel it was installed into and stops it rebuilding on the next kernel
+// upgrade) and drop the extracted source tree.
+//
+// The module is NOT rmmod'd. Unloading a live data-plane module would drop any
+// interface still using it, and a module that stays resident until the next boot
+// costs nothing now that DKMS will not rebuild it. The toolchain and kernel
+// headers the build pulled in are distro packages and are kept, like every other
+// package the panel installs.
+func removeAmneziawgModule() ProvisionStep {
+	name := "remove AmneziaWG kernel module"
+	var log strings.Builder
+	if !commandExists("dkms") {
+		_ = os.RemoveAll(awgBuildDir)
+		return ProvisionStep{Name: name, OK: true, Msg: "dkms not present; removed the source tree only"}
+	}
+	out, err := awgRunCmd("dkms", "remove", "-m", amneziawgModule, "-v", awgsrc.Version, "--all")
+	log.WriteString(out)
+	_ = os.RemoveAll(awgBuildDir)
+	if err != nil {
+		// Already deregistered, or built by a different version string. Not a
+		// failure: the source tree is gone and nothing will rebuild it.
+		return ProvisionStep{Name: name, OK: true, Warn: true,
+			Msg: "dkms remove reported an error; source tree removed", Log: log.String()}
+	}
+	return ProvisionStep{Name: name, OK: true,
+		Msg: "deregistered from DKMS (stays loaded until reboot)", Log: log.String()}
+}
+
 // awgModuleBuiltFor reports whether a DKMS-installed amneziawg module exists for kver.
 func awgModuleBuiltFor(kver string) bool {
 	matches, _ := filepath.Glob("/lib/modules/" + kver + "/updates/dkms/amneziawg.ko*")

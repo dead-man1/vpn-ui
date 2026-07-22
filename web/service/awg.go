@@ -347,6 +347,10 @@ func (s *AwgService) GenerateAllConfigs() error {
 			if !inbound.Enable {
 				continue
 			}
+			// Claimed before the reconcile is attempted; see WgcService.GenerateAllConfigs
+			// for why a failed reconcile must not hand the interface to removeStaleLinks.
+			wanted[awgIfaceName(inbound.Id)] = true
+
 			settings, err := s.parseSettings(inbound)
 			if err != nil {
 				logger.Warning("AmneziaWG: skipping inbound", inbound.Id, err)
@@ -373,7 +377,6 @@ func (s *AwgService) GenerateAllConfigs() error {
 				logger.Warning("AmneziaWG: configure device failed for", iface, err)
 				continue
 			}
-			wanted[iface] = true
 		}
 	}
 
@@ -518,6 +521,8 @@ func (s *AwgService) ensureLink(iface string, mtu int, blockNet net.IP, prefix i
 			gw := net.IPv4(v4[0], v4[1], v4[2], v4[3]+1)
 			addr := &netlink.Addr{IPNet: &net.IPNet{IP: gw, Mask: net.CIDRMask(prefix, 32)}}
 			_ = netlink.AddrReplace(link, addr)
+			// Same stale-address cleanup as wg-c; see dropForeignV4Addrs.
+			dropForeignV4Addrs(link, addr)
 		}
 	}
 	return netlink.LinkSetUp(link)

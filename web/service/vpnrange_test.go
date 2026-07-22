@@ -92,7 +92,7 @@ func TestNormalizePppRanges(t *testing.T) {
 
 func TestNormalizeOvpnRangesLegacyIdentity(t *testing.T) {
 	// <=253 clients on inbound id 7 -> single 10.2.7 /24, byte-identical legacy.
-	got, err := normalizeOvpnRanges(7, 50, 1, map[string]bool{})
+	got, err := normalizeOvpnRanges(7, 50, 1, map[string]bool{}, nil)
 	if err != nil {
 		t.Fatalf("err %v", err)
 	}
@@ -112,7 +112,7 @@ func TestNormalizeOvpnRangesLegacyIdentity(t *testing.T) {
 func TestNormalizeBlockRangesOpenconnect(t *testing.T) {
 	// OpenConnect lives in 10.4 /16 with no TCP mirror. <=253 clients on inbound
 	// id 7 -> single 10.4.7 /24; the 10.3 mirror slot must NOT be reserved.
-	got, err := normalizeBlockRanges(7, 50, 1, protocolBase("openconnect"), -1, map[string]bool{})
+	got, err := normalizeBlockRanges(7, 50, 1, protocolBase("openconnect"), -1, map[string]bool{}, nil)
 	if err != nil {
 		t.Fatalf("err %v", err)
 	}
@@ -120,7 +120,7 @@ func TestNormalizeBlockRangesOpenconnect(t *testing.T) {
 		t.Errorf("openconnect block = %v want single 10.4.7", got)
 	}
 	// 300 clients -> aligned /23 in 10.4, still no mirror constraint.
-	grown, err := normalizeBlockRanges(8, 300, 1, protocolBase("openconnect"), -1, map[string]bool{})
+	grown, err := normalizeBlockRanges(8, 300, 1, protocolBase("openconnect"), -1, map[string]bool{}, nil)
 	if err != nil {
 		t.Fatalf("err %v", err)
 	}
@@ -136,7 +136,7 @@ func TestNormalizeBlockRangesOpenconnect(t *testing.T) {
 
 func TestNormalizeOvpnRangesGrows(t *testing.T) {
 	// 300 clients needs 2 /24s -> an aligned /23 block.
-	got, err := normalizeOvpnRanges(8, 300, 1, map[string]bool{})
+	got, err := normalizeOvpnRanges(8, 300, 1, map[string]bool{}, nil)
 	if err != nil {
 		t.Fatalf("err %v", err)
 	}
@@ -303,7 +303,7 @@ func TestNormalizePppRangesUserLimit(t *testing.T) {
 
 func TestNormalizeOvpnRangesUserLimit(t *testing.T) {
 	// K=64 -> 2 accounts/24. 5 accounts -> need 3 -> round up to 4 /24s (/22).
-	got, err := normalizeOvpnRanges(8, 5, 64, map[string]bool{})
+	got, err := normalizeOvpnRanges(8, 5, 64, map[string]bool{}, nil)
 	if err != nil {
 		t.Fatalf("err %v", err)
 	}

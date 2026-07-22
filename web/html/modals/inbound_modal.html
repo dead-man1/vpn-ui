@@ -7,6 +7,26 @@
 </a-modal>
 <script>
     // Make inModal globally available to ensure it works with any base path
+    // The lowest port at or above `from` that no existing inbound already claims, so
+    // repeat adds of a multi-inbound protocol walk 51820, 51821, ... instead of
+    // proposing the same number every time. The backend rejects a duplicate anyway
+    // (checkPortExist), but a default that is KNOWN to collide is a trap rather than
+    // a default. Best-effort: if the page has no inbound list to consult, the caller
+    // still gets the standard port and the server-side check remains the backstop.
+    function freeInboundPortFrom(from) {
+        const used = new Set();
+        if (typeof app !== 'undefined' && Array.isArray(app.dbInbounds)) {
+            for (const row of app.dbInbounds) {
+                const port = Number(row.port);
+                if (port) used.add(port);
+            }
+        }
+        for (let port = from; port <= 65535; port++) {
+            if (!used.has(port)) return port;
+        }
+        return from;
+    }
+
     const inModal = (window.inModal = {
         title: "",
         visible: false,
@@ -407,9 +427,15 @@
                         inModal.inbound.settings.serverAddr = window.location.hostname;
                     }
                 } else if (protocol === 'wg-c') {
-                    inModal.inbound.port = 51820;
+                    // Not a fixed 51820. Unlike l2tp/pptp/ikev2 (one shared daemon on
+                    // a standard port), wg-c is built to run MANY inbounds side by
+                    // side, one kernel wgc<id> interface each, on DIFFERENT ports.
+                    // Handing every new inbound the same number meant the second one
+                    // an operator created was rejected on save for a port conflict it
+                    // was never told about.
+                    inModal.inbound.port = freeInboundPortFrom(51820);
                 } else if (protocol === 'awg') {
-                    inModal.inbound.port = 51821;
+                    inModal.inbound.port = freeInboundPortFrom(51821);
                 } else if (protocol === 'mtproto') {
                     // 443 is what MTProto clients expect and what FakeTLS needs to be
                     // plausible (an "HTTPS" session on a non-443 port is a giveaway).

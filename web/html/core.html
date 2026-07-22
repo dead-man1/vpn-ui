@@ -76,23 +76,25 @@
                 </div>
               </div>
               <a-button class="setup-hero-btn" type="primary" size="large"
-                :loading="provisionRunning" @click="startProvision">
+                :loading="provisionRunning" @click="openPicker('setup')">
                 <a-icon type="thunderbolt"></a-icon>{{ i18n "pages.core.initSetup" }}
               </a-button>
             </a-card>
           </a-col>
 
-          <!-- Upgrade: a protocol was added since this host was last set up -->
+          <!-- Cores available but not installed. Informational, not a warning:
+               since setup became per-core these are cores the operator chose not
+               to install, so this offers them rather than complaining. -->
           <a-col :span="24" v-if="provisioned && missingProtocols.length">
-            <a-alert type="warning" show-icon :style="{ marginBottom: '16px' }">
-              <span slot="message">{{ i18n "pages.core.newProtocolTitle" }}</span>
+            <a-alert type="info" show-icon :style="{ marginBottom: '16px' }">
+              <span slot="message">{{ i18n "pages.core.availableCoresTitle" }}</span>
               <template slot="description">
                 <div :style="{ marginBottom: '10px' }">
-                  {{ i18n "pages.core.newProtocolDesc" }}
+                  {{ i18n "pages.core.availableCoresDesc" }}
                   <b>[[ missingProtocols.map(coreTitle).join(', ') ]]</b>
                 </div>
-                <a-button type="primary" size="small" :loading="provisionRunning" @click="startProvision">
-                  <a-icon type="thunderbolt"></a-icon>{{ i18n "pages.core.reRunSetup" }}
+                <a-button type="primary" size="small" :loading="provisionRunning" @click="openPicker('add')">
+                  <a-icon type="plus"></a-icon>{{ i18n "pages.core.addCore" }}
                 </a-button>
               </template>
             </a-alert>
@@ -169,9 +171,20 @@
                 <span :style="{ marginLeft: '8px' }">{{ i18n "pages.core.system" }}</span>
               </template>
               <template #extra>
-                <a-button type="primary" :loading="provisionRunning" @click="startProvision">
-                  <a-icon type="thunderbolt"></a-icon>{{ i18n "pages.core.reRunSetup" }}
-                </a-button>
+                <!-- Re-run repeats setup for exactly what is installed; Add and
+                     Uninstall change that set. Three verbs, one place. -->
+                <a-space :style="{ flexWrap: 'wrap' }">
+                  <a-button type="primary" :loading="provisionRunning" @click="reRunSetup">
+                    <a-icon type="thunderbolt"></a-icon>{{ i18n "pages.core.reRunSetup" }}
+                  </a-button>
+                  <a-button :loading="provisionRunning" @click="openPicker('add')">
+                    <a-icon type="plus"></a-icon>{{ i18n "pages.core.addCore" }}
+                  </a-button>
+                  <a-button type="danger" ghost :disabled="provisionRunning || uninstallRunning"
+                    @click="openPicker('uninstall')">
+                    <a-icon type="delete"></a-icon>{{ i18n "pages.core.uninstallCore" }}
+                  </a-button>
+                </a-space>
               </template>
 
               <p class="system-desc">{{ i18n "pages.core.provisionDesc" }}</p>
@@ -230,6 +243,57 @@
         </transition>
       </a-spin>
 
+  <!-- Core picker: drives first-run setup, "add core" and "uninstall core". The
+       three differ only in which rows are selectable and what the OK button
+       does, so they share one dialog rather than three near-identical ones.
+       Nothing is pre-checked: installing a core changes the host, so it is the
+       operator who has to say which ones. -->
+  <a-modal v-model="pickerVisible" :footer="null" :title="pickerTitle()"
+    :class="themeSwitcher.currentTheme" :width="isMobile ? '95%' : '660px'"
+    wrapClassName="core-picker-modal">
+    <p class="picker-desc">[[ pickerDesc() ]]</p>
+
+    <div class="picker-toolbar">
+      <a-space>
+        <a-button size="small" :disabled="!pickerSelectableCount" @click="pickAll(true)">
+          <a-icon type="check-square"></a-icon>{{ i18n "pages.core.checkAll" }}
+        </a-button>
+        <a-button size="small" :disabled="!pickedCount" @click="pickAll(false)">
+          <a-icon type="border"></a-icon>{{ i18n "pages.core.uncheckAll" }}
+        </a-button>
+      </a-space>
+      <span class="picker-count">[[ pickedCount ]] / [[ pickerSelectableCount ]]</span>
+    </div>
+
+    <div class="picker-list">
+      <div v-if="!pickerCores.length" class="picker-empty">{{ i18n "pages.core.pickerEmpty" }}</div>
+      <label v-for="c in pickerCores" :key="c.name" class="picker-row"
+        :class="{ 'is-disabled': !rowEnabled(c), 'is-checked': !!picked[c.name] }">
+        <a-checkbox :checked="!!picked[c.name]" :disabled="!rowEnabled(c)"
+          @change="(e) => togglePick(c.name, e.target.checked)"></a-checkbox>
+        <span class="picker-body">
+          <span class="picker-name">
+            [[ c.title ]]
+            <a-tag v-if="c.installed" color="green" class="picker-tag">{{ i18n "pages.core.installedTag" }}</a-tag>
+          </span>
+          <span class="picker-sub">[[ c.desc ]]</span>
+          <span class="picker-note" v-if="rowNote(c)">
+            <a-icon type="info-circle"></a-icon>[[ rowNote(c) ]]
+          </span>
+        </span>
+        <span class="picker-backend">[[ c.backend ]]</span>
+      </label>
+    </div>
+
+    <div class="picker-foot">
+      <a-button @click="pickerVisible = false">{{ i18n "cancel" }}</a-button>
+      <a-button :type="pickerMode === 'uninstall' ? 'danger' : 'primary'"
+        :disabled="!pickedCount" @click="confirmPicker">
+        [[ pickerOkText() ]]
+      </a-button>
+    </div>
+  </a-modal>
+
   <!-- Provision live log: a real streaming terminal console. Closing mid-run is
        safe — provisioning runs server-side and the poll keeps ticking. -->
   <a-modal v-model="provisionVisible" :title="null" :footer="null"
@@ -245,7 +309,7 @@
     <div class="term term--setup">
       <div class="term-bar">
         <a-icon type="code" class="term-bar-icon"></a-icon>
-        <span class="term-bar-title">vpn-ui — {{ i18n "pages.core.consoleTitle" }}</span>
+        <span class="term-bar-title">vpn-ui · [[ consoleLabel() ]]</span>
         <span class="term-count" v-if="provisionResult.length">[[ okCount() ]]/[[ provisionResult.length ]]</span>
       </div>
       <div class="term-progress">
@@ -283,8 +347,21 @@
       </div>
     </div>
 
+    <!-- What an uninstall deliberately left behind, and who still needs it.
+         Shown because "removed IKEv2" and "IPsec still up for L2TP" are two
+         different facts and the operator should not have to infer the second. -->
+    <div v-if="runKind === 'uninstall' && !provisionRunning && keptShared.length" class="kept-panel">
+      <div class="kept-panel-head">
+        <a-icon type="lock"></a-icon>
+        <span>{{ i18n "pages.core.uninstallKept" }}</span>
+      </div>
+      <ul class="kept-list">
+        <li v-for="(k, i) in keptShared" :key="i">[[ k ]]</li>
+      </ul>
+    </div>
+
     <!-- Reboot-required explainer: what happened, why, and what to do -->
-    <div v-if="rebootRequired" class="reboot-panel">
+    <div v-if="rebootRequired && runKind === 'setup'" class="reboot-panel">
       <div class="reboot-panel-head">
         <a-icon type="warning" theme="filled" class="reboot-panel-icon"></a-icon>
         <span class="reboot-panel-title">{{ i18n "pages.core.rebootTitle" }}</span>
@@ -316,7 +393,7 @@
       </div>
     </div>
 
-    <div v-if="!provisionRunning && !rebootRequired" class="setup-modal-foot">
+    <div v-if="!provisionRunning && !(rebootRequired && runKind === 'setup')" class="setup-modal-foot">
       <a-button type="primary" @click="provisionVisible = false">{{ i18n "close" }}</a-button>
     </div>
   </a-modal>
@@ -344,9 +421,18 @@
         <a-button size="small" :loading="logsLoading" @click="loadLogs(logsCore)">
           <a-icon type="reload"></a-icon>{{ i18n "pages.core.refresh" }}
         </a-button>
+        <a-button size="small" :type="logsLive ? 'primary' : 'default'"
+          :class="{ 'log-live-on': logsLive }" @click="setLogsLive(!logsLive)">
+          <span class="log-live-dot" v-if="logsLive"></span>{{ i18n "pages.index.liveLog" }}
+        </a-button>
       </a-space>
     </div>
-    <pre class="core-logs">[[ logsContent || '{{ i18n "pages.core.noLogs" }}' ]]</pre>
+    <!-- Rendered through LogFormatter (assets/js/util/index.js), the same
+         renderer the overview's log modal uses, so a core's output looks the
+         same wherever it is read. It escapes every scrap of log text before
+         adding markup; log lines echo client-supplied names and are not
+         trusted input. -->
+    <div id="core-log-pane" class="core-logs log-container" v-html="logsHtml"></div>
   </a-modal>
 {{template "page/shell_end" . }}
 
@@ -372,6 +458,16 @@
       provisionDone: false,
       provisionVisible: false,
       provisionResult: [],
+      // Which run the shared console is showing: 'setup' or 'uninstall'. Only
+      // the poll endpoint, the title and the trailing panels differ.
+      runKind: 'setup',
+      uninstallRunning: false,
+      keptShared: [],
+      // Core picker.
+      catalog: [],
+      pickerVisible: false,
+      pickerMode: 'setup',
+      picked: {},
       provStamps: [],
       nowStamp: '',
       provStartMs: 0,
@@ -390,6 +486,7 @@
       logsCore: '',
       logsTitle: '',
       logsContent: '',
+      logsLive: false,
     },
     methods: {
       async loadStatus(showSpin) {
@@ -424,15 +521,29 @@
         this.logsCore = core;
         this.logsTitle = this.coreTitle(core);
         this.logsContent = '';
+        this.setLogsLive(false);
         this.logsVisible = true;
         await this.loadLogs(core);
       },
-      async loadLogs(core) {
-        this.logsLoading = true;
+      // quiet=true is the live tail's refresh: no spinner, and the scroll stays
+      // put unless the reader is already following the end of the log.
+      async loadLogs(core, quiet) {
+        if (!quiet) this.logsLoading = true;
         const msg = await HttpUtil.get('/panel/core/logs/' + core);
-        this.logsLoading = false;
+        if (!quiet) this.logsLoading = false;
         if (msg && msg.success) {
-          this.logsContent = msg.obj || '';
+          LiveLog.keepPinned('#core-log-pane', () => { this.logsContent = msg.obj || ''; });
+        }
+      },
+      // Same live tail as the overview's log modal, against this one core.
+      setLogsLive(on) {
+        this.logsLive = !!on;
+        LiveLog.stop('core-log');
+        if (this.logsLive) {
+          LiveLog.start('core-log', () => {
+            if (!this.logsVisible) { this.setLogsLive(false); return; }
+            this.loadLogs(this.logsCore, true);
+          });
         }
       },
       downloadLogs() {
@@ -450,16 +561,103 @@
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       },
-      // startProvision kicks off backend provisioning and opens a live terminal
-      // that ticks each step as it completes. The run itself happens server-side;
-      // we poll for its progress so it survives the modal being closed and works
-      // through gzip/reverse proxies (no SSE/WebSocket).
-      async startProvision() {
-        if (this.provisionRunning) return;
+      // --- core picker (setup / add / uninstall) -------------------------
+      async loadCatalog() {
+        const msg = await HttpUtil.get('/panel/core/catalog');
+        if (msg && msg.success && msg.obj) this.catalog = msg.obj.cores || [];
+      },
+      // Opens the picker in one of three modes. Selections always start empty:
+      // an install changes the host, so nothing is opted into by default.
+      async openPicker(mode) {
+        this.pickerMode = mode;
+        this.picked = {};
+        this.pickerVisible = true;
+        await this.loadCatalog();
+      },
+      // Which rows the current mode shows. Built-in cores (Xray, RADIUS, SSH)
+      // are never listed: they ride inside the panel and have nothing to
+      // install or remove.
+      rowEnabled(c) {
+        if (c.builtin) return false;
+        if (this.pickerMode === 'uninstall') return c.installed && !c.inbounds;
+        return !c.installed;
+      },
+      // The one-line reason a row cannot be picked, so a disabled checkbox is
+      // never unexplained.
+      rowNote(c) {
+        if (this.pickerMode === 'uninstall') {
+          if (c.inbounds) {
+            return '{{ i18n "pages.core.hasInbounds" }}'.replace('%d', c.inbounds);
+          }
+          if (c.shares && c.shares.length) {
+            return '{{ i18n "pages.core.sharesWith" }}' + ' ' +
+              c.shares.map(this.coreTitle).join(', ');
+          }
+          return '';
+        }
+        if (c.installed) return '{{ i18n "pages.core.alreadyInstalled" }}';
+        if (c.shares && c.shares.length) {
+          return '{{ i18n "pages.core.sharesWith" }}' + ' ' +
+            c.shares.map(this.coreTitle).join(', ');
+        }
+        return '';
+      },
+      pickAll(on) {
+        const next = {};
+        for (const c of this.pickerCores) {
+          if (on && this.rowEnabled(c)) next[c.name] = true;
+        }
+        this.picked = next;
+      },
+      togglePick(name, on) {
+        // Vue 2 cannot see a plain key assignment on an object, hence $set/$delete.
+        if (on) this.$set(this.picked, name, true);
+        else this.$delete(this.picked, name);
+      },
+      pickerTitle() {
+        return ({
+          setup: '{{ i18n "pages.core.pickerSetupTitle" }}',
+          add: '{{ i18n "pages.core.pickerAddTitle" }}',
+          uninstall: '{{ i18n "pages.core.pickerUninstallTitle" }}',
+        })[this.pickerMode];
+      },
+      pickerDesc() {
+        return ({
+          setup: '{{ i18n "pages.core.pickerSetupDesc" }}',
+          add: '{{ i18n "pages.core.pickerAddDesc" }}',
+          uninstall: '{{ i18n "pages.core.pickerUninstallDesc" }}',
+        })[this.pickerMode];
+      },
+      pickerOkText() {
+        return ({
+          setup: '{{ i18n "pages.core.pickerInstall" }}',
+          add: '{{ i18n "pages.core.pickerInstall" }}',
+          uninstall: '{{ i18n "pages.core.pickerUninstall" }}',
+        })[this.pickerMode];
+      },
+      confirmPicker() {
+        const names = Object.keys(this.picked);
+        if (!names.length) return;
+        this.pickerVisible = false;
+        if (this.pickerMode === 'uninstall') this.startUninstall(names);
+        else this.startProvision(names);
+      },
+      // Re-run repeats setup for exactly the cores already installed, so it stays
+      // the idempotent "fix my host" button it has always been instead of
+      // quietly installing everything.
+      reRunSetup() {
+        const installed = this.catalog
+          .filter((c) => c.installed && !c.builtin).map((c) => c.name);
+        this.startProvision(installed);
+      },
+      // resetConsole clears the shared terminal for a fresh run.
+      resetConsole(kind) {
+        this.runKind = kind;
         this.provisionResult = [];
         this.provStamps = [];
         this.expanded = {};
         this.provisionDone = false;
+        this.keptShared = [];
         this.rebootRequired = false;
         this.rebootModules = [];
         this.rebootPkg = '';
@@ -469,7 +667,17 @@
         this.provEndMs = 0;
         this.nowMs = this.provStartMs;
         this.tick();
-        const msg = await HttpUtil.post('/panel/core/provision');
+      },
+      // startProvision kicks off backend provisioning for the given cores and
+      // opens a live terminal that ticks each step as it completes. The run
+      // itself happens server-side; we poll for its progress so it survives the
+      // modal being closed and works through gzip/reverse proxies (no
+      // SSE/WebSocket).
+      async startProvision(cores) {
+        if (this.provisionRunning) return;
+        this.resetConsole('setup');
+        const msg = await HttpUtil.post('/panel/core/provision',
+          { cores: (cores || []).join(',') });
         if (msg && msg.success && msg.obj) {
           this.applySteps(msg.obj.steps || []);
           this.applyReboot(msg.obj);
@@ -490,11 +698,53 @@
               this.provEndMs = Date.now();
               this.provisioned = !!msg.obj.provisioned;
               await this.loadStatus(false);
+              await this.loadCatalog();
               this.$nextTick(() => this.scrollTerm());
-              return; // run finished — stop polling
+              return; // run finished, stop polling
             }
           }
           this.pollProvision();
+        }, 600);
+      },
+      // startUninstall removes the given cores. The server refuses up front when
+      // a core still has inbounds or is not installed, and that refusal arrives
+      // as a plain failed response, so the console is closed again rather than
+      // left open on a run that never began.
+      async startUninstall(cores) {
+        if (this.provisionRunning || this.uninstallRunning) return;
+        this.resetConsole('uninstall');
+        this.uninstallRunning = true;
+        const msg = await HttpUtil.post('/panel/core/uninstall',
+          { cores: (cores || []).join(',') });
+        if (!msg || !msg.success) {
+          this.provisionRunning = false;
+          this.uninstallRunning = false;
+          this.provisionVisible = false;
+          return;
+        }
+        this.applySteps((msg.obj && msg.obj.steps) || []);
+        this.pollUninstall();
+      },
+      pollUninstall() {
+        clearTimeout(this.provTimer);
+        this.provTimer = setTimeout(async () => {
+          const msg = await HttpUtil.get('/panel/core/uninstall-status');
+          if (msg && msg.success && msg.obj) {
+            this.applySteps(msg.obj.steps || []);
+            this.provisionRunning = !!msg.obj.running;
+            this.uninstallRunning = !!msg.obj.running;
+            this.provisionDone = !!msg.obj.done;
+            this.keptShared = msg.obj.kept || [];
+            this.tick();
+            if (!msg.obj.running) {
+              this.provEndMs = Date.now();
+              await this.loadStatus(false);
+              await this.loadCatalog();
+              this.$nextTick(() => this.scrollTerm());
+              return;
+            }
+          }
+          this.pollUninstall();
         }, 600);
       },
       // applySteps stamps every newly-arrived step with a client-side wall-clock
@@ -580,17 +830,27 @@
       },
       headStateClass() {
         if (this.provisionRunning) return 'head-running';
-        if (this.rebootRequired) return 'head-warn';
+        if (this.rebootRequired && this.runKind === 'setup') return 'head-warn';
         if (this.provisionDone) return 'head-ok';
         return 'head-idle';
       },
       headStateIcon() {
         if (this.provisionRunning) return 'loading';
-        if (this.rebootRequired) return 'warning';
+        if (this.rebootRequired && this.runKind === 'setup') return 'warning';
         if (this.provisionDone) return 'check';
-        return 'thunderbolt';
+        return this.runKind === 'uninstall' ? 'delete' : 'thunderbolt';
+      },
+      consoleLabel() {
+        return this.runKind === 'uninstall'
+          ? '{{ i18n "pages.core.uninstallConsoleTitle" }}'
+          : '{{ i18n "pages.core.consoleTitle" }}';
       },
       provisionTitle() {
+        if (this.runKind === 'uninstall') {
+          if (this.provisionRunning) return '{{ i18n "pages.core.uninstallRunning" }}';
+          if (this.provisionDone) return '{{ i18n "pages.core.uninstallDone" }}';
+          return '{{ i18n "pages.core.uninstallCore" }}';
+        }
         if (this.provisionRunning) return '{{ i18n "pages.core.setupRunning" }}';
         if (this.rebootRequired) return '{{ i18n "pages.core.rebootTitle" }}';
         if (this.provisionDone) return '{{ i18n "pages.core.setupDone" }}';
@@ -645,8 +905,33 @@
       canStop(name) { return true; },
       canRestart(name) { return true; },
     },
+    computed: {
+      // The core's log, coloured by severity through the shared LogFormatter.
+      // Carries the core's own name as the per-line badge for the same reason
+      // the aggregated view does: a downloaded or copied line stays attributable.
+      logsHtml() {
+        if (!this.logsContent) {
+          return '<div class="log-empty">{{ i18n "pages.core.noLogs" }}</div>';
+        }
+        return LogFormatter.render([{ source: this.logsCore, text: this.logsContent }]);
+      },
+      // Rows the picker shows. Built-in cores are always excluded (nothing to
+      // install), and the uninstall mode lists only what is actually installed
+      // so it can never offer to remove something that is not there.
+      pickerCores() {
+        const rows = this.catalog.filter((c) => !c.builtin);
+        return this.pickerMode === 'uninstall' ? rows.filter((c) => c.installed) : rows;
+      },
+      pickerSelectableCount() {
+        return this.pickerCores.filter((c) => this.rowEnabled(c)).length;
+      },
+      pickedCount() {
+        return Object.keys(this.picked).length;
+      },
+    },
     mounted() {
       this.loadStatus(true);
+      this.loadCatalog();
       this.pollTimer = setInterval(() => this.loadStatus(false), 5000);
     },
     beforeDestroy() {
@@ -1235,6 +1520,142 @@
     opacity: 0.7;
     line-height: 1.6;
     margin-bottom: 18px;
+  }
+
+  /* --- core picker -------------------------------------------------- */
+
+  .picker-desc {
+    opacity: 0.72;
+    line-height: 1.6;
+    margin: 0 0 14px;
+  }
+
+  .picker-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+
+  .picker-count {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.6;
+    font-size: 13px;
+  }
+
+  /* The list scrolls, not the dialog, so the confirm button stays reachable
+     however many cores the catalog grows to. */
+  .picker-list {
+    max-height: 46vh;
+    overflow-y: auto;
+    border: 1px solid var(--border, rgba(128, 128, 128, 0.25));
+    border-radius: 8px;
+  }
+
+  .picker-empty {
+    padding: 26px 14px;
+    text-align: center;
+    opacity: 0.6;
+  }
+
+  .picker-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 11px 14px;
+    cursor: pointer;
+    margin: 0;
+  }
+
+  .picker-row + .picker-row {
+    border-top: 1px solid var(--border, rgba(128, 128, 128, 0.18));
+  }
+
+  .picker-row.is-checked {
+    background: var(--accent-weak, rgba(0, 135, 113, 0.1));
+  }
+
+  .picker-row.is-disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .picker-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .picker-name {
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .picker-tag { margin: 0; }
+
+  .picker-sub {
+    font-size: 12.5px;
+    opacity: 0.68;
+    line-height: 1.5;
+  }
+
+  .picker-note {
+    font-size: 12px;
+    opacity: 0.8;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 2px;
+  }
+
+  .picker-backend {
+    font-size: 12px;
+    opacity: 0.55;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    padding-top: 2px;
+  }
+
+  @media (max-width: 640px) {
+    .picker-backend { display: none; }
+  }
+
+  .picker-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  /* What an uninstall kept, and for whom. */
+  .kept-panel {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border, rgba(128, 128, 128, 0.25));
+  }
+
+  .kept-panel-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .kept-list {
+    margin: 0;
+    padding-inline-start: 1.3em;
+    line-height: 1.7;
+    opacity: 0.8;
+    font-size: 13px;
   }
 </style>
 {{ template "page/body_end" .}}

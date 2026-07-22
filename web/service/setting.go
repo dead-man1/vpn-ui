@@ -389,12 +389,22 @@ func (s *SettingService) SetVpnProvisioned(value bool) error {
 	return s.setBool("vpnProvisioned", value)
 }
 
-// GetProvisionedProtocols returns the VPN protocols the host was provisioned for
-// on the last setup run, as recorded by SetProvisionedProtocols. Empty when never
-// recorded (e.g. an install provisioned before per-protocol tracking existed).
+// provisionedNone is the sentinel written when the host is deliberately
+// provisioned for NO cores (every core uninstalled).
+//
+// It exists because "" cannot mean two different things. The stored value
+// defaults to "" for an install that predates per-core tracking, and that case
+// is credited with provisionBaseline. Writing "" for "the operator removed
+// everything" would collide with it and silently resurrect L2TP, PPTP, OpenVPN
+// and OpenConnect as installed the moment the last core was removed.
+const provisionedNone = "none"
+
+// GetProvisionedProtocols returns the VPN cores the host is provisioned for, as
+// recorded by SetProvisionedProtocols. Empty both when never recorded and when
+// recorded as none; use HasRecordedProvisionedProtocols to tell those apart.
 func (s *SettingService) GetProvisionedProtocols() []string {
 	v, err := s.getString("provisionedProtocols")
-	if err != nil {
+	if err != nil || strings.TrimSpace(v) == provisionedNone {
 		return nil
 	}
 	var out []string
@@ -406,11 +416,23 @@ func (s *SettingService) GetProvisionedProtocols() []string {
 	return out
 }
 
-// SetProvisionedProtocols records (comma-separated) the VPN protocols the host has
-// been provisioned for. Called on a successful setup run so newly added protocols
-// stop being reported as missing.
+// HasRecordedProvisionedProtocols reports whether this install has ever recorded
+// its core set, that is, whether the empty result above means "none, and we know
+// it" rather than "we have no idea".
+func (s *SettingService) HasRecordedProvisionedProtocols() bool {
+	v, err := s.getString("provisionedProtocols")
+	return err == nil && strings.TrimSpace(v) != ""
+}
+
+// SetProvisionedProtocols records (comma-separated) the VPN cores the host is
+// provisioned for. Called after a setup run and after an uninstall, so the two
+// always agree on what is installed.
 func (s *SettingService) SetProvisionedProtocols(list []string) error {
-	return s.setString("provisionedProtocols", strings.Join(list, ","))
+	joined := strings.Join(list, ",")
+	if strings.TrimSpace(joined) == "" {
+		joined = provisionedNone
+	}
+	return s.setString("provisionedProtocols", joined)
 }
 
 // GetSystemdServiceName returns the configured systemd unit name for the panel.

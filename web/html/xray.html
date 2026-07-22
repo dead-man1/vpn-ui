@@ -203,7 +203,7 @@
     { title: '{{ i18n "protocol"}}', align: 'center', width: 50, scopedSlots: { customRender: 'protocol' } },
     { title: '{{ i18n "pages.xray.outbound.address"}}', align: 'center', width: 50, scopedSlots: { customRender: 'address' } },
     { title: '{{ i18n "pages.inbounds.traffic" }}', align: 'center', width: 50, scopedSlots: { customRender: 'traffic' } },
-    { title: '{{ i18n "pages.xray.outbound.testResult" }}', align: 'center', width: 120, scopedSlots: { customRender: 'testResult' } },
+    { title: '{{ i18n "pages.xray.outbound.testResult" }}', align: 'center', width: 200, scopedSlots: { customRender: 'testResult' } },
     { title: '{{ i18n "pages.xray.outbound.test" }}', align: 'center', width: 60, scopedSlots: { customRender: 'test' } },
   ];
 
@@ -624,6 +624,22 @@
         outbounds = this.templateSettings.outbounds;
         outbounds.splice(0, 0, outbounds.splice(index, 1)[0]);
         this.outboundSettings = JSON.stringify(outbounds);
+      },
+      // The exit address a finished test observed, or null when the probe could
+      // not determine one (blocked, timed out, or an outbound that only passed
+      // the reachability check).
+      exitInfo(index) {
+        const st = this.outboundTestStates[index];
+        const exit = st && st.result && st.result.exit;
+        return exit && (exit.ipv4 || exit.ipv6) ? exit : null;
+      },
+      exitFlag(index) {
+        const exit = this.exitInfo(index);
+        return exit ? GeoUtil.flag(exit.countryCode) : '';
+      },
+      exitCountry(index) {
+        const exit = this.exitInfo(index);
+        return exit ? GeoUtil.countryName(exit.countryCode) : '';
       },
       async testOutbound(index) {
         const outbound = this.templateSettings.outbounds[index];

@@ -166,3 +166,25 @@ func TestWriteFileAtomicCleansUpPartialWrite(t *testing.T) {
 		t.Errorf("destination should not exist after a failed write: stat err = %v", serr)
 	}
 }
+
+// ExtractOnly's empty case is a trap worth pinning: several cores (SSTP, IKEv2,
+// WireGuard, AmneziaWG) own no bundled daemon at all, so they ask for an empty
+// set on every install. An "empty means everything" contract silently laid down
+// the whole bundle for them, which made every other core report itself
+// installed. "Extract only these" of nothing must extract nothing.
+func TestExtractOnlyEmptyExtractsNothing(t *testing.T) {
+	files, err := ExtractOnly(nil)
+	if err != nil {
+		t.Fatalf("ExtractOnly(nil): %v", err)
+	}
+	if len(files) != 0 {
+		t.Errorf("ExtractOnly(nil) wrote %d file(s), want none: %v", len(files), files)
+	}
+	files, err = ExtractOnly([]string{})
+	if err != nil {
+		t.Fatalf("ExtractOnly([]): %v", err)
+	}
+	if len(files) != 0 {
+		t.Errorf("ExtractOnly([]) wrote %d file(s), want none: %v", len(files), files)
+	}
+}

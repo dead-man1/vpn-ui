@@ -611,6 +611,54 @@ body.dark .bo-theme-toggle .bo-i-moon { display:block; }
 .bo-status-line--ok { color:var(--ok); }
 .bo-status-line--warn { color:var(--warn); }
 
+/* The download-cancel button sits inline with the progress readout, so it is
+   sized down to match that 12.5px line rather than the card's action row. */
+.bo-update-cancel { padding:3px 9px; font-size:12px; gap:5px; }
+
+/* Release-notes dialog (panel self-update). The notes pane scrolls on its own
+   so a long changelog never pushes the dialog's own buttons off screen. */
+.bo-relnotes-head {
+  display:flex; align-items:center; gap:var(--sp-2); flex-wrap:wrap;
+  padding-bottom:var(--sp-3); border-bottom:1px solid var(--border);
+}
+.bo-relnotes-head .bo-icon { color:var(--text-3); flex:none; }
+.bo-relnotes-ver {
+  font-size:15px; font-weight:var(--fw-bold); color:var(--text-3);
+}
+.bo-relnotes-ver--new { color:var(--accent); }
+.bo-relnotes-date { font-size:12.5px; color:var(--text-3); margin-inline-start:auto; }
+.bo-relnotes-link { display:inline-flex; color:var(--text-3); }
+.bo-relnotes-link:hover { color:var(--accent); }
+.bo-relnotes-label {
+  margin-top:var(--sp-3); font-size:11.5px; font-weight:var(--fw-semibold);
+  letter-spacing:.06em; text-transform:uppercase; color:var(--text-3);
+}
+.bo-relnotes {
+  margin-top:var(--sp-2); max-height:46vh; overflow-y:auto; overflow-x:auto;
+  font-size:13.5px; line-height:1.65; color:var(--text-2);
+  overflow-wrap:anywhere;
+}
+.bo-relnotes h4 {
+  margin:var(--sp-3) 0 var(--sp-1); font-size:13px; font-weight:var(--fw-bold);
+  color:var(--text); letter-spacing:.01em;
+}
+.bo-relnotes h4:first-child { margin-top:0; }
+.bo-relnotes ul { margin:0; padding-inline-start:1.15em; list-style:disc; }
+.bo-relnotes li { margin:2px 0; }
+.bo-relnotes p { margin:var(--sp-1) 0; }
+.bo-relnotes code {
+  font-family:var(--font-mono); font-size:12.5px;
+  padding:1px 5px; border-radius:var(--radius-sm);
+  background:var(--surface-2); color:var(--text);
+}
+.bo-relnotes a { color:var(--accent); }
+.bo-relnotes-empty { color:var(--text-3); font-style:italic; }
+.bo-relnotes-foot {
+  display:flex; align-items:center; gap:6px; margin:var(--sp-3) 0 0;
+  font-size:12.5px; color:var(--text-3);
+}
+.bo-relnotes-foot .bo-icon { flex:none; }
+
 /* ================================================================== *
  * stat grids
  *
@@ -644,10 +692,17 @@ body.dark .bo-theme-toggle .bo-i-moon { display:block; }
 .bo-ident-sub { font-size:var(--fs-base); color:var(--text-3); margin-top:4px; }
 
 /* Labelled spec rows: tinted icon, key, value. One fact per line. */
-.bo-spec { display:flex; flex-direction:column; gap:0; margin:12px 0 0; }
+/* Splitting Uptime into Panel + Server took this list from seven rows to eight.
+   The tile must keep its footprint (it shares a bento row with Overall Speed and
+   System Status, and growing it grows the whole row), so the extra row is paid
+   for out of row padding and the list's top margin rather than out of the grid.
+   Measured: at 1px the eight rows land inside the height the seven used, so the
+   bento row height stays set by Overall Speed exactly as before. The 1px rules
+   between rows still separate them; the padding was slack, not structure. */
+.bo-spec { display:flex; flex-direction:column; gap:0; margin:15px 0 0; }
 .bo-spec-row {
   display:grid; grid-template-columns:22px minmax(70px,auto) 1fr;
-  align-items:center; gap:9px; padding:3px 0;
+  align-items:center; gap:9px; padding:1px 0;
 }
 .bo-spec-row + .bo-spec-row { border-top:1px solid var(--border); }
 .bo-spec-ico { display:inline-flex; align-items:center; justify-content:center; }
@@ -667,7 +722,11 @@ body.dark .bo-theme-toggle .bo-i-moon { display:block; }
 .bo-spec-ico--kernel { color:var(--warn); }
 .bo-spec-ico--cpu { color:var(--info); }
 .bo-spec-ico--cores { color:var(--text-3); }
+.bo-spec-ico--virt { color:var(--info); }
+.bo-spec-ico--loc { color:var(--ok); }
+.bo-spec-val.bo-muted { color:var(--text-3); font-weight:var(--fw-medium,500); }
 .bo-spec-ico--health { color:var(--ok); }
+.bo-spec-ico--panel { color:var(--accent); }
 
 /* Clients: three people marks, no column rules. Colour carries the state -
    accent for the total, ok for online, error for depleted. */
@@ -910,3 +969,92 @@ body.dark .bo-distro--nobara{--distro-ink:#E9EDF3}
 body.dark .bo-distro--asahi{--distro-ink:#BD2F1D}
 body.dark .bo-distro--tails{--distro-ink:#7655A0}
 body.dark .bo-distro--photon{--distro-ink:#2C67A6}
+
+/* Outbound test: the exit address the probe observed, under the delay tag.
+   The IPs are `num` (LTR-pinned, tabular) so a v6 address cannot be bidi
+   reordered in fa/ar, and they wrap rather than widen the column. */
+.ob-exit {
+  display:flex; align-items:flex-start; justify-content:center; gap:5px;
+  margin-top:4px; line-height:1.35;
+}
+.ob-exit-flag { font-size:13px; flex:none; }
+.ob-exit-ips { display:flex; flex-direction:column; min-width:0; }
+/* Sized to match the delay tag above it (ant-tag's 12px), so the flag, the
+   "123ms" and the address all read as one block of result rather than the
+   address looking like a dimmed footnote. Blue is the reserved info hue. */
+.ob-exit-flag { font-size:12px; line-height:20px; flex:none; }
+.ob-exit-ip {
+  font-size:12px; line-height:1.5; color:var(--info); font-weight:var(--fw-semibold);
+  overflow-wrap:anywhere; word-break:break-all;
+}
+
+/* ============================================================
+   Log viewer. One appearance for the panel log, Xray and every
+   bundled daemon; see LogFormatter in assets/js/util/index.js.
+   ============================================================ */
+.log-line {
+  font-family:var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size:12.5px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere;
+  /* Flex, so a wrapped line indents under its own message instead of restarting
+     in the badge column and reading like a new entry. A negative text-indent
+     did the same job but dragged the badge out past the scroll container's edge
+     and clipped it. */
+  display:flex; align-items:baseline; gap:7px;
+}
+.log-body { flex:1 1 auto; min-width:0; }
+.log-line:hover { background:var(--surface-2, rgba(127,127,127,.06)); }
+/* The source badge is NEUTRAL by design: thirteen cores is well past the number
+   hue can distinguish, the same reason protocol tags elsewhere carry no colour.
+   Identity comes from the text; colour is reserved for severity.
+   Deliberately BORDERLESS and unpadded vertically: a bordered, padded chip was
+   taller than the text it labelled, so every row inherited the chip's height and
+   the list gained a gap between lines that made it hard to scan. */
+.log-src {
+  flex:0 0 62px; padding:0 4px; border-radius:3px;
+  background:var(--surface-2, rgba(127,127,127,.10));
+  color:var(--text-3); font-weight:var(--fw-bold);
+  font-size:10px; line-height:inherit; text-align:center;
+  text-transform:uppercase; letter-spacing:.02em;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+
+/* Core filter above the log pane. */
+.log-filter {
+  display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px;
+  margin:8px 0 0; padding:8px 10px;
+  border:1px solid var(--border); border-radius:var(--radius-md);
+  background:var(--surface-2, rgba(127,127,127,.05));
+}
+.log-filter-label {
+  font-size:var(--fs-sm); font-weight:var(--fw-bold); color:var(--text-3);
+  text-transform:uppercase; letter-spacing:.04em;
+}
+.log-filter .ant-checkbox-wrapper { margin-inline-start:0; font-size:12px; }
+.log-filter .ant-btn-link { padding:0 4px; height:auto; font-size:12px; }
+
+/* Live tail indicator. The dot pulses so an idle log that happens to produce
+   no new lines still reads as "following" rather than "stuck". */
+.log-live-dot {
+  display:inline-block; width:7px; height:7px; border-radius:50%;
+  margin-inline-end:6px; background:currentColor; vertical-align:middle;
+  animation:log-live-pulse 1.6s var(--ease, ease-in-out) infinite;
+}
+@keyframes log-live-pulse {
+  0%, 100% { opacity:1; transform:scale(1); }
+  50%      { opacity:.35; transform:scale(.7); }
+}
+/* The panel disables animation globally while the theme is switching, and for
+   readers who ask for reduced motion; a blinking dot is exactly what that
+   preference is about. */
+@media (prefers-reduced-motion: reduce) {
+  .log-live-dot { animation:none; }
+}
+html[data-theme-animations='off'] .log-live-dot { animation:none; }
+.log-time { color:var(--text-3); }
+.log-lvl { font-weight:var(--fw-bold); }
+.log-lvl.log-error { color:var(--error); }
+.log-lvl.log-warn { color:var(--warn); }
+.log-lvl.log-info { color:var(--ok); }
+.log-lvl.log-debug { color:var(--info); }
+.log-msg { color:var(--text); }
+.log-empty { color:var(--text-3); padding:6px 0; }

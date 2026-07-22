@@ -34,6 +34,10 @@ type ServerController struct {
 	lastVersions        []string
 	lastGetVersionsTime int64 // unix seconds
 
+	locMu            sync.Mutex // guards lastLocation/lastLocationTime
+	lastLocation     *service.ExitInfo
+	lastLocationTime int64 // unix seconds
+
 	updMu               sync.Mutex // guards lastPanelUpdate/lastPanelUpdateTime
 	lastPanelUpdate     *service.PanelUpdateInfo
 	lastPanelUpdateTime int64 // unix seconds
@@ -53,6 +57,7 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.GET("/status", a.status)
 	g.GET("/userStats", a.userStats)
 	g.GET("/serverName", a.getServerName)
+	g.GET("/panelLocation", a.panelLocation)
 	g.GET("/cpuHistory/:bucket", a.getCpuHistoryBucket)
 	g.GET("/getXrayVersion", a.getXrayVersion)
 	// Escalation-class: these hand over the whole panel regardless of any
@@ -149,6 +154,58 @@ func (a *ServerController) setServerName(c *gin.Context) {
 	}
 	err := a.settingService.SetServerName(name)
 	jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+}
+
+// panelLocation reports where the panel's own traffic egresses, for the
+// overview's "Panel Location" row.
+//
+// Checked when the overview opens rather than once per process: a panel started
+// by systemd at boot often runs before the network settles, and a once-only
+// lookup would leave the row permanently blank until a restart. A public IP can
+// also simply change under the panel.
+//
+// Cached for 5 minutes, INCLUDING failures, exactly like checkUpdate: the probe
+// is an outbound request and reloading the overview must not be able to hammer
+// it. ?force=1 bypasses the cache.
+//
+// Always returns success with a `found` flag rather than an error, so a host
+// that cannot reach the probe renders "error getting location info" instead of
+// raising a toast on every dashboard visit.
+func (a *ServerController) panelLocation(c *gin.Context) {
+	now := time.Now().Unix()
+	force := c.Query("force") != ""
+
+	a.locMu.Lock()
+	if !force && a.lastLocation != nil && now-a.lastLocationTime <= 300 {
+		cached := a.lastLocation
+		a.locMu.Unlock()
+		jsonObj(c, locationPayload(cached), nil)
+		return
+	}
+	a.locMu.Unlock()
+
+	info := service.LookupPanelExit()
+
+	a.locMu.Lock()
+	a.lastLocationTime = now
+	// A failed lookup is cached too, so a censored host is probed at most once
+	// per 5 minutes instead of on every overview load.
+	a.lastLocation = &info
+	a.locMu.Unlock()
+
+	jsonObj(c, locationPayload(&info), nil)
+}
+
+// locationPayload adds the found flag the UI branches on: it distinguishes
+// "looked and could not tell" from "not looked yet", which is what lets the row
+// show an error rather than silently staying hidden.
+func locationPayload(info *service.ExitInfo) gin.H {
+	return gin.H{
+		"found":       info != nil && !info.Empty(),
+		"ipv4":        info.IPv4,
+		"ipv6":        info.IPv6,
+		"countryCode": info.CountryCode,
+	}
 }
 
 // distroStatus reports whether the running host distro is on vpn-ui's tested list,

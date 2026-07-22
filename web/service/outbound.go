@@ -123,6 +123,13 @@ type TestOutboundResult struct {
 	Delay      int64  `json:"delay"` // Delay in milliseconds
 	Error      string `json:"error,omitempty"`
 	StatusCode int    `json:"statusCode,omitempty"`
+	// Exit is the address the outbound actually egresses from, and its country,
+	// probed THROUGH the outbound under test. Only filled on success, and only
+	// best-effort: an outbound that passed the reachability test but blocks the
+	// probe still reports a successful test with no exit info. A POINTER so
+	// omitempty actually elides it: omitempty never elides a struct value, so a
+	// failed probe would otherwise ship a bare "exit":{} to the client.
+	Exit *ExitInfo `json:"exit,omitempty"`
 }
 
 // TestOutbound tests an outbound by creating a temporary xray instance and measuring response time.
@@ -249,11 +256,49 @@ func (s *OutboundService) TestOutbound(outboundJSON string, testURL string, allO
 		}, nil
 	}
 
+	// The test proved the outbound works; now ask what the far side looks like.
+	// Done only on success, and only after the delay measurement, so the extra
+	// round trips cannot inflate the reported latency.
 	return &TestOutboundResult{
 		Success:    true,
 		Delay:      delay,
 		StatusCode: statusCode,
+		Exit:       exitOrNil(s.probeExit(testPort)),
 	}, nil
+}
+
+// exitOrNil drops an exit probe that learned nothing, so the field is absent
+// from the response rather than present and blank.
+func exitOrNil(e ExitInfo) *ExitInfo {
+	if e.Empty() {
+		return nil
+	}
+	return &e
+}
+
+// probeExit asks, through the outbound's own SOCKS proxy, which address the
+// internet sees and where it is. Best-effort: the outbound has already passed
+// its test by this point, so a probe that is blocked, slow or unreachable
+// returns an empty ExitInfo rather than failing the test the operator ran.
+func (s *OutboundService) probeExit(proxyPort int) ExitInfo {
+	proxyURL, err := url.Parse(fmt.Sprintf("socks5://127.0.0.1:%d", proxyPort))
+	if err != nil {
+		return ExitInfo{}
+	}
+	client := &http.Client{
+		// Deliberately tighter than the reachability test's 10s: this is
+		// decoration, and the operator is watching a spinner while it runs.
+		Timeout: 6 * time.Second,
+		Transport: &http.Transport{
+			Proxy:              http.ProxyURL(proxyURL),
+			DialContext:        (&net.Dialer{Timeout: 4 * time.Second}).DialContext,
+			MaxIdleConns:       1,
+			IdleConnTimeout:    5 * time.Second,
+			DisableCompression: true,
+		},
+	}
+	defer client.CloseIdleConnections()
+	return LookupExit(client)
 }
 
 // createTestConfig creates a test config by copying all outbounds unchanged and adding

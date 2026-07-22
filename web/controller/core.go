@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"strings"
+
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 
@@ -25,8 +27,13 @@ func (a *CoreController) initRouter(g *gin.RouterGroup) {
 	g = g.Group("/core")
 	g.Use(requirePerm(model.PermCoreSettings))
 	g.GET("/status", a.status)
+	g.GET("/catalog", a.catalog)
 	g.POST("/provision", a.provision)
 	g.GET("/provision-status", a.provisionStatus)
+	// Removing a core deletes its files and stops its daemon: escalation-class,
+	// like the host reboot below.
+	g.POST("/uninstall", requireSuperAdmin(), a.uninstallCores)
+	g.GET("/uninstall-status", a.uninstallStatus)
 	// Reboots the HOST: escalation-class.
 	g.POST("/reboot", requireSuperAdmin(), a.reboot)
 	g.POST("/restart/:core", a.restart)
@@ -50,12 +57,35 @@ func (a *CoreController) status(c *gin.Context) {
 	}, nil)
 }
 
+// catalog lists every core with its install state, for the setup / add-core /
+// uninstall-core dialogs.
+func (a *CoreController) catalog(c *gin.Context) {
+	jsonObj(c, gin.H{
+		"cores":       a.coreService.CoreCatalog(),
+		"provisioned": a.coreService.IsProvisioned(),
+	}, nil)
+}
+
+// selectedCores reads the `cores` form field, a comma-separated list of core
+// names. Absent or empty means "every installable core", which is what the
+// legacy all-in-one setup button sent and what the CLI still wants.
+func selectedCores(c *gin.Context) []string {
+	raw := c.PostForm("cores")
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // provision starts host/kernel provisioning (kernel modules + sysctl + daemon
-// extraction) in the background and returns the initial run state. The client
-// then polls provisionStatus for the live per-step progress. If a run is already
-// in progress, this does not start a second one.
+// extraction) for the selected cores in the background and returns the initial
+// run state. The client then polls provisionStatus for the live per-step
+// progress. If a run is already in progress, this does not start a second one.
 func (a *CoreController) provision(c *gin.Context) {
-	started := a.coreService.StartProvision()
+	started := a.coreService.StartProvision(selectedCores(c))
 	st := a.coreService.ProvisionState()
 	jsonObj(c, gin.H{
 		"started":        started,
@@ -81,6 +111,40 @@ func (a *CoreController) provisionStatus(c *gin.Context) {
 		"rebootModules":  st.RebootModules,
 		"rebootPkg":      st.RebootPkg,
 		"provisioned":    a.coreService.IsProvisioned(),
+	}, nil)
+}
+
+// uninstallCores removes the selected cores in the background. It refuses up
+// front (with the reason) when a core is not installed or still has inbounds,
+// so the dialog never opens a console on a run that was never going to start.
+func (a *CoreController) uninstallCores(c *gin.Context) {
+	cores := selectedCores(c)
+	started, err := a.coreService.StartCoreUninstall(cores)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.core.toasts.uninstalled"), err)
+		return
+	}
+	st := a.coreService.CoreUninstallStatus()
+	jsonObj(c, gin.H{
+		"started": started,
+		"running": st.Running,
+		"done":    st.Done,
+		"steps":   st.Steps,
+		"kept":    st.Kept,
+		"cores":   st.Cores,
+	}, nil)
+}
+
+// uninstallStatus returns the live progress of the current/most-recent core
+// uninstall, in the same shape as provisionStatus so one console renders both.
+func (a *CoreController) uninstallStatus(c *gin.Context) {
+	st := a.coreService.CoreUninstallStatus()
+	jsonObj(c, gin.H{
+		"running": st.Running,
+		"done":    st.Done,
+		"steps":   st.Steps,
+		"kept":    st.Kept,
+		"cores":   st.Cores,
 	}, nil)
 }
 

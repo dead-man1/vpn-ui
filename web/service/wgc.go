@@ -340,6 +340,15 @@ func (s *WgcService) GenerateAllConfigs() error {
 			if !inbound.Enable {
 				continue
 			}
+			// Claim the interface BEFORE attempting to reconcile it. `wanted` decides
+			// what removeStaleLinks tears down, so building it only from SUCCESSFUL
+			// reconciles meant a single transient failure below (an unparseable
+			// settings blob, a momentary wgctrl error) deleted a live interface and
+			// dropped every connected client, turning a retryable hiccup into an
+			// outage that only a later save would repair. An interface is stale when
+			// its inbound is gone or disabled, which is exactly what this loop skips.
+			wanted[wgIfaceName(inbound.Id)] = true
+
 			settings, err := s.parseSettings(inbound)
 			if err != nil {
 				logger.Warning("WireGuard: skipping inbound", inbound.Id, err)
@@ -366,7 +375,6 @@ func (s *WgcService) GenerateAllConfigs() error {
 				logger.Warning("WireGuard: configure device failed for", iface, err)
 				continue
 			}
-			wanted[iface] = true
 		}
 	}
 
@@ -510,9 +518,31 @@ func (s *WgcService) ensureLink(iface string, mtu int, blockNet net.IP, prefix i
 			gw := net.IPv4(v4[0], v4[1], v4[2], v4[3]+1)
 			addr := &netlink.Addr{IPNet: &net.IPNet{IP: gw, Mask: net.CIDRMask(prefix, 32)}}
 			_ = netlink.AddrReplace(link, addr)
+			dropForeignV4Addrs(link, addr)
 		}
 	}
 	return netlink.LinkSetUp(link)
+}
+
+// dropForeignV4Addrs removes every IPv4 address on link except keep. AddrReplace
+// only replaces an address with the SAME prefix, so an interface whose block moved
+// kept the old gateway address too, and with it a connected route for a block the
+// peers no longer use. Blocks are pinned now (see keepOwnedBlock in vpnrange.go), so
+// this is mostly cleanup for interfaces that already drifted before the fix.
+func dropForeignV4Addrs(link netlink.Link, keep *netlink.Addr) {
+	addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+	if err != nil {
+		return
+	}
+	for i := range addrs {
+		if addrs[i].IPNet == nil || addrs[i].IPNet.String() == keep.IPNet.String() {
+			continue
+		}
+		if err := netlink.AddrDel(link, &addrs[i]); err != nil {
+			logger.Debugf("WireGuard: could not remove stale address %s from %s: %v",
+				addrs[i].IPNet, link.Attrs().Name, err)
+		}
+	}
 }
 
 // removeStaleLinks deletes every wgc<id> interface not present in keep.

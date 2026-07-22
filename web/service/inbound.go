@@ -610,23 +610,8 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 
 	// Secure client ID
 	for _, client := range clients {
-		switch inbound.Protocol {
-		case "trojan", "l2tp", "pptp", "sstp", "ikev2":
-			if client.Password == "" {
-				return inbound, false, common.NewError("empty client ID")
-			}
-		case "shadowsocks":
-			if client.Email == "" {
-				return inbound, false, common.NewError("empty client ID")
-			}
-		case "hysteria", "hysteria2":
-			if client.Auth == "" {
-				return inbound, false, common.NewError("empty client ID")
-			}
-		default:
-			if client.ID == "" {
-				return inbound, false, common.NewError("empty client ID")
-			}
+		if clientIdentity(inbound.Protocol, client) == "" {
+			return inbound, false, common.NewError("empty client ID")
 		}
 	}
 
@@ -1115,23 +1100,8 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 
 	// Secure client ID
 	for _, client := range clients {
-		switch oldInbound.Protocol {
-		case "trojan", "l2tp", "pptp", "openvpn":
-			if client.Password == "" {
-				return false, common.NewError("empty client ID")
-			}
-		case "shadowsocks":
-			if client.Email == "" {
-				return false, common.NewError("empty client ID")
-			}
-		case "hysteria", "hysteria2":
-			if client.Auth == "" {
-				return false, common.NewError("empty client ID")
-			}
-		default:
-			if client.ID == "" {
-				return false, common.NewError("empty client ID")
-			}
+		if clientIdentity(oldInbound.Protocol, client) == "" {
+			return false, common.NewError("empty client ID")
 		}
 	}
 
@@ -1210,17 +1180,53 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	return needRestart, tx.Save(oldInbound).Error
 }
 
-func (s *InboundService) getClientPrimaryKey(protocol model.Protocol, client model.Client) string {
+// clientIdentityKey returns the settings-JSON field a protocol's clients are
+// IDENTIFIED by: the value the panel puts in /updateClient/:clientId and
+// /delClient/:clientId, and the one every lookup must match on.
+//
+// This switch used to be copy-pasted into five places (AddInbound, AddInboundClient,
+// UpdateInboundClient, DelInboundClient, getClientPrimaryKey) plus twice more in the
+// browser, and the copies drifted apart. The newer username+password protocols
+// (openconnect, sstp, ikev2) were added to the browser's list and to AddInbound's but
+// to none of the other three, so an edit was keyed on the password client-side while
+// the backend looked the account up by id. Nothing ever matched, and the edit came
+// back as "empty client ID"; the delete silently removed nobody. One function now,
+// and every id-keyed path goes through it.
+func clientIdentityKey(protocol model.Protocol) string {
 	switch protocol {
-	case model.Trojan:
-		return client.Password
+	// Username+password VPN protocols. The password is the identity rather than the
+	// username because the username is the field operators actually rename, and a key
+	// that moves mid-edit cannot be matched against the one the modal opened with.
+	case model.Trojan, model.L2TP, model.PPTP, model.OPENVPN, model.OPENCONNECT, model.SSTP, model.IKEV2:
+		return "password"
 	case model.Shadowsocks:
+		return "email"
+	case model.Hysteria, model.Hysteria2:
+		return "auth"
+	default:
+		// vmess/vless (uuid) and the email-identity protocols (wg-c, awg, mtproto,
+		// ssh), whose settings JSON carries id=email.
+		return "id"
+	}
+}
+
+// clientIdentity returns client's value under its protocol's identity field. Empty
+// means the client cannot be addressed, which every caller treats as an error.
+func clientIdentity(protocol model.Protocol, client model.Client) string {
+	switch clientIdentityKey(protocol) {
+	case "password":
+		return client.Password
+	case "email":
 		return client.Email
-	case model.Hysteria:
+	case "auth":
 		return client.Auth
 	default:
 		return client.ID
 	}
+}
+
+func (s *InboundService) getClientPrimaryKey(protocol model.Protocol, client model.Client) string {
+	return clientIdentity(protocol, client)
 }
 
 func (s *InboundService) writeBackClientSubID(sourceInboundID int, sourceProtocol model.Protocol, client model.Client, subID string) (bool, error) {
@@ -1276,10 +1282,29 @@ func (s *InboundService) buildTargetClientFromSource(source model.Client, target
 		}
 	case model.Trojan, model.Shadowsocks:
 		target.Password = s.generateRandomCredential(targetProtocol)
-	case model.Hysteria:
+	case model.Hysteria, model.Hysteria2:
 		target.Auth = s.generateRandomCredential(targetProtocol)
+	case model.L2TP, model.PPTP, model.OPENVPN, model.OPENCONNECT, model.SSTP, model.IKEV2:
+		// These authenticate with a username AND a password, and both were wiped
+		// above. Only the username used to be minted back, so a copied account was
+		// created, listed in the table, and could never log in: RADIUS had nothing
+		// to check against. It also left the account with no identity at all for the
+		// protocols keyed on the password (see clientIdentityKey).
+		target.ID = s.generateRandomCredential(targetProtocol)
+		target.Password = s.generateRandomCredential(targetProtocol)
+	case model.WGC, model.AWG, model.MTPROTO, model.SSH:
+		// Email-identity protocols: their settings JSON stores id=email and the
+		// panel's client models derive id from email, so a random credential here
+		// would name an account that does not exist.
+		target.ID = email
 	default:
 		target.ID = s.generateRandomCredential(targetProtocol)
+	}
+
+	// Nothing downstream can address a client whose identity field is blank, and a
+	// silently unusable account is worse than a refused copy.
+	if clientIdentity(targetProtocol, target) == "" {
+		return target, common.NewError("cannot build a ", targetProtocol, " client: no ", clientIdentityKey(targetProtocol), " was generated")
 	}
 
 	return target, nil
@@ -1419,28 +1444,36 @@ func (s *InboundService) DelInboundClient(inboundId int, clientId string) (bool,
 	}
 
 	email := ""
-	client_key := "id"
-	switch oldInbound.Protocol {
-	case "trojan", "l2tp", "pptp", "openvpn":
-		client_key = "password"
-	case "shadowsocks":
-		client_key = "email"
-	case "hysteria", "hysteria2":
-		client_key = "auth"
-	}
+	client_key := clientIdentityKey(oldInbound.Protocol)
 
-	interfaceClients := settings["clients"].([]any)
+	interfaceClients, _ := settings["clients"].([]any)
 	var newClients []any
 	needApiDel := false
+	matched := false
 	for _, client := range interfaceClients {
-		c := client.(map[string]any)
-		c_id := c[client_key].(string)
-		if c_id == clientId {
+		c, ok := client.(map[string]any)
+		if !ok {
+			newClients = append(newClients, client)
+			continue
+		}
+		// Comma-ok, not a bare assertion: a client stored without the identity field
+		// (an older record, or a protocol whose UI never wrote it) used to panic the
+		// whole request here rather than simply failing to match.
+		c_id, _ := c[client_key].(string)
+		if c_id != "" && c_id == clientId {
+			matched = true
 			email, _ = c["email"].(string)
 			needApiDel, _ = c["enable"].(bool)
 		} else {
 			newClients = append(newClients, client)
 		}
+	}
+
+	// No match means the caller addressed a client that is not in this inbound.
+	// Reporting success while removing nobody is worse than an error: the row
+	// disappears from the table until the next refresh puts it back.
+	if !matched {
+		return false, common.NewError("client not found:", clientId)
 	}
 
 	if len(newClients) == 0 {
@@ -1526,25 +1559,10 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 	}
 
 	oldEmail := ""
-	newClientId := ""
+	newClientId := clientIdentity(oldInbound.Protocol, clients[0])
 	clientIndex := -1
 	for index, oldClient := range oldClients {
-		oldClientId := ""
-		switch oldInbound.Protocol {
-		case "trojan", "l2tp", "pptp", "openvpn":
-			oldClientId = oldClient.Password
-			newClientId = clients[0].Password
-		case "shadowsocks":
-			oldClientId = oldClient.Email
-			newClientId = clients[0].Email
-		case "hysteria", "hysteria2":
-			oldClientId = oldClient.Auth
-			newClientId = clients[0].Auth
-		default:
-			oldClientId = oldClient.ID
-			newClientId = clients[0].ID
-		}
-		if clientId == oldClientId {
+		if clientId == clientIdentity(oldInbound.Protocol, oldClient) {
 			oldEmail = oldClient.Email
 			clientIndex = index
 			break
@@ -2595,14 +2613,7 @@ func (s *InboundService) SetClientTelegramUserID(trafficId int, tgId int64) (boo
 
 	for _, oldClient := range oldClients {
 		if oldClient.Email == clientEmail {
-			switch inbound.Protocol {
-			case "trojan", "l2tp", "pptp":
-				clientId = oldClient.Password
-			case "shadowsocks":
-				clientId = oldClient.Email
-			default:
-				clientId = oldClient.ID
-			}
+			clientId = clientIdentity(inbound.Protocol, oldClient)
 			break
 		}
 	}
@@ -2681,14 +2692,7 @@ func (s *InboundService) ToggleClientEnableByEmail(clientEmail string) (bool, bo
 
 	for _, oldClient := range oldClients {
 		if oldClient.Email == clientEmail {
-			switch inbound.Protocol {
-			case "trojan", "l2tp", "pptp":
-				clientId = oldClient.Password
-			case "shadowsocks":
-				clientId = oldClient.Email
-			default:
-				clientId = oldClient.ID
-			}
+			clientId = clientIdentity(inbound.Protocol, oldClient)
 			clientOldEnabled = oldClient.Enable
 			break
 		}
@@ -2762,14 +2766,7 @@ func (s *InboundService) ResetClientIpLimitByEmail(clientEmail string, count int
 
 	for _, oldClient := range oldClients {
 		if oldClient.Email == clientEmail {
-			switch inbound.Protocol {
-			case "trojan", "l2tp", "pptp":
-				clientId = oldClient.Password
-			case "shadowsocks":
-				clientId = oldClient.Email
-			default:
-				clientId = oldClient.ID
-			}
+			clientId = clientIdentity(inbound.Protocol, oldClient)
 			break
 		}
 	}
@@ -2821,14 +2818,7 @@ func (s *InboundService) ResetClientExpiryTimeByEmail(clientEmail string, expiry
 
 	for _, oldClient := range oldClients {
 		if oldClient.Email == clientEmail {
-			switch inbound.Protocol {
-			case "trojan", "l2tp", "pptp":
-				clientId = oldClient.Password
-			case "shadowsocks":
-				clientId = oldClient.Email
-			default:
-				clientId = oldClient.ID
-			}
+			clientId = clientIdentity(inbound.Protocol, oldClient)
 			break
 		}
 	}
@@ -2883,14 +2873,7 @@ func (s *InboundService) ResetClientTrafficLimitByEmail(clientEmail string, tota
 
 	for _, oldClient := range oldClients {
 		if oldClient.Email == clientEmail {
-			switch inbound.Protocol {
-			case "trojan", "l2tp", "pptp":
-				clientId = oldClient.Password
-			case "shadowsocks":
-				clientId = oldClient.Email
-			default:
-				clientId = oldClient.ID
-			}
+			clientId = clientIdentity(inbound.Protocol, oldClient)
 			break
 		}
 	}

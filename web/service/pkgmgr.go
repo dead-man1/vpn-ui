@@ -613,12 +613,23 @@ func kernelPackageFallbacks(pkg string) []string {
 
 // MissingKernelModules returns the required VPN kernel modules that are NOT
 // available on the running kernel (not loaded, not built-in, not loadable). This
-// is what decides whether a kernel package needs installing — using availability
+// is what decides whether a kernel package needs installing: using availability
 // rather than "currently loaded" avoids needless kernel installs for built-in
 // modules (which have no /sys/module entry).
+//
+// Scoped to the cores this host is actually provisioned for. A host that only
+// installed WireGuard has no use for l2tp_ppp, and reporting it missing would
+// both redden the system card and send provisionKernelModules off to install a
+// kernel package for a protocol nobody asked for.
 func (s *CoreService) MissingKernelModules() []string {
+	return missingModules(requiredModulesFor(s.installedCoreNames()))
+}
+
+// missingModules filters a module list down to the ones this kernel cannot
+// provide.
+func missingModules(mods []string) []string {
 	var missing []string
-	for _, m := range vpnKernelModules {
+	for _, m := range mods {
 		if !moduleAvailable(m) {
 			missing = append(missing, m)
 		}
@@ -631,14 +642,16 @@ func (s *CoreService) MissingKernelModules() []string {
 // happened. When modules are still missing afterwards they only exist in a
 // freshly installed, not-yet-booted kernel — newKernel names that kernel so the
 // caller can pin it in the bootloader and prompt a reboot. Must run as root.
-func (s *CoreService) InstallKernelModules() (pkg string, stillMissing []string, newKernel string, log string, err error) {
+// want is the module set to satisfy, so the caller decides which cores' modules
+// are at stake rather than this reaching for a global list.
+func (s *CoreService) InstallKernelModules(want []string) (pkg string, stillMissing []string, newKernel string, log string, err error) {
 	pkg = KernelModulesPackage()
 	if pkg == "" {
-		return "", s.MissingKernelModules(), "", "", fmt.Errorf("don't know the kernel package for this distro")
+		return "", missingModules(want), "", "", fmt.Errorf("don't know the kernel package for this distro")
 	}
 	pm := detectPackageManager()
 	if pm == nil {
-		return pkg, s.MissingKernelModules(), "", "", fmt.Errorf("no supported package manager")
+		return pkg, missingModules(want), "", "", fmt.Errorf("no supported package manager")
 	}
 
 	// Capture what's missing BEFORE the install. Installing the package makes these
@@ -647,7 +660,7 @@ func (s *CoreService) InstallKernelModules() (pkg string, stillMissing []string,
 	// would skip the very modules we just added, leaving them available-but-unloaded
 	// (which the status panel shows as a red/not-loaded module — the Fedora l2tp_ppp
 	// case, where l2tp_ppp is the one module that ships in kernel-modules-extra).
-	wasMissing := s.MissingKernelModules()
+	wasMissing := missingModules(want)
 
 	log, err = pm.installPackage(pkg)
 	if err != nil {
@@ -661,7 +674,7 @@ func (s *CoreService) InstallKernelModules() (pkg string, stillMissing []string,
 		}
 	}
 	if err != nil {
-		return pkg, s.MissingKernelModules(), "", log, err
+		return pkg, missingModules(want), "", log, err
 	}
 
 	// Load the modules that were missing now that the package is installed; modprobe
@@ -671,7 +684,7 @@ func (s *CoreService) InstallKernelModules() (pkg string, stillMissing []string,
 	for _, m := range wasMissing {
 		_ = exec.Command("modprobe", m).Run()
 	}
-	stillMissing = s.MissingKernelModules()
+	stillMissing = missingModules(want)
 
 	// Anything still missing only exists in a kernel that isn't booted yet — find
 	// which installed kernel actually has the PPP modules so the bootloader can be

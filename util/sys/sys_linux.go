@@ -11,7 +11,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 )
 
@@ -93,31 +92,30 @@ func safeGetLinesNum(path string) (int, error) {
 
 // --- CPU Utilization (Linux native) ---
 
-var (
-	cpuMu       sync.Mutex
-	lastTotal   uint64
-	lastIdleAll uint64
-	hasLast     bool
-)
-
-// CPUPercentRaw returns instantaneous total CPU utilization by reading /proc/stat.
-// First call initializes and returns 0; subsequent calls return busy/total * 100.
-func CPUPercentRaw() (float64, error) {
+// CPUTimesRaw returns the cumulative-since-boot idle and total CPU jiffies from
+// /proc/stat. Utilization is the ratio of their DELTAS between two reads, and the
+// deltas are deliberately left to the caller: these counters used to be turned into
+// a percentage here against a package-level baseline, which made the reading depend
+// on who called last. The dashboard polls every 2s and the Telegram bot's usage
+// report calls the same path on its own schedule, so each was silently consuming the
+// other's interval and reporting a percentage measured over a window it did not own.
+// Per-caller state cannot have that problem.
+func CPUTimesRaw() (idleAll, total uint64, err error) {
 	f, err := os.Open("/proc/stat")
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer f.Close()
 
 	rd := bufio.NewReader(f)
 	line, err := rd.ReadString('\n')
 	if err != nil && err != io.EOF {
-		return 0, err
+		return 0, 0, err
 	}
 	// Expect line like: cpu  user nice system idle iowait irq softirq steal guest guest_nice
 	fields := strings.Fields(line)
 	if len(fields) < 5 || fields[0] != "cpu" {
-		return 0, fmt.Errorf("unexpected /proc/stat format")
+		return 0, 0, fmt.Errorf("unexpected /proc/stat format")
 	}
 
 	var nums []uint64
@@ -129,7 +127,7 @@ func CPUPercentRaw() (float64, error) {
 		nums = append(nums, v)
 	}
 	if len(nums) < 4 { // need at least user,nice,system,idle
-		return 0, fmt.Errorf("insufficient cpu fields")
+		return 0, 0, fmt.Errorf("insufficient cpu fields")
 	}
 
 	// Conform with standard Linux CPU accounting
@@ -157,32 +155,7 @@ func CPUPercentRaw() (float64, error) {
 		steal = nums[7]
 	}
 
-	idleAll := idle + iowait
+	idleAll = idle + iowait
 	nonIdle := user + nice + system + irq + softirq + steal
-	total := idleAll + nonIdle
-
-	cpuMu.Lock()
-	defer cpuMu.Unlock()
-
-	if !hasLast {
-		lastTotal = total
-		lastIdleAll = idleAll
-		hasLast = true
-		return 0, nil
-	}
-
-	totald := total - lastTotal
-	idled := idleAll - lastIdleAll
-	lastTotal = total
-	lastIdleAll = idleAll
-
-	if totald == 0 {
-		return 0, nil
-	}
-	busy := totald - idled
-	pct := float64(busy) / float64(totald) * 100.0
-	if pct > 100 {
-		pct = 100
-	}
-	return pct, nil
+	return idleAll, idleAll + nonIdle, nil
 }

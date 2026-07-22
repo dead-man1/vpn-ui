@@ -21,6 +21,37 @@ const Protocols = {
     SSH: 'ssh',
 };
 
+// The panel-wide client identity: the value that goes in the URL of
+// /panel/api/inbounds/updateClient/:clientId and /:id/delClient/:clientId.
+//
+// This MUST stay in lockstep with clientIdentityKey() in web/service/inbound.go. It
+// lives here, once, because the two template-local copies of this switch are exactly
+// how it drifted last time: openconnect/sstp/ikev2 were added to the browser's list
+// and not to the backend's, so an edit was keyed on the password while the server
+// looked the account up by id, and every edit came back "empty client ID".
+function getClientIdentity(protocol, client) {
+    switch (protocol) {
+        // Username+password VPN protocols: the password is the key, because the
+        // username is the field operators actually rename.
+        case Protocols.TROJAN:
+        case Protocols.L2TP:
+        case Protocols.PPTP:
+        case Protocols.OPENVPN:
+        case Protocols.OPENCONNECT:
+        case Protocols.SSTP:
+        case Protocols.IKEV2:
+            return client.password;
+        case Protocols.SHADOWSOCKS:
+            return client.email;
+        case Protocols.HYSTERIA:
+            return client.auth;
+        default:
+            // vmess/vless (uuid) and the email-identity protocols (wg-c, awg,
+            // mtproto, ssh), whose models expose id via a `get id()` returning email.
+            return client.id;
+    }
+}
+
 // Display labels for the protocol picker. The Add/Edit inbound dropdown shows
 // these while binding the lowercase Protocols VALUE (openvpn/http/openconnect/…),
 // which is what the backend parses — so the pretty text never reaches the server.
@@ -4324,6 +4355,7 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
     privKey = "",
     pubKey = "",
     psk = "",
+    devices = [],
     expiryTime = 0,
     tgId = "",
     subId = "",
@@ -4341,6 +4373,13 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
     this.privKey = privKey;
     this.pubKey = pubKey;
     this.psk = psk;
+    // Per-device keypairs, one slot per User Limit device, minted server-side.
+    // MUST round-trip: the backend stores clients[].devices, but this model used to
+    // drop the field, so every save posted the account back WITHOUT it. ReconcileKeys
+    // then rebuilt device 0 from the legacy privKey mirror below and MINTED FRESH KEYS
+    // for devices 2..K, silently invalidating every config already downloaded for
+    // them. Invisible at User Limit 1 (the default), which is why it survived.
+    this.devices = Array.isArray(devices) ? devices : [];
     this.expiryTime = expiryTime;
     this.tgId = tgId;
     this.subId = subId;
@@ -4370,6 +4409,7 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
           j.privKey ?? "",
           j.pubKey ?? "",
           j.psk ?? "",
+          Array.isArray(j.devices) ? j.devices : [],
           j.expiryTime ?? 0,
           j.tgId ?? "",
           j.subId ?? "",
@@ -4395,6 +4435,7 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
       privKey: this.privKey,
       pubKey: this.pubKey,
       psk: this.psk,
+      devices: this.devices,
       expiryTime: this.expiryTime,
       tgId: this.tgId,
       subId: this.subId,
@@ -4570,6 +4611,7 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
     privKey = "",
     pubKey = "",
     psk = "",
+    devices = [],
     expiryTime = 0,
     tgId = "",
     subId = "",
@@ -4587,6 +4629,13 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
     this.privKey = privKey;
     this.pubKey = pubKey;
     this.psk = psk;
+    // Per-device keypairs, one slot per User Limit device, minted server-side.
+    // MUST round-trip: the backend stores clients[].devices, but this model used to
+    // drop the field, so every save posted the account back WITHOUT it. ReconcileKeys
+    // then rebuilt device 0 from the legacy privKey mirror below and MINTED FRESH KEYS
+    // for devices 2..K, silently invalidating every config already downloaded for
+    // them. Invisible at User Limit 1 (the default), which is why it survived.
+    this.devices = Array.isArray(devices) ? devices : [];
     this.expiryTime = expiryTime;
     this.tgId = tgId;
     this.subId = subId;
@@ -4616,6 +4665,7 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
           j.privKey ?? "",
           j.pubKey ?? "",
           j.psk ?? "",
+          Array.isArray(j.devices) ? j.devices : [],
           j.expiryTime ?? 0,
           j.tgId ?? "",
           j.subId ?? "",
@@ -4641,6 +4691,7 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
       privKey: this.privKey,
       pubKey: this.pubKey,
       psk: this.psk,
+      devices: this.devices,
       expiryTime: this.expiryTime,
       tgId: this.tgId,
       subId: this.subId,

@@ -618,6 +618,39 @@ class TimeFormatter {
         let remain = ((second / 3600) - (day * 24)).toFixed(0);
         return day + 'd' + (remain > 0 ? ' ' + remain + 'h' : '');
     }
+
+    // Full uptime breakdown: years and months appear only once actually reached,
+    // then days, hours, minutes and seconds. Zero units are skipped entirely, so
+    // a core restarted moments ago reads "12s" and a long-lived host reads
+    // "1y 2mo 3d 4h 5m 6s" rather than padding either with meaningless zeros.
+    //
+    // formatSecond (above) collapses everything past a day into "Nd Nh"; it is
+    // kept for the places that want the short form. This one is for the overview
+    // and the Xray tile, where the exact figure is the point.
+    static formatUptime(second) {
+        second = Math.floor(Number(second) || 0);
+        if (second <= 0) return '0s';
+        // Mean Gregorian month and year, so "1mo" keeps meaning roughly a month
+        // instead of drifting against the calendar the way a flat 30 days does.
+        const UNITS = [
+            ['y', 31557600],  // 365.25 days
+            ['mo', 2629800],  // 30.4375 days
+            ['d', 86400],
+            ['h', 3600],
+            ['m', 60],
+            ['s', 1],
+        ];
+        const parts = [];
+        let rest = second;
+        for (const [label, size] of UNITS) {
+            const n = Math.floor(rest / size);
+            if (n > 0) {
+                parts.push(n + label);
+                rest -= n * size;
+            }
+        }
+        return parts.join(' ');
+    }
 }
 
 class NumberFormatter {
@@ -895,6 +928,249 @@ class FileManager {
         URL.revokeObjectURL(link.href);
 
         link.remove();
+    }
+}
+
+// One renderer for every log the panel shows, so a daemon's output, Xray's and
+// the panel's own all read the same way.
+//
+// Each core used to be dumped as raw escaped text under a heading, while the
+// panel log alone got severity colours. That made the aggregated view a wall of
+// undifferentiated text in which the only way to tell whose line you were
+// reading was to scroll back to the nearest heading.
+//
+// Colour encodes SEVERITY only. The source is a neutral badge on purpose: the
+// panel carries thirteen cores and hue cannot reliably distinguish that many,
+// which is the same reason protocol tags elsewhere are neutral.
+// Live tail for the panel's log views.
+//
+// There is no server-side log stream to subscribe to: the panel log is a ring
+// buffer read on demand and each core's log is whatever its process manager has
+// captured, so "live" here is a poll of the SAME endpoint the view already uses.
+// That keeps every log view live-able without inventing a streaming protocol per
+// core, and it means the live view and the manual one can never disagree.
+//
+// Timers are held here, keyed, rather than on the Vue instances, so closing a
+// modal or navigating away cannot leave one running against a dead component.
+class LiveLog {
+    // Long enough not to hammer the box, short enough to feel live. The
+    // aggregated view fans out to one request per selected core, which is why
+    // it only ever polls the cores actually ticked in the filter.
+    static get INTERVAL_MS() { return 3000; }
+
+    static start(key, fn, intervalMs) {
+        this.stop(key);
+        LiveLog._timers[key] = setInterval(fn, intervalMs || this.INTERVAL_MS);
+    }
+
+    static stop(key) {
+        if (LiveLog._timers[key]) {
+            clearInterval(LiveLog._timers[key]);
+            delete LiveLog._timers[key];
+        }
+    }
+
+    static stopAll() {
+        for (const k of Object.keys(LiveLog._timers)) this.stop(k);
+    }
+
+    // Whether the pane is scrolled to (or near) the bottom. A live refresh must
+    // only auto-scroll when the reader is already following the tail; yanking
+    // someone back down while they are reading scrollback is worse than useless.
+    static atBottom(el, slack = 40) {
+        if (!el) return true;
+        return el.scrollHeight - el.scrollTop - el.clientHeight <= slack;
+    }
+
+    // Runs `update`, preserving "following the tail" across the re-render.
+    static keepPinned(selector, update) {
+        const el = document.querySelector(selector);
+        const follow = this.atBottom(el);
+        update();
+        if (typeof Vue !== 'undefined' && Vue.nextTick) {
+            Vue.nextTick(() => {
+                const now = document.querySelector(selector);
+                if (follow && now) now.scrollTop = now.scrollHeight;
+            });
+        }
+    }
+}
+LiveLog._timers = {};
+
+// Severity ranks. The log modal's level picker selects a FLOOR, so anything
+// below it is dropped. A daemon line that carries no severity token at all
+// (most of them: xl2tpd, ocserv and pppd just print sentences) is treated as
+// INFO, which is what makes "Warning" and "Error" actually narrow the view
+// instead of leaving every core's chatter on screen.
+const LOG_RANKS = {
+    DEBUG: 0, TRACE: 0,
+    INFO: 1,
+    NOTICE: 2,
+    WARNING: 3, WARN: 3,
+    ERROR: 4, ERR: 4, FATAL: 4, CRIT: 4, CRITICAL: 4, PANIC: 4, ALERT: 4, EMERG: 4,
+};
+// The values the level <select> binds, mapped onto the same scale.
+const LOG_LEVEL_FLOOR = { debug: 0, info: 1, notice: 2, warning: 3, err: 4, error: 4 };
+const LOG_UNKNOWN_RANK = LOG_RANKS.INFO;
+
+// One renderer for every log the panel shows, so a daemon's output, Xray's and
+// the panel's own all read the same way.
+//
+// Each core used to be dumped as raw escaped text under a heading, while the
+// panel log alone got severity colours. That made the aggregated view a wall of
+// undifferentiated text in which the only way to tell whose line you were
+// reading was to scroll back to the nearest heading.
+//
+// Colour encodes SEVERITY only. The source is a neutral badge on purpose: the
+// panel carries thirteen cores and hue cannot reliably distinguish that many,
+// which is the same reason protocol tags elsewhere are neutral.
+class LogFormatter {
+    // Log text is NOT trusted: lines echo client-supplied names (VPN usernames,
+    // remarks, SNI), and the pane renders with v-html. Everything is escaped
+    // before any markup is added around it.
+    static esc(s) {
+        const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+        return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => map[c]);
+    }
+
+    // Splits one line into its timestamp, severity and message. Every part is
+    // optional: a daemon may emit a bare sentence with none of them.
+    static parse(text) {
+        let rest = String(text == null ? '' : text);
+        let time = '';
+        let level = '';
+
+        // Leading timestamp, in the shapes the panel and the daemons use:
+        // "2026/07/22 14:12:40" and syslog's "Jul 22 14:12:40".
+        const ts = rest.match(/^\s*(\d{4}[\/-]\d{2}[\/-]\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?|[A-Z][a-z]{2} {1,2}\d{1,2} \d{2}:\d{2}:\d{2})\s*/);
+        if (ts) {
+            time = ts[1];
+            rest = rest.slice(ts[0].length);
+        }
+
+        // A severity token, bare ("INFO - ...") or bracketed ("[Warning]").
+        const lvl = rest.match(/^\s*\[?([A-Za-z]{3,9})\]?(\s*[-:]\s*|\s+)/);
+        if (lvl && Object.prototype.hasOwnProperty.call(LOG_RANKS, lvl[1].toUpperCase())) {
+            level = lvl[1].toUpperCase();
+            rest = rest.slice(lvl[0].length);
+        }
+
+        return { time, level, message: rest };
+    }
+
+    // 0 (debug) to 4 (error). Lines with no token rank as INFO; see LOG_RANKS.
+    static rank(text) {
+        const lvl = this.parse(text).level;
+        return lvl ? LOG_RANKS[lvl] : LOG_UNKNOWN_RANK;
+    }
+
+    static levelClass(level) {
+        const r = LOG_RANKS[level];
+        if (r === 4) return 'log-error';
+        if (r === 3) return 'log-warn';
+        if (r === 2 || r === 1) return 'log-info';
+        if (r === 0) return 'log-debug';
+        return '';
+    }
+
+    // Renders one line: [source] timestamp LEVEL message. The badge is a flex
+    // sibling of the body, not part of the same text flow, so a wrapped line
+    // indents under its own message rather than restarting in the badge column.
+    static line(text, source) {
+        const { time, level, message } = this.parse(text);
+        const badge = source ? `<span class="log-src">${this.esc(source)}</span>` : '';
+        let out = '';
+        if (time) out += `<span class="log-time">${this.esc(time)}</span> `;
+        if (level) out += `<span class="log-lvl ${this.levelClass(level)}">${this.esc(level)}</span> `;
+        out += `<span class="log-msg">${this.esc(message)}</span>`;
+        return badge + `<span class="log-body">${out}</span>`;
+    }
+
+    // Flattens [{source, text}] into individual lines, applying the level floor
+    // and the source allow-list. Shared by render() and plain() so the download
+    // always matches exactly what is on screen.
+    static select(entries, opts = {}) {
+        const floor = opts.level == null ? -1 : (LOG_LEVEL_FLOOR[opts.level] ?? -1);
+        const only = opts.sources && opts.sources.length ? new Set(opts.sources) : null;
+        const out = [];
+        for (const e of entries || []) {
+            if (only && !only.has(e.source)) continue;
+            const body = String(e.text == null ? '' : e.text).replace(/\s+$/, '');
+            if (!body) continue;
+            for (const l of body.split('\n')) {
+                // Blank lines would render as a badge with nothing after it.
+                if (!l.trim()) continue;
+                if (floor >= 0 && this.rank(l) < floor) continue;
+                out.push({ source: e.source, text: l });
+            }
+        }
+        return out;
+    }
+
+    // The distinct sources present, in first-seen order, for the filter UI.
+    static sourcesOf(entries) {
+        const seen = [];
+        for (const e of entries || []) {
+            const body = String(e.text == null ? '' : e.text).trim();
+            if (body && e.source && !seen.includes(e.source)) seen.push(e.source);
+        }
+        return seen;
+    }
+
+    static render(entries, opts = {}) {
+        return this.select(entries, opts)
+            .map((l) => `<div class="log-line">${this.line(l.text, l.source)}</div>`)
+            .join('');
+    }
+
+    // The plain-text twin of render(), for the download button. Same prefixes and
+    // the same filtering, so a downloaded log matches what was on screen.
+    static plain(entries, opts = {}) {
+        return this.select(entries, opts)
+            .map((l) => (l.source ? `[${l.source}] ${l.text}` : l.text))
+            .join('\n');
+    }
+}
+
+class GeoUtil {
+    // "US" -> the regional-indicator pair the platform renders as a flag.
+    // Built from the letters rather than a lookup table: every ISO 3166-1
+    // alpha-2 code maps to its flag by the same offset, so there is no list to
+    // keep in sync and a code we have never seen still renders.
+    static flag(code) {
+        if (typeof code !== 'string' || !/^[A-Za-z]{2}$/.test(code)) return ''
+        const base = 0x1F1E6 - 'A'.charCodeAt(0)
+        return String.fromCodePoint(
+            ...code.toUpperCase().split('').map(c => base + c.charCodeAt(0))
+        )
+    }
+
+    // "US" -> "United States", in the panel's own language. Intl does the
+    // translating, so no country-name table ships with (or is translated for)
+    // the panel. Falls back to the raw code where the runtime has no name.
+    static countryName(code) {
+        if (typeof code !== 'string' || !/^[A-Za-z]{2}$/.test(code)) return ''
+        const cc = code.toUpperCase()
+        // Reserved non-countries: Cloudflare answers XX when it cannot place the
+        // address and T1 for Tor. Both would otherwise render as a meaningless
+        // two-letter "flag", so report them as unknown and let the caller hide.
+        if (cc === 'XX' || cc === 'ZZ' || cc === 'T1') return ''
+        try {
+            const dn = new Intl.DisplayNames([LanguageManager.getLanguage()], { type: 'region' })
+            return dn.of(cc) || cc
+        } catch (e) {
+            return cc
+        }
+    }
+
+    // "United States <flag>", the form both the panel-location row and the
+    // outbound test result use. Empty for an unusable code, so callers can hide
+    // the whole row with a single falsy check.
+    static label(code) {
+        const name = GeoUtil.countryName(code)
+        if (!name) return ''
+        const f = GeoUtil.flag(code)
+        return f ? name + ' ' + f : name
     }
 }
 

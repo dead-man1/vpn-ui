@@ -16,10 +16,10 @@ import (
 // sent) to check that ReconcileKeys mints keys and RenderClientConfigs returns a config.
 func TestWgcRenderDiag(t *testing.T) {
 	settings := `{"dns1":"1.1.1.1","dns2":"8.8.8.8","mtu":1420,"pskEnable":false,` +
-		`"clientToClient":true,"crossInbound":true,"userLimit":6,"ipRanges":["10.7.7.0/24"],` +
+		`"clientToClient":true,"crossInbound":true,"userLimit":6,"ipRanges":["10.7.7.2-10.7.7.254"],` +
 		`"clients":[{"email":"wg-ca@t","enable":true,"id":"wg-ca"},` +
 		`{"email":"wg-cb@t","enable":true,"id":"wg-cb"}]}`
-	ib := &model.Inbound{Id: 7, Port: 51820, Protocol: model.WGC, Enable: true, Tag: "inbound-51820", Settings: settings}
+	ib := &model.Inbound{Id: 12, Port: 51820, Protocol: model.WGC, Enable: true, Tag: "inbound-51820", Settings: settings}
 	s := &WgcService{}
 
 	changed, err := s.ReconcileKeys(ib)
@@ -90,7 +90,7 @@ func TestWgcXrayConfig(t *testing.T) {
 	db := database.GetDB()
 
 	wgcSettings := `{"dns1":"1.1.1.1","dns2":"8.8.8.8","mtu":1420,"pskEnable":false,` +
-		`"clientToClient":true,"crossInbound":true,"userLimit":6,"ipRanges":["10.7.7.0/24"],` +
+		`"clientToClient":true,"crossInbound":true,"userLimit":6,"ipRanges":["10.7.7.2-10.7.7.254"],` +
 		`"serverPrivKey":"WJBYsg2KO4OHc00UkfDXi79cawNyZNJfPWdtF6vb1mw=",` +
 		`"serverPubKey":"W6WUZ4OXkeTjygoaWIlMnbZBqibaP2lSFzhUeOQ2kVY=",` +
 		`"clients":[{"email":"wg-ca@t","enable":true,"id":"wg-ca","privKey":"CBi/NbmtWR2Uk2jA0KAc4ZM+Q3WkKdBAm0jNs2K5XW4=","pubKey":"dVBgJcQqfo6rb1K+OKSqvr0IuOX21iRz/lFsfcZAdEg="},` +
@@ -136,5 +136,37 @@ func TestWgcXrayConfig(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(string(out)), "error") {
 		t.Fatalf("xray -test reported error")
+	}
+}
+
+// The fixtures above carry an explicit ipRanges. They used to write it as a CIDR
+// ("10.7.7.0/24"), which parseRange rejects outright (a range needs a hyphen), so
+// subnetsOf saw nothing, vpnBlock silently fell back to the id-derived 10.7.{id}
+// and the tests exercised the fallback while appearing to cover stored ranges.
+// That gap matters now that an inbound KEEPS its stored block instead of
+// re-deriving it (keepOwnedBlock in vpnrange.go).
+//
+// The inbound id here is deliberately 12 while the stored block is 10.7.7, so this
+// can only pass if the STORED range is the one being honoured.
+func TestWgcHonoursItsStoredRangeNotTheIdFallback(t *testing.T) {
+	settings := `{"mtu":1420,"userLimit":6,"ipRanges":["10.7.7.2-10.7.7.254"],` +
+		`"clients":[{"email":"wg-ca@t","enable":true,"id":"wg-ca"}]}`
+	ib := &model.Inbound{Id: 12, Port: 51820, Protocol: model.WGC, Enable: true, Settings: settings}
+	s := &WgcService{}
+
+	parsed, err := s.parseSettings(ib)
+	if err != nil {
+		t.Fatalf("parseSettings: %v", err)
+	}
+	if got := parsed.effectiveRanges(); len(got) != 1 {
+		t.Fatalf("stored ranges did not survive parsing: %v", got)
+	}
+	netAddr, prefix := wgcBlockFor(ib, parsed)
+	if netAddr.String() != "10.7.7.0" || prefix != 24 {
+		t.Errorf("block = %s/%d, want 10.7.7.0/24 (10.7.12.x means the stored range was ignored)",
+			netAddr, prefix)
+	}
+	if got := s.GetSubnetForInbound(ib); got != "10.7.7.0/24" {
+		t.Errorf("GetSubnetForInbound = %q, want 10.7.7.0/24", got)
 	}
 }

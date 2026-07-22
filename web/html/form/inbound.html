@@ -106,16 +106,18 @@
             </a-tooltip>
             <a-tooltip v-else-if="inbound.protocol === 'wg-c'">
                 <template slot="title">
-                    UDP port the WireGuard interface listens on. Most clients
-                    use port 51820.
+                    UDP port this WireGuard interface listens on. 51820 is the
+                    convention, but each wg-c inbound is its own interface and
+                    needs its OWN port, so additional inbounds must differ.
                 </template>
                 {{ i18n "pages.inbounds.port" }}
                 <a-icon type="question-circle"></a-icon>
             </a-tooltip>
             <a-tooltip v-else-if="inbound.protocol === 'awg'">
                 <template slot="title">
-                    UDP port the AmneziaWG interface listens on. Most clients
-                    use port 51821.
+                    UDP port this AmneziaWG interface listens on. 51821 is the
+                    convention, but each awg inbound is its own interface and
+                    needs its OWN port, so additional inbounds must differ.
                 </template>
                 {{ i18n "pages.inbounds.port" }}
                 <a-icon type="question-circle"></a-icon>

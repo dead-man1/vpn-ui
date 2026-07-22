@@ -317,7 +317,7 @@ func (s *CoreService) MissingDokodemoPorts() []int {
 
 // GetCoresStatus returns the status of every backend core, in display order.
 func (s *CoreService) GetCoresStatus() []CoreStatus {
-	return []CoreStatus{
+	all := []CoreStatus{
 		s.xrayStatus(),
 		s.l2tpStatus(),
 		s.ipsecStatus(),
@@ -332,6 +332,28 @@ func (s *CoreService) GetCoresStatus() []CoreStatus {
 		s.sshStatus(),
 		s.radiusStatus(),
 	}
+
+	// A core the operator never installed reads as "not installed", whatever the
+	// host probes say. Several cores would otherwise report themselves ready off
+	// an embedded bundle (strongSwan, accel-ppp) or a stock kernel module
+	// (WireGuard) that setup has not actually wired up on this host.
+	//
+	// ipsec is deliberately exempt: it is not a core anyone installs directly,
+	// it is the shared charon that L2TP and IKEv2 both stand on, so its own card
+	// reflects the daemon rather than a selection.
+	installed := s.provisionedProtocolSet()
+	for i := range all {
+		spec := coreSpecFor(all[i].Name)
+		if spec == nil || spec.builtin || installed[all[i].Name] {
+			continue
+		}
+		all[i].State = CoreNotInstalled
+		all[i].Version = ""
+		if all[i].Detail == "" {
+			all[i].Detail = "not installed on this host"
+		}
+	}
+	return all
 }
 
 func (s *CoreService) xrayStatus() CoreStatus {
@@ -651,7 +673,11 @@ func (s *CoreService) GetSystemStatus() SystemStatus {
 		Iproute:   commandExists("ip"),
 		ModulesOK: true,
 	}
-	for _, m := range vpnKernelModules {
+	// Scoped to the installed cores: a module belonging to a core this host never
+	// installed is not missing, it is irrelevant, and reporting it red would ask
+	// the operator to fix something they deliberately did not ask for.
+	installed := s.installedCoreNames()
+	for _, m := range requiredModulesFor(installed) {
 		loaded := moduleLoaded(m)
 		if !loaded {
 			st.ModulesOK = false
@@ -661,7 +687,7 @@ func (s *CoreService) GetSystemStatus() SystemStatus {
 	// Optional modules are shown only when the running kernel actually ships them,
 	// so a module the kernel dropped (af_key on RHEL 10+) doesn't surface as a red
 	// "not loaded" row or drag ModulesOK down.
-	for _, m := range vpnOptionalKernelModules {
+	for _, m := range optionalModulesFor(installed) {
 		if moduleAvailable(m) {
 			st.Modules = append(st.Modules, ModuleStatus{Name: m, Loaded: moduleLoaded(m), Optional: true})
 		}
@@ -683,21 +709,16 @@ func (s *CoreService) IsProvisioned() bool {
 	return procFileIsOne("/proc/sys/net/ipv4/ip_forward") && daemonInstalled("openvpn")
 }
 
-// provisionProtocols is the set of VPN protocols whose host prerequisites the
-// setup step ("Initialize Setup") installs — kernel modules, packages, IPsec, etc.
-// APPEND to this list when adding a new host-dependent protocol. An install that
-// was already provisioned for the older set is then told to re-run setup for the
-// new protocol only (see MissingProtocols), so upgrades don't silently miss it.
-var provisionProtocols = []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "awg", "mtproto"}
-
-// provisionBaseline is FROZEN — the protocol set as of when per-protocol setup
-// tracking was introduced. Do NOT add to it; new protocols go in provisionProtocols
-// only. It credits pre-tracking installs (vpnProvisioned=true, no recorded list)
-// with the protocols that already existed, so an upgrade isn't wrongly told every
-// protocol is new — only genuinely newer ones surface as missing.
+// provisionBaseline is FROZEN: the protocol set as of when per-protocol setup
+// tracking was introduced. Do NOT add to it. It credits pre-tracking installs
+// (vpnProvisioned=true, no recorded list) with the protocols that already
+// existed, so an upgrade is not wrongly told every protocol is new.
 var provisionBaseline = []string{"l2tp", "pptp", "openvpn", "openconnect"}
 
-// provisionedProtocolSet returns the protocols the host has been set up for.
+// provisionedProtocolSet returns the cores the host has been set up for. Setup
+// is per-core now, so this is the authoritative "is it installed" answer for
+// everything downstream: the status cards, the inbound-creation gate, and the
+// shared-requirement arithmetic that decides what an uninstall may remove.
 func (s *CoreService) provisionedProtocolSet() map[string]bool {
 	var ss SettingService
 	set := map[string]bool{}
@@ -707,8 +728,15 @@ func (s *CoreService) provisionedProtocolSet() map[string]bool {
 		}
 		return set
 	}
-	// No recorded list but the host looks provisioned → a pre-tracking install:
-	// credit the frozen baseline so only newer protocols surface as missing.
+	// An install that has recorded its core set and recorded it as EMPTY is
+	// authoritative: the operator uninstalled everything. Falling through to the
+	// baseline here would resurrect the original four cores as "installed" the
+	// moment the last one was removed.
+	if ss.HasRecordedProvisionedProtocols() {
+		return set
+	}
+	// No recorded list but the host looks provisioned: a pre-tracking install.
+	// Credit the frozen baseline, which is what its setup run actually covered.
 	if s.IsProvisioned() {
 		for _, p := range provisionBaseline {
 			set[p] = true
@@ -717,18 +745,17 @@ func (s *CoreService) provisionedProtocolSet() map[string]bool {
 	return set
 }
 
-// MissingProtocols returns provisionable protocols the host has NOT been set up
-// for yet. Non-empty exactly when a new protocol was added to an install that was
-// already provisioned for the older set — the "re-run setup for the new protocol"
-// case. Empty on a fresh (unprovisioned) host, where the first-run setup
-// call-to-action handles it instead.
+// MissingProtocols returns installable cores this host is NOT set up for. Since
+// setup became per-core these are cores the operator has not installed (or has
+// uninstalled), not a defect: the Core Settings page offers them under "Add
+// core" rather than nagging about them.
 func (s *CoreService) MissingProtocols() []string {
 	if !s.IsProvisioned() {
 		return nil
 	}
 	provisioned := s.provisionedProtocolSet()
 	var missing []string
-	for _, p := range provisionProtocols {
+	for _, p := range installableCores() {
 		if !provisioned[p] {
 			missing = append(missing, p)
 		}
@@ -736,15 +763,15 @@ func (s *CoreService) MissingProtocols() []string {
 	return missing
 }
 
-// ProtocolNeedsSetup reports whether a specific protocol still needs setup run for
-// it (it was added after this host was last provisioned).
+// ProtocolNeedsSetup reports whether an inbound protocol's core still has to be
+// installed before it can serve anything. Xray-native protocols map to no core
+// and are never gated.
 func (s *CoreService) ProtocolNeedsSetup(protocol string) bool {
-	for _, p := range s.MissingProtocols() {
-		if p == protocol {
-			return true
-		}
+	core := protocolCoreName(protocol)
+	if core == "" {
+		return false
 	}
-	return false
+	return !s.provisionedProtocolSet()[core]
 }
 
 // --------------------------------------------------------------------------- //
@@ -917,9 +944,13 @@ func filterLogs(keyword string) string {
 // It is idempotent and safe to run repeatedly. This is the in-binary replacement
 // for the legacy host-prep shell script. It collects and returns all
 // steps; use StartProvision for the streamed, non-blocking variant.
-func (s *CoreService) Provision() []ProvisionStep {
+//
+// cores selects which VPN cores to provision for; a nil/empty selection means
+// every installable core, which is what the CLI and the legacy all-in-one setup
+// path want.
+func (s *CoreService) Provision(cores []string) []ProvisionStep {
 	var steps []ProvisionStep
-	s.runProvisionSteps(func(st ProvisionStep) { steps = append(steps, st) })
+	s.runProvisionSteps(func(st ProvisionStep) { steps = append(steps, st) }, cores)
 	return steps
 }
 
@@ -928,8 +959,32 @@ func (s *CoreService) Provision() []ProvisionStep {
 // It returns the kernel modules that will only load after a reboot (empty when
 // none) together with the package that provides them, so the caller can prompt
 // the operator to reboot.
-func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules []string, rebootPkg string) {
-	for _, m := range vpnKernelModules {
+//
+// `cores` scopes the run, along two axes that are deliberately different.
+//
+//   - The WORK is scoped to the selection. Host-wide steps (forwarding,
+//     rp_filter, firewalld, nftables, iproute2) always run because they are the
+//     data plane every core shares, but the expensive per-core features (the
+//     pppd / accel-ppp / strongSwan bundles, the kernel-modules package, the
+//     AmneziaWG build) run only for the cores being installed. Adding one core
+//     therefore does not re-extract every bundle an already-installed core owns.
+//   - The PERSISTED STATE is scoped to the union of the selection and what is
+//     already installed, so "install WireGuard" cannot quietly un-persist L2TP's
+//     kernel modules or delete its daemon binaries.
+//
+// Re-run Setup is what repairs an existing core: it passes the installed set as
+// the selection, which puts both axes back together.
+func (s *CoreService) runProvisionSteps(emit func(ProvisionStep), cores []string) (rebootModules []string, rebootPkg string) {
+	selected := cores
+	if len(selected) == 0 {
+		selected = installableCores()
+	}
+	target := dedupe(append(append([]string{}, s.installedCoreNames()...), selected...))
+
+	requiredModules := requiredModulesFor(target)
+	optionalModules := optionalModulesFor(target)
+
+	for _, m := range requiredModules {
 		if moduleLoaded(m) {
 			emit(ProvisionStep{Name: "module " + m, OK: true, Msg: "already loaded"})
 			continue
@@ -951,7 +1006,7 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 	// (af_key on RHEL 10+) is fine — IPsec uses XFRM — so report it as OK info, not
 	// a failure, and never let it drive the kernel-modules install/reboot below.
 	var loadableOptional []string
-	for _, m := range vpnOptionalKernelModules {
+	for _, m := range optionalModules {
 		if moduleLoaded(m) {
 			loadableOptional = append(loadableOptional, m)
 			emit(ProvisionStep{Name: "module " + m, OK: true, Msg: "already loaded (optional)"})
@@ -980,7 +1035,7 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 
 	// Persist only the modules present on this kernel, so systemd-modules-load
 	// doesn't log a failure each boot for an optional module the kernel dropped.
-	modConf := strings.Join(append(append([]string{}, vpnKernelModules...), loadableOptional...), "\n") + "\n"
+	modConf := strings.Join(append(append([]string{}, requiredModules...), loadableOptional...), "\n") + "\n"
 	err := os.WriteFile("/etc/modules-load.d/vpn-ui.conf", []byte(modConf), 0644)
 	emit(ProvisionStep{Name: "persist /etc/modules-load.d/vpn-ui.conf", OK: err == nil, Msg: msgOrOK(err)})
 
@@ -1005,15 +1060,20 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 
 	// Extract the daemons baked into the binary and generate their systemd units.
 	// On a build without an embedded bundle this is a no-op.
+	//
+	// Only the selected cores' binaries are written: "installed" is decided by the
+	// binary being present (daemonInstalled), so extracting the whole bundle would
+	// report every core installed however few the operator picked.
 	if backend.Available() {
-		files, exErr := backend.Extract()
+		wanted := daemonsFor(target)
+		files, exErr := backend.ExtractOnly(wanted)
 		emit(ProvisionStep{Name: "extract bundled daemons", OK: exErr == nil, Msg: filesMsg(files, exErr)})
 
 		// pppd ships as a relocatable tree (it dlopens radius.so + OpenSSL
 		// providers, so it can't be one static binary). Extract it and, if the
 		// host has no pppd of its own, point /usr/sbin/pppd + /usr/lib/pppd at the
 		// bundle so both the daemon and its plugins resolve to it.
-		if backend.HasPppdBundle() {
+		if needsFeature(selected, featPppd) && backend.HasPppdBundle() {
 			pErr := backend.ExtractPppdBundle()
 			emit(ProvisionStep{Name: "extract pppd bundle", OK: pErr == nil, Msg: msgOrOK(pErr)})
 			lErr := backend.LinkSystemPppd()
@@ -1028,7 +1088,7 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 		// the generated accel-ppp.conf resolve to the bundled .so's. The daemon/CLI
 		// binaries themselves resolve via daemonBin → backend.AccelBinPath, so no
 		// PATH symlink is needed here.
-		if backend.HasAccelBundle() {
+		if needsFeature(selected, featAccel) && backend.HasAccelBundle() {
 			aErr := backend.ExtractAccelBundle()
 			emit(ProvisionStep{Name: "extract accel-ppp (SSTP) bundle", OK: aErr == nil, Msg: msgOrOK(aErr)})
 			amErr := backend.LinkAccelModuleDir()
@@ -1039,7 +1099,7 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 		// so extract it and symlink /usr/lib/ipsec at the bundle so charon's absolute-path
 		// plugin dlopens resolve to the bundled .so's. Binaries resolve via
 		// backend.StrongswanBinPath, so no PATH symlink is needed.
-		if backend.HasStrongswanBundle() {
+		if needsFeature(selected, featStrongswan) && backend.HasStrongswanBundle() {
 			swErr := backend.ExtractStrongswanBundle()
 			emit(ProvisionStep{Name: "extract strongswan (IKEv2) bundle", OK: swErr == nil, Msg: msgOrOK(swErr)})
 			swlErr := backend.LinkStrongswanIpsecDir()
@@ -1048,8 +1108,10 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 
 		// pptpd execs pptpctrl from a fixed compiled-in path; point it at the
 		// extracted bundle so pptpd works from any install dir.
-		clErr := backend.LinkPptpCtrl()
-		emit(ProvisionStep{Name: "link pptpctrl", OK: clErr == nil, Msg: msgOrOK(clErr)})
+		if needsFeature(selected, featPptpCtrl) {
+			clErr := backend.LinkPptpCtrl()
+			emit(ProvisionStep{Name: "link pptpctrl", OK: clErr == nil, Msg: msgOrOK(clErr)})
+		}
 
 		// The bundled daemons run as child processes of the panel (not systemd),
 		// so any leftover units from the old design are torn down here.
@@ -1067,14 +1129,18 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 	// IPsec for L2TP/IPsec: on the bundled path (amd64) the extracted strongSwan/charon
 	// serves the IKEv1 transport layer alongside IKEv2 on one daemon, so no host package
 	// is needed. Only fall back to host libreswan on arches without the strongSwan bundle.
-	if !backend.HasStrongswanBundle() {
+	if needsFeature(selected, featStrongswan) && !backend.HasStrongswanBundle() {
 		emit(ensureLibreswan())
 	}
 
 	// L2TP/PPTP need PPP kernel modules that minimal/cloud kernels omit. Best-
 	// effort install of the distro's full kernel-modules package. When the modules
 	// ship only in a newer kernel, this reports that a reboot is needed to load them.
-	mods, pkg := s.provisionKernelModules(emit)
+	var mods []string
+	var pkg string
+	if needsFeature(selected, featKernelMods) {
+		mods, pkg = s.provisionKernelModules(emit, requiredModules)
+	}
 
 	// AmneziaWG: DKMS-build + load the out-of-tree `amneziawg` module from the vendored
 	// source (the project's only on-host compile). Warn-and-degrade on failure.
@@ -1086,7 +1152,9 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 	// AmneziaWG came back "module not found" after the reboot until setup was run a second
 	// time. Running here, the incoming kernel and its headers are already on disk, so the
 	// `dkms autoinstall` inside this step covers it too.
-	emit(ensureAmneziawg())
+	if needsFeature(selected, featAmneziawg) {
+		emit(ensureAmneziawg())
+	}
 
 	// Clear any distro deny-list/disable for our modules (and their dependencies) so
 	// systemd-modules-load auto-loads them on boot (Fedora/RHEL blacklist the L2TP
@@ -1104,7 +1172,7 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 		// earlier in this function, so a just-freed module isn't loaded yet. Load any
 		// that are available now; `blacklist`-only modules already loaded above.
 		var loaded []string
-		for _, m := range vpnKernelModules {
+		for _, m := range requiredModules {
 			if moduleLoaded(m) {
 				continue
 			}
@@ -1136,8 +1204,11 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 //     cloud kernel would otherwise stay the GRUB default).
 //   - Fedora/RHEL/Alma/CentOS: kernel-modules-extra-<running> → no reboot.
 //   - Arch: stock kernel already ships the modules → nothing to do.
-func (s *CoreService) provisionKernelModules(emit func(ProvisionStep)) (rebootModules []string, rebootPkg string) {
-	missing := s.MissingKernelModules()
+//
+// `want` is the module set the current selection needs, so a run that installed
+// only WireGuard never installs a kernel package for PPP it will not use.
+func (s *CoreService) provisionKernelModules(emit func(ProvisionStep), want []string) (rebootModules []string, rebootPkg string) {
+	missing := missingModules(want)
 	if len(missing) == 0 {
 		return nil, ""
 	}
@@ -1154,7 +1225,7 @@ func (s *CoreService) provisionKernelModules(emit func(ProvisionStep)) (rebootMo
 	emit(ProvisionStep{Name: "kernel modules (" + distro + ")", OK: true,
 		Msg: "missing " + strings.Join(missing, ", ") + " — installing " + pkg})
 
-	installed, still, newKernel, log, err := s.InstallKernelModules()
+	installed, still, newKernel, log, err := s.InstallKernelModules(want)
 	if err != nil {
 		emit(ProvisionStep{Name: "install " + pkg, OK: false, Msg: err.Error(), Log: log})
 		return nil, ""
@@ -1202,10 +1273,14 @@ var provisionRun struct {
 	rebootPkg      string
 }
 
-// StartProvision launches provisioning in the background and returns true, or
-// returns false without starting a second run if one is already in progress.
-// On completion it persists the provisioned flag so the setup gate clears.
-func (s *CoreService) StartProvision() bool {
+// StartProvision launches provisioning for the given cores in the background and
+// returns true, or returns false without starting a second run if one is already
+// in progress. On completion it persists the provisioned flag so the setup gate
+// clears, and records the cores the host is now set up for.
+//
+// A nil/empty selection means every installable core, which keeps the CLI and any
+// caller that predates the picker working exactly as before.
+func (s *CoreService) StartProvision(cores []string) bool {
 	provisionRun.mu.Lock()
 	if provisionRun.running {
 		provisionRun.mu.Unlock()
@@ -1219,21 +1294,30 @@ func (s *CoreService) StartProvision() bool {
 	provisionRun.rebootPkg = ""
 	provisionRun.mu.Unlock()
 
+	selected := validCoreNames(cores)
+	if len(selected) == 0 {
+		selected = installableCores()
+	}
+	// Captured BEFORE the run: runProvisionSteps provisions for the union of this
+	// and the selection, and the same union is what gets persisted below.
+	already := s.installedCoreNames()
+
 	go func() {
 		var cs CoreService // CoreService is zero-value usable and stateless
 		mods, pkg := cs.runProvisionSteps(func(st ProvisionStep) {
 			provisionRun.mu.Lock()
 			provisionRun.steps = append(provisionRun.steps, st)
 			provisionRun.mu.Unlock()
-		})
+		}, selected)
 		var ss SettingService
 		if err := ss.SetVpnProvisioned(true); err != nil {
 			logger.Warning("failed to persist vpnProvisioned flag:", err)
 		}
-		// Record every protocol this setup run covers, so a later-added protocol
-		// (appended to provisionProtocols) shows up as missing on an upgrade until
-		// the operator re-runs setup — while today's protocols stay cleared.
-		if err := ss.SetProvisionedProtocols(provisionProtocols); err != nil {
+		// Record the cores this host is now set up for: what it already had plus
+		// what this run added. Additive, so "add one core" never drops the rest,
+		// and a core absent from the list is what makes the Core Settings page
+		// offer it under "Add core".
+		if err := ss.SetProvisionedProtocols(orderedCoreNames(append(already, selected...))); err != nil {
 			logger.Warning("failed to persist provisionedProtocols:", err)
 		}
 

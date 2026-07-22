@@ -100,9 +100,43 @@ func DaemonPath(name string) string {
 // Extract writes all bundled daemon binaries for this architecture into BinDir()
 // with 0755 permissions. It is idempotent (overwrites existing files) and a
 // no-op when no bundle is embedded. Returns the list of files written.
-func Extract() ([]string, error) {
+func Extract() ([]string, error) { return extract(nil) }
+
+// ExtractOnly writes just the named bundled daemons. Names are binary file names
+// as listed in Daemons, e.g. "xl2tpd". A name with no matching embedded file is
+// skipped silently: bundles are per-architecture, so asking for a daemon this
+// build does not ship is a normal outcome, not an error.
+//
+// An EMPTY list extracts nothing, which is the only safe reading of "extract
+// only these". It deliberately does NOT mean "everything" (use Extract for
+// that): the cores with no daemon of their own (SSTP, IKEv2, WireGuard,
+// AmneziaWG) ask for an empty set on every install, and an empty-means-all
+// contract silently laid down the entire bundle for them, which is exactly the
+// thing per-core setup exists to prevent.
+//
+// The selective form exists because "installed" is decided by the binary being
+// on disk (DaemonPath / daemonInstalled), so extracting everything would make
+// every core report itself installed no matter which ones the operator picked.
+func ExtractOnly(names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	return extract(names)
+}
+
+// extract writes the bundled daemons for this architecture into BinDir with 0755
+// permissions. A nil `names` means every daemon in the bundle. It is idempotent
+// (overwrites existing files) and a no-op when no bundle is embedded.
+func extract(names []string) ([]string, error) {
 	if !Available() {
 		return nil, nil
+	}
+	var want map[string]bool
+	if names != nil {
+		want = make(map[string]bool, len(names))
+		for _, n := range names {
+			want[n] = true
+		}
 	}
 	dir := BinDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -122,6 +156,9 @@ func Extract() ([]string, error) {
 		if strings.HasSuffix(e.Name(), ".tgz") {
 			continue
 		}
+		if want != nil && !want[e.Name()] {
+			continue
+		}
 		data, err := bundleFS.ReadFile(archDir() + "/" + e.Name())
 		if err != nil {
 			return written, err
@@ -133,6 +170,32 @@ func Extract() ([]string, error) {
 		written = append(written, dest)
 	}
 	return written, nil
+}
+
+// RemoveDaemons deletes the named extracted daemon binaries from BinDir. It is
+// the inverse of ExtractOnly, used when a core is uninstalled; an absent file
+// is not an error. Returns the paths actually removed.
+func RemoveDaemons(names []string) ([]string, error) {
+	dir := BinDir()
+	var removed []string
+	var firstErr error
+	for _, n := range names {
+		if n == "" || strings.ContainsAny(n, "/\\") {
+			continue // only ever flat names inside BinDir
+		}
+		p := filepath.Join(dir, n)
+		if _, err := os.Lstat(p); err != nil {
+			continue
+		}
+		if err := os.Remove(p); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		removed = append(removed, p)
+	}
+	return removed, firstErr
 }
 
 // writeExecutable writes an executable to dest via a temp file + atomic rename.

@@ -55,15 +55,33 @@
       <!-- One labelled line per fact. Each row's icon is tinted so the eye can
            find a row by colour before reading it. -->
       <dl class="bo-spec">
+        <!-- Order is deliberate: where this panel egresses and how long the two
+             things that can independently restart (the panel, the machine) have
+             been up, then service health, then the hardware facts that never
+             change while we run. -->
+        <div class="bo-spec-row" v-if="panelLocationText">
+          <span class="bo-spec-ico bo-spec-ico--loc"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-globe"></use></svg></span>
+          <dt class="bo-spec-key">{{ i18n "pages.index.panelLocation" }}</dt>
+          <dd class="bo-spec-val" :class="{ 'bo-muted': panelLocationFailed }">[[ panelLocationText ]]</dd>
+        </div>
+        <!-- Two uptimes, not one. A panel restarted an hour ago on a host up for
+             months is worth seeing, and the single "Uptime" row this replaced
+             showed only the host's, so a panel that had crashed and come back
+             looked identical to one that had never stopped. -->
+        <div class="bo-spec-row">
+          <span class="bo-spec-ico bo-spec-ico--panel"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-shield"></use></svg></span>
+          <dt class="bo-spec-key">{{ i18n "pages.index.panelUptime" }}</dt>
+          <dd class="bo-spec-val num">[[ TimeFormatter.formatUptime(status.appUptime) ]]</dd>
+        </div>
         <div class="bo-spec-row">
           <span class="bo-spec-ico bo-spec-ico--os"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-server"></use></svg></span>
-          <dt class="bo-spec-key">{{ i18n "pages.index.operationHours" }}</dt>
-          <dd class="bo-spec-val num">[[ TimeFormatter.formatSecond(status.uptime) ]]</dd>
+          <dt class="bo-spec-key">{{ i18n "pages.index.serverUptime" }}</dt>
+          <dd class="bo-spec-val num">[[ TimeFormatter.formatUptime(status.uptime) ]]</dd>
         </div>
-        <div class="bo-spec-row" v-if="status.kernel">
-          <span class="bo-spec-ico bo-spec-ico--kernel"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-zap"></use></svg></span>
-          <dt class="bo-spec-key">Kernel</dt>
-          <dd class="bo-spec-val num">[[ status.kernel ]]</dd>
+        <div class="bo-spec-row">
+          <span class="bo-spec-ico bo-spec-ico--health"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-shield"></use></svg></span>
+          <dt class="bo-spec-key">{{ i18n "pages.index.vpnServices" }}</dt>
+          <dd class="bo-spec-val num" :class="allCoresHealthy ? 'bo-ok' : 'bo-warn'">[[ healthSummary ]]</dd>
         </div>
         <div class="bo-spec-row" v-if="status.cpuModel">
           <span class="bo-spec-ico bo-spec-ico--cpu"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-cpu"></use></svg></span>
@@ -75,10 +93,18 @@
           <dt class="bo-spec-key">Cores</dt>
           <dd class="bo-spec-val num">[[ CPUFormatter.cpuCoreFormat(status.cpuCores) ]]<span v-if="status.cpuSpeedMhz"> at [[ CPUFormatter.cpuSpeedFormat(status.cpuSpeedMhz) ]]</span></dd>
         </div>
+        <div class="bo-spec-row" v-if="status.kernel">
+          <span class="bo-spec-ico bo-spec-ico--kernel"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-zap"></use></svg></span>
+          <dt class="bo-spec-key">Kernel</dt>
+          <dd class="bo-spec-val num">[[ status.kernel ]]</dd>
+        </div>
+        <!-- Whether this machine is a guest, and of what. Detected once per
+             panel start (it cannot change while we run), so a host that
+             reports nothing is bare metal rather than still being probed. -->
         <div class="bo-spec-row">
-          <span class="bo-spec-ico bo-spec-ico--health"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-shield"></use></svg></span>
-          <dt class="bo-spec-key">{{ i18n "pages.index.vpnServices" }}</dt>
-          <dd class="bo-spec-val num" :class="allCoresHealthy ? 'bo-ok' : 'bo-warn'">[[ healthSummary ]]</dd>
+          <span class="bo-spec-ico bo-spec-ico--virt"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-box"></use></svg></span>
+          <dt class="bo-spec-key">{{ i18n "pages.index.virtualized" }}</dt>
+          <dd class="bo-spec-val">[[ virtText ]]</dd>
         </div>
       </dl>
     </article>
@@ -104,10 +130,14 @@
             {{ i18n "pages.index.upload" }}
           </div>
           <div class="bo-flow-value num" aria-live="polite">
-            [[ SizeFormatter.sizeFormat(status.netIO.up) ]]<span class="bo-unit">/s</span>
+            [[ SizeFormatter.sizeFormat(ifaceRate('up')) ]]<span class="bo-unit">/s</span>
           </div>
+          <!-- height matches .bo-flow-chart's 96px in components.css. The prop said
+               130 while the CSS forced the <svg> to 96, and preserveAspectRatio="none"
+               squashed the whole plot to 74% of its intended height, thinning the
+               stroke vertically along with it. -->
           <div class="bo-flow-chart">
-            <sparkline :data="history.up" :vb-width="420" :height="130" :autoscale="true"
+            <sparkline :data="history.up" :vb-width="420" :height="96" :autoscale="true" :log-scale="true"
               :max-points="HISTORY_POINTS" :fill-opacity="0.14" :stroke="chartColors.accent"
               :show-grid="false" :padding-left="2" :padding-right="2"
               :padding-top="6" :padding-bottom="6" />
@@ -119,10 +149,10 @@
             {{ i18n "pages.index.download" }}
           </div>
           <div class="bo-flow-value num" aria-live="polite">
-            [[ SizeFormatter.sizeFormat(status.netIO.down) ]]<span class="bo-unit">/s</span>
+            [[ SizeFormatter.sizeFormat(ifaceRate('down')) ]]<span class="bo-unit">/s</span>
           </div>
           <div class="bo-flow-chart">
-            <sparkline :data="history.down" :vb-width="420" :height="130" :autoscale="true"
+            <sparkline :data="history.down" :vb-width="420" :height="96" :autoscale="true" :log-scale="true"
               :max-points="HISTORY_POINTS" :fill-opacity="0.14" :stroke="chartColors.info"
               :show-grid="false" :padding-left="2" :padding-right="2"
               :padding-top="6" :padding-bottom="6" />
@@ -191,11 +221,16 @@
           </div>
           <!-- The component's default paddings (32 left, 20 bottom) assume a
                full-size chart with axes; at 24px tall they leave a negative
-               draw area, so they are zeroed out here. -->
+               draw area, so they are zeroed out here.
+               `fit` because 20px of draw height cannot resolve a 0..100 axis:
+               against the fixed scale an idle machine drew a straight line. The
+               10-point floor keeps a genuinely flat series (disk, idle swap)
+               flat instead of magnifying its last decimal. -->
           <div class="bo-vit-spark">
             <sparkline :data="history[v.key]" :vb-width="240" :height="24"
               :max-points="HISTORY_POINTS" :fill-opacity="0.14" :stroke="chartColors.accent"
               :show-grid="false" :show-marker="false" :stroke-width="1.5"
+              :fit="!v.rate" :min-span="10" :autoscale="!!v.rate" :log-scale="!!v.rate"
               :padding-left="0" :padding-right="0" :padding-top="2" :padding-bottom="2" />
           </div>
         </div>
@@ -294,7 +329,7 @@
       </div>
       <div class="bo-kv-row">
         <span class="bo-kv-label">{{ i18n "pages.index.operationHours" }}</span>
-        <span class="bo-kv-value num">[[ TimeFormatter.formatSecond(status.appStats.uptime) ]]</span>
+        <span class="bo-kv-value num">[[ TimeFormatter.formatUptime(status.appStats.uptime) ]]</span>
       </div>
       <div class="bo-divider"></div>
       <div class="bo-btn-row">
@@ -375,20 +410,26 @@
                 :style="{ color: 'var(--text-3)', whiteSpace: 'nowrap', fontSize: '12.5px' }">
                 [[ panelUpdateSpeedText() ]]
               </span>
-              <button type="button" class="bo-icon-btn" v-if="panelUpdate.phase === 'downloading'"
+              <!-- Only the DOWNLOAD is abortable: once the binary swap starts
+                   there is nothing safe to undo, so the button retires itself
+                   rather than offering a cancel the server would refuse. -->
+              <button type="button" class="bo-icon-btn bo-icon-btn--danger bo-update-cancel"
+                v-if="panelUpdate.phase === 'downloading'"
                 :disabled="panelUpdate.cancelling" @click="cancelPanelUpdate">
-                {{ i18n "cancel" }}
+                <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-stop"></use></svg>
+                [[ panelUpdate.cancelling ? '{{ i18n "pages.index.updateCancelling" }}' : '{{ i18n "pages.index.updateCancel" }}' ]]
               </button>
             </div>
           </div>
         </div>
 
+        <!-- The update is not armed from here any more: it opens the release
+             notes first, so the operator reads what is about to replace the
+             running binary before agreeing to it. -->
         <div class="bo-btn-row">
-          <a-popconfirm v-if="panelUpdate.available && !panelUpdate.updating"
-            title='{{ i18n "pages.index.updateConfirm" }}' @confirm="doPanelUpdate"
-            ok-text='{{ i18n "confirm" }}' cancel-text='{{ i18n "cancel" }}'>
-            <button type="button" class="bo-btn bo-btn--primary">{{ i18n "pages.index.updateNow" }}</button>
-          </a-popconfirm>
+          <button type="button" class="bo-btn bo-btn--primary"
+            v-if="panelUpdate.available && !panelUpdate.updating"
+            @click="openUpdateModal">{{ i18n "pages.index.updateNow" }}</button>
         </div>
       </div>
     </article>
@@ -398,6 +439,32 @@
 
   </div>
 </a-spin>
+  <!-- Panel update confirmation. The release notes are the whole point of the
+       dialog: replacing the running binary and restarting is not something to
+       agree to from a one-line popconfirm. -->
+  <a-modal id="panel-update-modal" v-model="updateModal.visible"
+    title='{{ i18n "pages.index.updateModalTitle" }}' :closable="true"
+    :class="themeSwitcher.currentTheme" :width="isMobile ? '95%' : 560"
+    ok-text='{{ i18n "pages.index.updateNow" }}' cancel-text='{{ i18n "cancel" }}'
+    @ok="confirmPanelUpdate">
+    <div class="bo-relnotes-head">
+      <span class="bo-relnotes-ver num">v[[ panelUpdate.current ]]</span>
+      <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-swap"></use></svg>
+      <span class="bo-relnotes-ver bo-relnotes-ver--new num">v[[ panelUpdate.latest ]]</span>
+      <span class="bo-relnotes-date" v-if="releaseDateText">[[ releaseDateText ]]</span>
+      <a class="bo-relnotes-link" v-if="panelUpdate.url" :href="panelUpdate.url"
+        target="_blank" rel="noopener">
+        <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-link"></use></svg>
+      </a>
+    </div>
+    <div class="bo-relnotes-label">{{ i18n "pages.index.updateReleaseNotes" }}</div>
+    <div class="bo-relnotes" v-html="releaseNotesHtml"></div>
+    <p class="bo-relnotes-foot">
+      <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-info"></use></svg>
+      {{ i18n "pages.index.updateModalIntro" }}
+    </p>
+  </a-modal>
+
   <a-modal id="version-modal" v-model="versionModal.visible" title='{{ i18n "pages.index.xraySwitch" }}'
     :closable="true" @ok="() => versionModal.visible = false" :class="themeSwitcher.currentTheme" footer="">
     <a-collapse default-active-key="1">
@@ -569,10 +636,30 @@
       <a-form-item>
         <a-checkbox v-model="logModal.syslog" @change="reloadLogs()">SysLog</a-checkbox>
       </a-form-item>
+      <a-form-item>
+        <a-button size="small" :type="logModal.live ? 'primary' : 'default'"
+          :class="{ 'log-live-on': logModal.live }" @click="logModal.setLive(!logModal.live)">
+          <span class="log-live-dot" v-if="logModal.live"></span>{{ i18n "pages.index.liveLog" }}
+        </a-button>
+      </a-form-item>
+
       <a-form-item style="float: right;">
         <a-button type="primary" icon="download" @click="FileManager.downloadTextFile(logModal.plain, 'vpn-ui.log')"></a-button>
       </a-form-item>
     </a-form>
+    <!-- Core filter. Client-side over the already-fetched lines, so ticking a
+         box is instant and costs no request. Only shown for the aggregated
+         (Manage tile) view, where there is more than one source to choose. -->
+    <div class="log-filter" v-if="logModal.mode === 'all' && logModal.sources.length > 1">
+      <span class="log-filter-label">{{ i18n "pages.index.logCores" }}</span>
+      <a-checkbox v-for="s in logModal.sources" :key="s"
+        :checked="logModal.enabled[s] !== false"
+        @change="e => { logModal.enabled = Object.assign({}, logModal.enabled, { [s]: e.target.checked }); logModal.apply(); }">
+        [[ s ]]
+      </a-checkbox>
+      <a-button size="small" type="link" @click="logModal.setAllSources(true)">{{ i18n "pages.core.checkAll" }}</a-button>
+      <a-button size="small" type="link" @click="logModal.setAllSources(false)">{{ i18n "pages.core.uncheckAll" }}</a-button>
+    </div>
     <div class="ant-input log-container" v-html="logModal.formattedLogs"></div>
   </a-modal>
   <a-modal id="xraylog-modal" v-model="xraylogModal.visible" :closable="true"
@@ -603,6 +690,12 @@
         <a-checkbox v-model="xraylogModal.showDirect" @change="openXrayLogs()">Direct</a-checkbox>
         <a-checkbox v-model="xraylogModal.showBlocked" @change="openXrayLogs()">Blocked</a-checkbox>
         <a-checkbox v-model="xraylogModal.showProxy" @change="openXrayLogs()">Proxy</a-checkbox>
+      </a-form-item>
+      <a-form-item>
+        <a-button size="small" :type="xraylogModal.live ? 'primary' : 'default'"
+          :class="{ 'log-live-on': xraylogModal.live }" @click="xraylogModal.setLive(!xraylogModal.live)">
+          <span class="log-live-dot" v-if="xraylogModal.live"></span>{{ i18n "pages.index.liveLog" }}
+        </a-button>
       </a-form-item>
       <a-form-item style="float: right;">
         <a-button type="primary" icon="download" @click="downloadXrayLogs"></a-button>
@@ -745,6 +838,34 @@
       // own maximum instead. Percent charts keep the fixed 0..100 axis so they
       // stay comparable with each other.
       autoscale: { type: Boolean, default: false },
+      // Fit the window to the data instead of pinning it to 0..100.
+      //
+      // A percent series on a FULL-HEIGHT chart is fine against a fixed axis, but
+      // the vitals rows are 24px tall: after the paddings that is 20px of drawing
+      // space for the whole 0..100 range, i.e. one pixel per 5 percentage points.
+      // A server idling between 1% and 4% put every sample on the same pixel row
+      // and drew a dead-straight line — the chart was not broken, it had no
+      // resolution left. Fitting the window restores it.
+      fit: { type: Boolean, default: false },
+      // Floor on the fitted window's height, in data units. Without it a series
+      // that is genuinely constant (disk, or swap at zero) would have its last
+      // decimal place stretched to full height and read as violent activity. With
+      // it, a flat series stays visibly flat and only real movement moves.
+      minSpan: { type: Number, default: 10 },
+      // Position points by their ORDER OF MAGNITUDE rather than linearly.
+      //
+      // Throughput spans about four decades on a real box: an idle VPN panel
+      // trickles ~14 KB/s while a single transfer peaks over 100 MB/s. On a linear
+      // axis scaled to the window's peak, one burst flattens everything else onto
+      // the bottom edge. Measured on this dashboard: with a 105 MB/s peak in the
+      // window, 50 of 60 points rendered at the exact floor pixel, which is the
+      // "throughput chart is a flat line with a couple of needles" complaint.
+      //
+      // Only for byte rates, and only because the exact current value is printed
+      // in full immediately above the chart: the line carries the SHAPE, the
+      // number carries the magnitude. Percent series stay linear, where a fixed
+      // axis means something.
+      logScale: { type: Boolean, default: false },
     },
     data() {
       return {
@@ -779,29 +900,59 @@
         const start = Math.max(0, this.labels.length - n)
         return this.labels.slice(start)
       },
-      scaleMax() {
-        if (!this.autoscale) return 100
-        // 15% headroom so the peak does not sit flush against the top edge.
-        const peak = this.dataSlice.reduce((a, b) => Math.max(a, Number(b) || 0), 0)
-        return peak > 0 ? peak * 1.15 : 1
+      // The value window the drawing area maps onto, as {lo, hi}. Three modes:
+      // autoscale (throughput, bytes/sec: 0 to the peak), fit (short percent
+      // charts: the data's own range, never narrower than minSpan), and the
+      // default fixed 0..100 the axis-bearing CPU chart needs.
+      scaleWindow() {
+        if (this.autoscale) {
+          // 15% headroom so the peak does not sit flush against the top edge.
+          const peak = this.dataSlice.reduce((a, b) => Math.max(a, Number(b) || 0), 0)
+          return { lo: 0, hi: peak > 0 ? peak * 1.15 : 1 }
+        }
+        if (!this.fit || this.dataSlice.length === 0) return { lo: 0, hi: 100 }
+
+        let lo = Infinity, hi = -Infinity
+        for (const raw of this.dataSlice) {
+          const v = Math.max(0, Math.min(100, Number(raw) || 0))
+          if (v < lo) lo = v
+          if (v > hi) hi = v
+        }
+        if (!Number.isFinite(lo)) return { lo: 0, hi: 100 }
+
+        // Widen a too-narrow (or zero-width) range around its own centre, then
+        // slide it back inside 0..100 if the padding pushed it out. Sliding
+        // rather than clamping keeps the window exactly minSpan tall, so a
+        // series sitting at 0% and one sitting at 100% get the same sensitivity.
+        const span = Math.max(hi - lo, this.minSpan)
+        const mid = (lo + hi) / 2
+        lo = mid - span / 2
+        hi = mid + span / 2
+        if (lo < 0) { hi -= lo; lo = 0 }
+        if (hi > 100) { lo -= hi - 100; hi = 100 }
+        return { lo: Math.max(0, lo), hi }
       },
       pointsArr() {
         const n = this.nPoints
         if (n === 0) return []
         const slice = this.dataSlice
-        const max = this.scaleMax
         const w = this.drawWidth
         const h = this.drawHeight
         const dx = n > 1 ? w / (n - 1) : 0
+        // Coordinates stay FRACTIONAL. Rounding them to whole viewBox units threw
+        // away most of what little vertical resolution these charts have: at 20px
+        // of draw height a rounded y can only take 21 distinct values, so any
+        // series varying by less than one row collapsed to a straight line.
         return slice.map((v, i) => {
-          const x = Math.round(this.paddingLeft + i * dx)
-          const clamped = Math.max(0, Math.min(max, Number(v) || 0))
-          const y = Math.round(this.paddingTop + (h - (clamped / max) * h))
+          const x = this.paddingLeft + i * dx
+          const y = this.paddingTop + (h - this.fraction(v) * h)
           return [x, y]
         })
       },
       points() {
-        return this.pointsArr.map(p => `${p[0]},${p[1]}`).join(' ')
+        // Two decimals: enough to keep the sub-pixel detail the fractional
+        // coordinates exist for, without emitting 17-digit floats into the DOM.
+        return this.pointsArr.map(p => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(' ')
       },
       areaPath() {
         if (this.pointsArr.length === 0) return ''
@@ -857,6 +1008,17 @@
       },
     },
     methods: {
+      // Where a value sits in the window, 0 (bottom) to 1 (top).
+      fraction(v) {
+        const { lo, hi } = this.scaleWindow
+        const clamped = Math.max(lo, Math.min(hi, Number(v) || 0))
+        if (this.logScale) {
+          // log1p, so a zero rate lands cleanly on the floor instead of at -inf.
+          const top = Math.log1p(hi - lo)
+          return top > 0 ? Math.log1p(clamped - lo) / top : 0
+        }
+        return (clamped - lo) / (hi - lo || 1)
+      },
       onMouseMove(evt) {
         if (!this.showTooltip || this.pointsArr.length === 0) return
         const rect = evt.currentTarget.getBoundingClientRect()
@@ -953,6 +1115,8 @@
       this.loads = [0, 0, 0];
       this.mem = new CurTotal(0, 0);
       this.netIO = { up: 0, down: 0 };
+      this.swapIO = { in: 0, out: 0 };
+      this.diskIO = { read: 0, write: 0 };
       this.netTraffic = { sent: 0, recv: 0 };
       this.publicIP = { ipv4: 0, ipv6: 0 };
       this.swap = new CurTotal(0, 0);
@@ -968,6 +1132,7 @@
       this.osVersion = "";
       this.kernel = "";
       this.hostname = "";
+      this.virt = { virtualized: false, system: "", kind: "" };
       this.netIOByIface = [];
 
       this.xray = { state: 'stop', stateMsg: "", errorMsg: "", version: "", color: "" };
@@ -985,11 +1150,14 @@
       this.osVersion = data.osVersion || "";
       this.kernel = data.kernel || "";
       this.hostname = data.hostname || "";
+      this.virt = data.virt || { virtualized: false, system: "", kind: "" };
       this.netIOByIface = data.netIOByIface || [];
       this.disk = new CurTotal(data.disk.current, data.disk.total);
       this.loads = data.loads.map(load => NumberFormatter.toFixed(load, 2));
       this.mem = new CurTotal(data.mem.current, data.mem.total);
       this.netIO = data.netIO;
+      this.swapIO = data.swapIO || { in: 0, out: 0 };
+      this.diskIO = data.diskIO || { read: 0, write: 0 };
       this.netTraffic = data.netTraffic;
       this.publicIP = data.publicIP;
       this.swap = new CurTotal(data.swap.current, data.swap.total);
@@ -1046,82 +1214,93 @@
     // Plain-text mirror of what is on screen, for the download button. The
     // rendered copy is HTML and the aggregated view has no `logs` array.
     plain: '',
+    // The fetched log, kept as [{source, text}] so the level and core filters
+    // can re-render without going back to the server for every checkbox click.
+    entries: [],
+    // Distinct cores present, and which are currently shown. Rebuilt wholesale
+    // on each fetch: assigning a NEW object is what makes Vue 2 track keys that
+    // did not exist when the data option was declared.
+    sources: [],
+    enabled: {},
+    // Live tail. The timer lives in LiveLog, keyed, so closing the modal can
+    // never leave one polling in the background.
+    live: false,
+    // Core list from the last manual open. A live tick reuses it instead of
+    // re-asking which cores exist every few seconds; that set changes only when
+    // an operator installs or removes a core, which is not a live-tail event.
+    coreList: null,
     show(logs) {
       this.visible = true;
       this.mode = 'panel';
       this.logs = logs;
-      this.plain = (logs || []).join('\n');
-      this.formattedLogs = this.logs?.length > 0 ? this.formatLogs(this.logs) : "No Record...";
+      this.render([{ source: 'vpn-ui', text: (logs || []).join('\n') }]);
     },
-    // The log pane renders with v-html, so every scrap of log text has to be
-    // escaped before it goes in. Log lines are not trusted input: they echo
-    // client-supplied names (VPN usernames, remarks, SNI), so an unescaped
-    // line carrying markup would run in the admin's browser.
-    esc(s) {
-      const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-      return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => map[c]);
+    // Every log the panel shows goes through LogFormatter, so the panel's own
+    // lines, Xray's and each daemon's are coloured and laid out identically.
+    // `entries` is [{source, text}]; the source becomes a badge on EVERY line,
+    // which is what makes the aggregated view attributable when scrolled.
+    render(entries) {
+      this.entries = entries || [];
+      this.sources = LogFormatter.sourcesOf(this.entries);
+      // Preserve a core's checked state across reloads; default new ones to on.
+      const keep = this.enabled || {};
+      const next = {};
+      for (const s of this.sources) next[s] = keep[s] !== false;
+      this.enabled = next;
+      this.apply();
     },
-    formatLogs(logs) {
-      let formattedLogs = '';
-      const levels = ["DEBUG", "INFO", "NOTICE", "WARNING", "ERROR"];
-      const levelColors = ["#3c89e8", "#008771", "#008771", "#f37b24", "#e04141", "#bcbcbc"];
-
-      logs.forEach((log, index) => {
-        let [data, message] = log.split(" - ", 2);
-        const parts = data.split(" ")
-        if (index > 0) formattedLogs += '<br>';
-
-        if (parts.length === 3) {
-          const d = parts[0];
-          const t = parts[1];
-          const level = parts[2];
-          const levelIndex = levels.indexOf(level, levels) || 5;
-
-          //formattedLogs += `<span style="color: gray;">${index + 1}.</span>`;
-          formattedLogs += `<span style="color: ${levelColors[0]};">${this.esc(d)} ${this.esc(t)}</span> `;
-          formattedLogs += `<span style="color: ${levelColors[levelIndex]}">${this.esc(level)}</span>`;
-        } else {
-          const levelIndex = levels.indexOf(data, levels) || 5;
-          formattedLogs += `<span style="color: ${levelColors[levelIndex]}">${this.esc(data)}</span>`;
-        }
-
-        if (message) {
-          // The label is our markup; the message body around it is not.
-          if (message.startsWith("XRAY:"))
-            message = "<b>XRAY: </b>" + this.esc(message.substring(5));
-          else
-            message = "<b>VPN-UI: </b>" + this.esc(message);
-        }
-
-        formattedLogs += message ? ' - ' + message : '';
-      });
-
-      return formattedLogs;
+    // Re-render from the already-fetched entries. The level floor is applied
+    // here as well as server-side, because only the PANEL log is filtered by
+    // the backend: core logs are raw daemon output, so before this the level
+    // picker silently did nothing to them.
+    apply() {
+      const opts = {
+        level: this.level,
+        sources: this.sources.filter((s) => this.enabled[s] !== false),
+      };
+      this.plain = LogFormatter.plain(this.entries, opts);
+      const html = LogFormatter.render(this.entries, opts);
+      this.formattedLogs = html || '<div class="log-empty">No Record...</div>';
     },
-    // Aggregated view for the Manage tile. Core logs are plain daemon output,
-    // not the panel's "date time LEVEL - message" shape, so running them
-    // through formatLogs would mislabel every line.
+    setAllSources(on) {
+      const next = {};
+      for (const s of this.sources) next[s] = on;
+      this.enabled = next;
+      this.apply();
+    },
+    // Aggregated view for the Manage tile: the panel log, Xray and every core in
+    // one stream. It used to be per-core sections under headings, so the only
+    // way to tell whose line you were reading was to scroll back to the nearest
+    // heading; now the core name rides on the line itself.
     showSections(sections) {
       this.visible = true;
       this.mode = 'all';
       this.logs = [];
-      this.plain = sections.map((s) => `===== ${s.name} =====\n${(s.text || '').trim()}`).join('\n\n');
-      this.formattedLogs = sections.map((s) => {
-        const head = `<div style="color:var(--accent);font-weight:600;margin:12px 0 4px">${this.esc(s.name)}</div>`;
-        const text = (s.text || '').trim();
-        return head + (text
-          ? `<div>${this.esc(text).replace(/\n/g, '<br>')}</div>`
-          : `<div style="color:var(--text-3)">No record</div>`);
-      }).join('') || "No Record...";
+      this.render((sections || []).map((s) => ({ source: s.name, text: s.text })));
     },
     hide() {
       this.visible = false;
+      this.setLive(false);
+    },
+    setLive(on) {
+      this.live = !!on;
+      LiveLog.stop('panel-log');
+      if (this.live) {
+        // The aggregated view issues one request per core per tick, so it runs at
+        // half the rate of the single-source views.
+        const everyMs = this.mode === 'all' ? LiveLog.INTERVAL_MS * 2 : LiveLog.INTERVAL_MS;
+        LiveLog.start('panel-log', () => {
+          if (!logModal.visible) { logModal.setLive(false); return; }
+          app.reloadLogs(true);
+        }, everyMs);
+      }
     },
   };
 
   const xraylogModal = {
       visible: false,
       logs: [],
+      live: false,
       rows: 20,
       showDirect: true,
       showBlocked: true,
@@ -1186,6 +1365,17 @@
       },
       hide() {
         this.visible = false;
+        this.setLive(false);
+      },
+      setLive(on) {
+        this.live = !!on;
+        LiveLog.stop('xray-access-log');
+        if (this.live) {
+          LiveLog.start('xray-access-log', () => {
+            if (!xraylogModal.visible) { xraylogModal.setLive(false); return; }
+            app.openXrayLogs(true);
+          });
+        }
       },
     };
   const backupModal = {
@@ -1247,7 +1437,13 @@
         url: '{{ i18n "pages.index.customGeoValidationUrl" }}',
       },
       coreStatuses: [],
-      panelUpdate: { checking: false, checked: false, available: false, latest: '', current: '', updating: false, cancelling: false, error: '', percent: 0, phase: '', speed: 0, bytes: 0, total: 0 },
+      panelUpdate: { checking: false, checked: false, available: false, latest: '', current: '', notes: '', publishedAt: '', url: '', updating: false, cancelling: false, error: '', percent: 0, phase: '', speed: 0, bytes: 0, total: 0 },
+      // Panel egress location, checked when the overview opens (see
+      // fetchPanelLocation). `checked` is what lets the row distinguish "still
+      // looking" from "looked and failed".
+      panelLoc: { checked: false, found: false, countryCode: '', ipv4: '', ipv6: '' },
+      // The release-notes dialog shown before an update is armed.
+      updateModal: { visible: false },
       geofilesModal: { visible: false },
       distroModal: { visible: false, pretty: '', tested: '' },
 
@@ -1289,6 +1485,70 @@
         const kern = s.kernel ? 'kernel ' + s.kernel : '';
         return [os || this.distroPretty, kern].filter(Boolean).join('  ·  ');
       },
+      // "Yes (KVM)" / "Yes" when the platform couldn't be named / "No".
+      // The kind ("container") is worth surfacing because it changes what the
+      // setup flow can do: a container shares the host kernel, so its module
+      // steps are not the operator's to fix.
+      virtText() {
+        const v = this.status.virt || {};
+        if (!v.virtualized) return '{{ i18n "pages.index.virtNo" }}';
+        const detail = [v.system, v.kind === 'container' ? '{{ i18n "pages.index.virtContainer" }}' : '']
+          .filter(Boolean).join(', ');
+        const yes = '{{ i18n "pages.index.virtYes" }}';
+        return detail ? yes + ' (' + detail + ')' : yes;
+      },
+      // Release notes arrive as GitHub Markdown. They are rendered with v-html,
+      // so the text is escaped FIRST and only the handful of constructs the
+      // panel's own notes use are turned back into markup afterwards. Nothing
+      // here can reintroduce a tag: every < > & " ' is already an entity by the
+      // time the patterns below run, and the link pattern rebuilds the href from
+      // a matched http(s) URL rather than passing one through.
+      releaseNotesHtml() {
+        const raw = (this.panelUpdate.notes || '').trim();
+        if (!raw) return '<p class="bo-relnotes-empty">{{ i18n "pages.index.updateNoNotes" }}</p>';
+        const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+        const esc = (s) => String(s).replace(/[&<>"']/g, (c) => map[c]);
+        const inline = (s) => esc(s)
+          .replace(/`([^`]+)`/g, '<code>$1</code>')
+          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+          .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+            (m, t, u) => '<a href="' + u + '" target="_blank" rel="noopener">' + t + '</a>');
+
+        const out = [];
+        let list = false;
+        const closeList = () => { if (list) { out.push('</ul>'); list = false; } };
+        for (const line of raw.split(/\r?\n/)) {
+          const t = line.trim();
+          if (!t) { closeList(); continue; }
+          const h = t.match(/^(#{1,6})\s+(.*)$/);
+          if (h) { closeList(); out.push('<h4>' + inline(h[2]) + '</h4>'); continue; }
+          const li = t.match(/^[-*+]\s+(.*)$/);
+          if (li) {
+            if (!list) { out.push('<ul>'); list = true; }
+            out.push('<li>' + inline(li[1]) + '</li>');
+            continue;
+          }
+          closeList();
+          out.push('<p>' + inline(t) + '</p>');
+        }
+        closeList();
+        return out.join('');
+      },
+      // "United States <flag>". Empty (row hidden) until the background lookup
+      // lands or when the country could not be determined.
+      panelLocationText() {
+        if (!this.panelLoc.checked) return '';
+        const label = GeoUtil.label(this.panelLoc.countryCode);
+        return label || '{{ i18n "pages.index.panelLocationError" }}';
+      },
+      // Dim the row when it is carrying the failure message rather than a place.
+      panelLocationFailed() {
+        return this.panelLoc.checked && !GeoUtil.label(this.panelLoc.countryCode);
+      },
+      releaseDateText() {
+        const d = this.panelUpdate.publishedAt ? new Date(this.panelUpdate.publishedAt) : null;
+        return d && !isNaN(d.getTime()) ? d.toLocaleDateString() : '';
+      },
       cpuLine() {
         const s = this.status;
         const parts = [];
@@ -1316,6 +1576,17 @@
         if (!m) return [];
         return Array.isArray(m) ? m.map(x => x.name) : Object.keys(m);
       },
+      // Read and write combined, which is what the swap and storage graphs
+      // plot. Direction is not split out: these rows carry one line each, and
+      // for "is it busy" the total is the question being asked.
+      swapIoRate() {
+        const io = this.status.swapIO || {};
+        return (Number(io.in) || 0) + (Number(io.out) || 0);
+      },
+      diskIoRate() {
+        const io = this.status.diskIO || {};
+        return (Number(io.read) || 0) + (Number(io.write) || 0);
+      },
       // Ring + sparkline rows, so the template can v-for instead of repeating
       // four near-identical blocks.
       vitals() {
@@ -1333,15 +1604,21 @@
             percent: this.status.mem.percent,
             meta: sz(this.status.mem.current) + ' / ' + sz(this.status.mem.total),
           },
+          // rate:true switches the chart from the fixed percent window to the
+          // autoscaled log one the throughput charts use, because these two now
+          // plot bytes/sec rather than a 0..100 percentage. The ring and the
+          // headline figure still show USAGE; only the graph is I/O.
           {
             key: 'swap', icon: 'swap', label: '{{ i18n "pages.index.swap" }}',
-            percent: this.status.swap.percent,
-            meta: sz(this.status.swap.current) + ' / ' + sz(this.status.swap.total),
+            percent: this.status.swap.percent, rate: true,
+            meta: sz(this.status.swap.current) + ' / ' + sz(this.status.swap.total)
+              + '  ·  ' + sz(this.swapIoRate) + '/s',
           },
           {
             key: 'disk', icon: 'disk', label: '{{ i18n "pages.index.storage" }}',
-            percent: this.status.disk.percent,
-            meta: sz(this.status.disk.current) + ' / ' + sz(this.status.disk.total),
+            percent: this.status.disk.percent, rate: true,
+            meta: sz(this.status.disk.current) + ' / ' + sz(this.status.disk.total)
+              + '  ·  ' + sz(this.diskIoRate) + '/s',
           },
         ];
       },
@@ -1478,6 +1755,24 @@
           },
         });
       },
+      // Runs once per overview load. Server-side it is cached for 5 minutes
+      // (failures included), so revisiting the dashboard cannot hammer the
+      // probe. Failure is recorded, not thrown: the row shows the error text.
+      async fetchPanelLocation() {
+        try {
+          const msg = await HttpUtil.get('/panel/api/server/panelLocation');
+          const o = (msg && msg.obj) || {};
+          this.panelLoc = {
+            checked: true,
+            found: !!o.found,
+            countryCode: o.countryCode || '',
+            ipv4: o.ipv4 || '',
+            ipv6: o.ipv6 || '',
+          };
+        } catch (e) {
+          this.panelLoc = { checked: true, found: false, countryCode: '', ipv4: '', ipv6: '' };
+        }
+      },
       async fetchServerName() {
         try {
           const msg = await HttpUtil.get('/panel/api/server/serverName');
@@ -1493,15 +1788,19 @@
       // The modal's row/level/syslog controls and its refresh icon go through
       // here, so they re-run the loader that opened it instead of always
       // dropping back to the panel-only view.
-      reloadLogs() {
-        return logModal.mode === 'all' ? this.openAllLogs() : this.openLogs();
+      // quiet=true is the live tail's refresh: same request, but no spinner and
+      // the scroll position is preserved unless the reader is following the end.
+      reloadLogs(quiet) {
+        return logModal.mode === 'all' ? this.openAllLogs(quiet) : this.openLogs(quiet);
       },
-      async openAllLogs() {
+      async openAllLogs(live) {
         // The Manage tile's log button aggregates the panel log and every
         // core's log, so a user does not have to open Core Settings once per
         // daemon.
-        logModal.loading = true;
-        logModal.showSections([]);
+        if (!live) {
+          logModal.loading = true;
+          logModal.showSections([]);
+        }
         const sections = [];
 
         const panel = await HttpUtil.post('/panel/api/server/logs/' + logModal.rows,
@@ -1514,17 +1813,28 @@
         // Overview need not hold. These go through axios rather than HttpUtil
         // because HttpUtil toasts on failure, and a 403 would raise one toast
         // per core; the panel log on its own is still a useful answer.
-        const quiet = (url) => axios.get(url).then((r) => r.data).catch(() => null);
-        const status = await quiet('/panel/core/status');
-        const cores = (status && status.success && status.obj && status.obj.cores) || [];
+        const get = (url) => axios.get(url).then((r) => r.data).catch(() => null);
+        let cores = live && logModal.coreList ? logModal.coreList : null;
+        if (!cores) {
+          const status = await get('/panel/core/status');
+          cores = (status && status.success && status.obj && status.obj.cores) || [];
+          logModal.coreList = cores;
+        }
+        // A live tail fans out to one request per core, so it skips the cores
+        // explicitly unticked in the filter. A core that has never produced a
+        // line is not in the filter at all and stays polled, so one that only
+        // starts logging now still shows up.
+        if (live && logModal.sources.length) {
+          cores = cores.filter((c) => !logModal.sources.includes(c.name) || logModal.enabled[c.name] !== false);
+        }
         const logs = await Promise.all(cores.map((c) =>
-          quiet('/panel/core/logs/' + encodeURIComponent(c.name))
+          get('/panel/core/logs/' + encodeURIComponent(c.name))
             .then((d) => ({ name: c.name, text: (d && d.success && d.obj) || '' }))));
         for (const l of logs) {
           if (l.text.trim()) sections.push(l);
         }
 
-        logModal.showSections(sections);
+        LiveLog.keepPinned('#log-modal .log-container', () => logModal.showSections(sections));
         logModal.loading = false;
       },
       openRestore() {
@@ -1536,12 +1846,22 @@
           arr.push(Number(v) || 0);
           if (arr.length > cap) arr.splice(0, arr.length - cap);
         };
+        // CPU and memory are percentages, so their charts keep the percent
+        // treatment and a genuinely idle machine correctly draws a flat line.
         add(this.history.cpu, this.status.cpu.percent);
         add(this.history.mem, this.status.mem.percent);
-        add(this.history.swap, this.status.swap.percent);
-        add(this.history.disk, this.status.disk.percent);
-        add(this.history.up, this.status.netIO.up);
-        add(this.history.down, this.status.netIO.down);
+        // Swap and storage plot THROUGHPUT (read+write combined), not usage.
+        // How full a disk is barely moves between two-second polls, so a usage
+        // sparkline there is flat by construction and says nothing; paging and
+        // disk I/O are the signals worth a graph on those two rows.
+        add(this.history.swap, this.swapIoRate);
+        add(this.history.disk, this.diskIoRate);
+        // Through ifaceRate, so the interface picker actually selects a series.
+        // These used to push the aggregate unconditionally: choosing a NIC cleared
+        // the chart and then refilled it with the same all-interfaces numbers, so
+        // the control looked broken and ifaceRate was dead code.
+        add(this.history.up, this.ifaceRate('up'));
+        add(this.history.down, this.ifaceRate('down'));
       },
 
       // --- VPN daemon statuses (dashboard card) --------------------------
@@ -1565,6 +1885,9 @@
             this.panelUpdate.available = !!msg.obj.available;
             this.panelUpdate.latest = msg.obj.latest || '';
             this.panelUpdate.current = msg.obj.current || '';
+            this.panelUpdate.notes = msg.obj.notes || '';
+            this.panelUpdate.publishedAt = msg.obj.publishedAt || '';
+            this.panelUpdate.url = msg.obj.url || '';
             // Only a manual check marks "checked" (drives the "Up to date" tag). The
             // auto-check stays silent when there's no update or the check failed —
             // an available update still surfaces via the alert below regardless.
@@ -1577,6 +1900,20 @@
         } finally {
           this.panelUpdate.checking = false;
         }
+      },
+      // Opens the release-notes dialog. No refetch: the notes ride along on the
+      // very check that reported the update, so an empty `notes` means the
+      // release published none, and the dialog says exactly that. Re-checking
+      // here would only add an error toast on a host that cannot reach GitHub,
+      // at the moment the operator asked to install rather than to check.
+      openUpdateModal() {
+        this.updateModal.visible = true;
+      },
+      // The dialog's own OK button. Closes it first so the card's progress bar,
+      // which is what reports the rest of the run, is not hidden behind a mask.
+      confirmPanelUpdate() {
+        this.updateModal.visible = false;
+        this.doPanelUpdate();
       },
       // Download + install the latest release and restart the panel. On success the
       // panel restarts, so we intentionally leave `updating` true (the info alert
@@ -1962,25 +2299,29 @@
           return;
         }
       },
-      async openLogs() {
-        logModal.loading = true;
+      async openLogs(quiet) {
+        if (!quiet) logModal.loading = true;
         const msg = await HttpUtil.post('/panel/api/server/logs/' + logModal.rows, { level: logModal.level, syslog: logModal.syslog });
         if (!msg.success) {
           return;
         }
-        logModal.show(msg.obj);
-        await PromiseUtil.sleep(500);
-        logModal.loading = false;
+        LiveLog.keepPinned('#log-modal .log-container', () => logModal.show(msg.obj));
+        if (!quiet) {
+          await PromiseUtil.sleep(500);
+          logModal.loading = false;
+        }
       },
-      async openXrayLogs() {
-        xraylogModal.loading = true;
+      async openXrayLogs(quiet) {
+        if (!quiet) xraylogModal.loading = true;
         const msg = await HttpUtil.post('/panel/api/server/xraylogs/' + xraylogModal.rows, { filter: xraylogModal.filter, showDirect: xraylogModal.showDirect, showBlocked: xraylogModal.showBlocked, showProxy: xraylogModal.showProxy });
         if (!msg.success) {
           return;
         }
-        xraylogModal.show(msg.obj);
-        await PromiseUtil.sleep(500);
-        xraylogModal.loading = false;
+        LiveLog.keepPinned('#xraylog-modal .log-container', () => xraylogModal.show(msg.obj));
+        if (!quiet) {
+          await PromiseUtil.sleep(500);
+          xraylogModal.loading = false;
+        }
       },
       downloadXrayLogs() {
         if (!Array.isArray(this.xraylogModal.logs) || this.xraylogModal.logs.length === 0) {
@@ -2080,6 +2421,7 @@
       this.checkDistroSupport();
       this.fetchUserStats();
       this.fetchServerName();
+      this.fetchPanelLocation();
       this.checkForUpdate(false); // best-effort update check on every overview load
 
       // Setup WebSocket for real-time updates

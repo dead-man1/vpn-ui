@@ -1,0 +1,808 @@
+package service
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/mhsanaei/3x-ui/v2/database"
+	"github.com/mhsanaei/3x-ui/v2/database/model"
+	"github.com/mhsanaei/3x-ui/v2/xray"
+
+	"gorm.io/gorm"
+)
+
+// Bulk is the one client path where the caller names their own targets. Every
+// other route the reseller role touches identifies a single account in the URL,
+// where a middleware can prove ownership before the handler runs; a bulk request
+// carries an arbitrary list of (inbound, email) pairs in its body and
+// InboundService.BulkUpdateClients trusts that list completely.
+//
+// So this file does two jobs, and the pricing is the second one. The first is
+// SCOPING: the permission bit says a reseller may run bulk operations and the
+// inbound grant says they may reach the inbound, and neither says a word about
+// whose accounts are on it. Without scopeBulkTargets, one POST applies to every
+// admin account on a shared inbound.
+//
+// The op table, and why each op is priced the way it is:
+//
+//	addTraffic   every surviving target gains AmountBytes, so the batch costs
+//	             AmountBytes x N and the balance is checked ONCE against that
+//	             total. Per-account checks would let a reseller with room for one
+//	             account hand out fifty.
+//	subTraffic   a refund per account, clamped at what that account has already
+//	             CONSUMED and never above what it was charged. The same rule the
+//	             single-account deduct runs, and literally the same code: bytes
+//	             the customer already moved are gone.
+//	delete       free here. The refund lands after the delete does, and only for
+//	             the accounts that really went (see the controller).
+//	enable, disable, freeze, unfreeze
+//	             free. None of them changes a quota, so no byte moves either way.
+//	             Freeze in particular is not a refund: the account keeps the quota
+//	             its reseller paid for and can be unfrozen whenever they like.
+//	addDays      free when the reseller sets duration themselves, refused under
+//	             days-per-GB where duration is not theirs to set.
+//	subDays      refused outright.
+
+const (
+	bulkOpEnable     = "enable"
+	bulkOpUnfreeze   = "unfreeze"
+	bulkOpAddTraffic = "addTraffic"
+	bulkOpSubTraffic = "subTraffic"
+	bulkOpAddDays    = "addDays"
+	bulkOpSubDays    = "subDays"
+	bulkOpDelete     = "delete"
+)
+
+var (
+	// Refused on the operator's instruction, and the ledger has nothing to say
+	// against it: days are not a currency this balance holds, so a bulk day cut
+	// moves no bytes and leaves no trace any check in this file could read. A
+	// reseller who wants one account shorter can still edit that account.
+	ErrBulkNoSubDays = errors.New("resellers cannot take days off an account in bulk")
+	// Under days-per-GB an account's duration IS its traffic times a factor, and
+	// the reseller has no expiry field at all. A bulk day change would be
+	// overwritten by the next edit that recomputes it, so it is not a shorter
+	// account, it is a temporarily shorter one.
+	ErrBulkDaysAreDerived = errors.New("your accounts' duration is set by their traffic, so days cannot be changed by hand")
+	// The mirror of the above, and the reason it is a refusal rather than a
+	// price: under days-per-GB, traffic and duration are ONE lever. The bulk
+	// applier moves totalGB and nothing else, so a priced bulk top-up would sell
+	// bytes while silently leaving the deadline where it was. Edit those accounts
+	// one at a time, where PrepareClientUpdate derives the new expiry.
+	ErrBulkTrafficIsCoupled = errors.New("your accounts' duration follows their traffic, so traffic cannot be changed in bulk; edit them one at a time")
+	// A negative amount turns an op into its opposite: a negative addTraffic
+	// takes bytes away while debiting a negative number, which CREDITS the
+	// reseller. Same class of bug as the negative quota Quote refuses.
+	ErrBulkAmount = errors.New("that is not an amount of traffic to add or subtract")
+)
+
+// BulkCharge is one account's new standing under a priced batch.
+type BulkCharge struct {
+	// Email is the LEDGER's spelling of the account, not the request's, because
+	// it is the key the charge is written back on.
+	Email       string
+	NewCharged  int64
+	PrevCharged int64
+	// ForceExpiry and ExpiryTime carry the deadline Quote derived for this
+	// account under days-per-GB. The generic bulk applier moves totalGB and
+	// nothing else, so without writing these back a bulk top-up would sell bytes
+	// and silently leave the deadline where it was. Applied after the batch
+	// lands, by applyBulkExpiry.
+	ForceExpiry bool
+	ExpiryTime  int64
+}
+
+// BulkTicket is a reservation covering a whole batch. One ticket rather than N,
+// because the balance check that matters is against the batch total and a
+// half-applied batch must be undoable in one call.
+type BulkTicket struct {
+	// Active is false for an admin, and for any reseller op that moves no bytes.
+	// Nothing to reserve means nothing to roll back.
+	Active     bool
+	UserId     int
+	DeltaSpent int64
+	Charges    []BulkCharge
+}
+
+// PrepareBulk scopes a bulk request down to the caller's own accounts and
+// reserves what the operation costs them.
+//
+// Returns an INACTIVE ticket for anyone who is not a reseller, having touched
+// neither the request nor the ledger: an admin's bulk operation behaves exactly
+// as it did before this file existed.
+//
+// Reserve first, apply second, matching PrepareClientCreate. A crash between the
+// two loses the reseller balance an admin can hand back; the other order hands
+// out traffic with nothing charged for it, which no operator can find later.
+func (s *ResellerService) PrepareBulk(user *model.User, req *BulkClientUpdateRequest) (BulkTicket, error) {
+	if user == nil || req == nil || !user.IsReseller {
+		return BulkTicket{}, nil
+	}
+	profile, err := s.ProfileFor(user.Id)
+	if err != nil {
+		return BulkTicket{}, err
+	}
+	if err := bulkOpAllowed(*profile, req); err != nil {
+		return BulkTicket{}, err
+	}
+
+	// Before anything is priced, because until this runs the target list is
+	// simply whatever the caller typed into it.
+	owned, err := s.OwnedEmails(user.Id)
+	if err != nil {
+		return BulkTicket{}, err
+	}
+	scopeBulkTargets(req, owned)
+
+	if req.Op != bulkOpAddTraffic && req.Op != bulkOpSubTraffic {
+		// SECURITY: these two are free, and on a DEPLETED account either is also a
+		// traffic grant. disableInvalidClients switches those off again, but on a
+		// 10 second cron tick, so a loop keeps accounts that have spent everything
+		// they were sold permanently online. Dropped from the batch rather than
+		// refused, so a mixed selection still switches on the ones with traffic
+		// left.
+		//
+		// unfreeze belongs here as much as enable does: it writes enable=true just
+		// the same (see applyBulkClientOp), and nothing in it looks at the quota.
+		// Exempting it because it "only restores a deadline" was wrong.
+		if req.Op == bulkOpEnable || req.Op == bulkOpUnfreeze {
+			if err := s.dropDepletedTargets(req); err != nil {
+				return BulkTicket{}, err
+			}
+		}
+		return BulkTicket{}, nil // scoped, and free
+	}
+
+	// The applier's own clock, mirrored. Irrelevant to the two ops that reach
+	// here (only the day ops and freeze read it), but a divergent clock in a
+	// pricing path is the kind of thing that is only wrong once.
+	now := time.Now().Unix() * 1000
+	items, err := s.bulkPriceables(user.Id, req, now)
+	if err != nil {
+		return BulkTicket{}, err
+	}
+	ticket, err := priceBulk(*profile, req, items, now)
+	if err != nil {
+		return BulkTicket{}, err
+	}
+	ticket.UserId = user.Id
+	if err := s.reserveBulk(ticket); err != nil {
+		return BulkTicket{}, err
+	}
+	return ticket, nil
+}
+
+// dropDepletedTargets removes accounts that have already moved everything their
+// quota allows, so a free "enable" cannot hand them more.
+//
+// Uses the enforcement job's own predicate (`up + down >= total`, unlimited
+// exempt) so the two cannot disagree about which accounts are spent.
+func (s *ResellerService) dropDepletedTargets(req *BulkClientUpdateRequest) error {
+	if len(req.Targets) == 0 {
+		return nil
+	}
+	emails := make([]string, 0, len(req.Targets))
+	for _, t := range req.Targets {
+		emails = append(emails, t.Email)
+	}
+	var spent []xray.ClientTraffic
+	if err := database.GetDB().Model(&xray.ClientTraffic{}).
+		Where("email IN (?) AND total > 0 AND up + down >= total", emails).
+		Find(&spent).Error; err != nil {
+		return err
+	}
+	if len(spent) == 0 {
+		return nil
+	}
+	drop := make(map[string]bool, len(spent))
+	for _, ct := range spent {
+		drop[emailKey(ct.Email)] = true
+	}
+	kept := make([]BulkClientTarget, 0, len(req.Targets))
+	for _, t := range req.Targets {
+		if !drop[emailKey(t.Email)] {
+			kept = append(kept, t)
+		}
+	}
+	req.Targets = kept
+	return nil
+}
+
+// bulkOpAllowed refuses the ops a reseller must not run at all, before the
+// request is scoped or anything is read.
+func bulkOpAllowed(p model.ResellerProfile, req *BulkClientUpdateRequest) error {
+	switch req.Op {
+	case bulkOpSubDays:
+		return ErrBulkNoSubDays
+	case bulkOpAddDays:
+		if p.DaysPerGB > 0 {
+			return ErrBulkDaysAreDerived
+		}
+	case bulkOpAddTraffic, bulkOpSubTraffic:
+		// Days-per-GB used to refuse these outright, on the grounds that the
+		// generic applier moves totalGB alone and would sell bytes without
+		// moving the deadline. That was the right diagnosis and the wrong cure:
+		// Quote already derives the new deadline per account, so the batch
+		// carries it and applyBulkExpiry writes it after the applier runs.
+		if req.AmountBytes <= 0 {
+			return ErrBulkAmount
+		}
+	}
+	return nil
+}
+
+// scopeBulkTargets drops every target this reseller does not own, in place.
+//
+// Ownership is matched case-insensitively (OwnedEmails lower-cases its keys)
+// because an email is the panel's case-insensitive account identity, so a
+// case-sensitive comparison here would be a way to fall out of scope. Note the
+// direction: matching loosely can only ever REMOVE a target from the batch,
+// never add one, since a loose match still has to hit a row this reseller owns.
+func scopeBulkTargets(req *BulkClientUpdateRequest, owned map[string]bool) {
+	kept := make([]BulkClientTarget, 0, len(req.Targets))
+	for _, t := range req.Targets {
+		if owned[strings.ToLower(strings.TrimSpace(t.Email))] {
+			kept = append(kept, t)
+		}
+	}
+	req.Targets = kept
+}
+
+// bulkPriceable is one target the applier will really change, with everything
+// its price is computed from.
+type bulkPriceable struct {
+	// email is the ledger row's spelling; oldTotal and newTotal come from the
+	// SETTINGS blob, which is what the applier reads and writes.
+	email    string
+	oldTotal int64
+	newTotal int64
+	charged  int64
+	consumed int64
+	expiry   int64
+}
+
+// bulkPriceables works out which targets the batch will actually change, and
+// what each one costs.
+//
+// The two filters are the whole point of loading the settings at all. The
+// applier honours the skip toggles and treats some ops as no-ops for some
+// accounts, and every target it passes over must cost nothing: charging for a
+// skipped account is an overcharge, and REFUNDING one is free balance. The
+// second is the real hole, and it is reachable today: subTraffic is a no-op on
+// an unlimited account (there is nothing to subtract from), so a naive refund
+// would credit the reseller while the account keeps its unlimited quota.
+//
+// Rather than restate the applier's rules, this runs them: bulkClientSkipped and
+// applyBulkClientOp, over a copy of the client. A second implementation of
+// "what does subTraffic do to totalGB" is a second place for the floor-at-one
+// rule to drift, and a drift here is money.
+func (s *ResellerService) bulkPriceables(userId int, req *BulkClientUpdateRequest, now int64) ([]bulkPriceable, error) {
+	db := database.GetDB()
+
+	var rows []model.ResellerClient
+	if err := db.Model(&model.ResellerClient{}).Where("user_id = ?", userId).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	ledger := make(map[string]model.ResellerClient, len(rows))
+	for _, rc := range rows {
+		ledger[emailKey(rc.Email)] = rc
+	}
+
+	// Grouped exactly as BulkUpdateClients groups them, matching the target
+	// string to the settings email EXACTLY. The applier does, and a looser match
+	// here would price an account it then leaves alone.
+	byInbound := map[int]map[string]bool{}
+	for _, t := range req.Targets {
+		if t.Email == "" {
+			continue
+		}
+		if byInbound[t.InboundId] == nil {
+			byInbound[t.InboundId] = map[string]bool{}
+		}
+		byInbound[t.InboundId][t.Email] = true
+	}
+
+	var inboundService InboundService
+	out := make([]bulkPriceable, 0, len(req.Targets))
+	seen := make(map[string]bool, len(req.Targets))
+	for inboundId, emails := range byInbound {
+		inbound, err := inboundService.GetInbound(inboundId)
+		if err != nil || inbound == nil {
+			// An inbound the applier will not find either, so there is nothing
+			// here to charge for.
+			continue
+		}
+		var settings map[string]any
+		if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+			return nil, err
+		}
+		clients, _ := settings["clients"].([]any)
+		if len(clients) == 0 {
+			continue
+		}
+
+		var traffics []xray.ClientTraffic
+		if err := db.Model(&xray.ClientTraffic{}).Where("inbound_id = ?", inboundId).
+			Find(&traffics).Error; err != nil {
+			return nil, err
+		}
+		usage := make(map[string]xray.ClientTraffic, len(traffics))
+		for _, ct := range traffics {
+			usage[emailKey(ct.Email)] = ct
+		}
+
+		for _, raw := range clients {
+			cm, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			email, _ := cm["email"].(string)
+			if email == "" || !emails[email] {
+				continue
+			}
+			key := emailKey(email)
+			rc, owned := ledger[key]
+			if !owned {
+				continue // scoped out already; belt and braces
+			}
+			// One charge per account. Two settings entries sharing an email are
+			// one account to the ledger (there is one row), so pricing both would
+			// debit twice for a single row that can only record one charge.
+			if seen[key] {
+				continue
+			}
+			if bulkClientSkipped(cm, *req) {
+				continue
+			}
+			next := cloneClient(cm)
+			if !applyBulkClientOp(next, *req, now) {
+				continue // a no-op for this account: the applier changes nothing
+			}
+			seen[key] = true
+
+			ct := usage[key]
+			consumed := ct.AllTime - rc.AllTimeBase
+			if consumed < 0 {
+				consumed = 0
+			}
+			out = append(out, bulkPriceable{
+				email:    rc.Email,
+				oldTotal: bulkNumToInt64(cm["totalGB"]),
+				newTotal: bulkNumToInt64(next["totalGB"]),
+				charged:  rc.ChargedBytes,
+				consumed: consumed,
+				expiry:   ct.ExpiryTime,
+			})
+		}
+	}
+	return out, nil
+}
+
+// priceBulk turns the affected accounts into one reservation.
+//
+// The balance check is on the TOTAL and happens before any account is priced, so
+// that the reseller is told the batch's real shortfall. Doing it per account
+// would let a batch of fifty pass on a balance that fits one, and quoting first
+// would report the shortfall of a single account, which is the wrong number to
+// go and ask an admin for.
+func priceBulk(p model.ResellerProfile, req *BulkClientUpdateRequest, items []bulkPriceable, now int64) (BulkTicket, error) {
+	ticket := BulkTicket{}
+	if len(items) == 0 {
+		return ticket, nil
+	}
+
+	if req.Op == bulkOpAddTraffic {
+		want, err := bulkTotalCost(req.AmountBytes, int64(len(items)))
+		if err != nil {
+			return BulkTicket{}, err
+		}
+		if available := AvailableBytes(p); !p.Unlimited && want > available {
+			return BulkTicket{}, shortBy(want, available)
+		}
+	}
+
+	for _, it := range items {
+		// The single-account arithmetic, unchanged. Everything the refund rule
+		// turns on (the clamp at consumed, the clamp at what was charged, the
+		// refusal to price a negative quota) lives in Quote, and a bulk operation
+		// is not a reason to own a second copy of it.
+		//
+		// Its per-account balance check cannot fire on this path: an addTraffic
+		// delta is at most the batch total that was just checked, and a
+		// subTraffic delta is a refund. ForceExpiry cannot fire either, because
+		// days-per-GB refuses these ops outright above.
+		q, err := Quote(QuoteInput{
+			Profile:       p,
+			OldTotal:      it.oldTotal,
+			NewTotal:      it.newTotal,
+			OldCharged:    it.charged,
+			Consumed:      it.consumed,
+			CurrentExpiry: it.expiry,
+			NowMillis:     now,
+		})
+		if err != nil {
+			return BulkTicket{}, err
+		}
+		if q.DeltaSpent == 0 && q.NewCharged == it.charged {
+			continue // nothing to write for this account
+		}
+		ticket.DeltaSpent += q.DeltaSpent
+		ticket.Charges = append(ticket.Charges, BulkCharge{
+			Email: it.email, NewCharged: q.NewCharged, PrevCharged: it.charged,
+			ForceExpiry: q.ForceExpiry, ExpiryTime: q.ExpiryTime,
+		})
+	}
+	ticket.Active = len(ticket.Charges) > 0
+	return ticket, nil
+}
+
+// bulkTotalCost multiplies a per-account amount by an account count without
+// wrapping. A wrapped product reads as a small debit, and a wrapped NEGATIVE one
+// is paid to the reseller, so the multiply is refused rather than saturated:
+// saturating would report a shortfall for an unlimited reseller who has no
+// balance to be short of, and there is no honest price for this batch either way.
+func bulkTotalCost(amount, n int64) (int64, error) {
+	if amount <= 0 || n <= 0 {
+		return 0, nil
+	}
+	if amount > math.MaxInt64/n {
+		return 0, fmt.Errorf("%w: %d bytes across %d accounts", ErrInvalidQuota, amount, n)
+	}
+	return amount * n, nil
+}
+
+// reserveBulk moves the balance and every account's charge in ONE transaction.
+// A batch that debited the balance but recorded the charge on half its accounts
+// would leave the other half refundable for bytes they were never charged.
+func (s *ResellerService) reserveBulk(t BulkTicket) error {
+	if !t.Active {
+		return nil
+	}
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		if err := addSpent(tx, t.UserId, t.DeltaSpent); err != nil {
+			return err
+		}
+		return writeBulkCharges(tx, t, false)
+	})
+}
+
+// BulkPreview is what a batch WOULD do, priced without writing anything.
+//
+// It exists so a reseller who cannot afford the whole batch is offered the part
+// they can, instead of a flat refusal that tells them nothing about the size of
+// the gap.
+type BulkPreview struct {
+	IsReseller bool   `json:"isReseller"`
+	Op         string `json:"op"`
+	// TotalTargets is what was posted; Eligible is what survives ownership
+	// scoping and the skip toggles. The difference is accounts that were never
+	// going to be touched, and saying so avoids "why did it only do 3 of 10".
+	TotalTargets int `json:"totalTargets"`
+	Eligible     int `json:"eligible"`
+
+	Affordable     bool  `json:"affordable"`
+	CostBytes      int64 `json:"costBytes"`
+	AvailableBytes int64 `json:"availableBytes"`
+	ShortBytes     int64 `json:"shortBytes"`
+
+	// CanProcess and ProcessEmails are the offer: exactly these accounts, in
+	// exactly this order, fit inside the balance.
+	CanProcess    int      `json:"canProcess"`
+	ProcessEmails []string `json:"processEmails"`
+}
+
+// PreviewBulk prices a batch and reserves nothing.
+//
+// ADVICE, never authorization. The frontend re-posts the confirmed run narrowed
+// to ProcessEmails and PrepareBulk prices it again from scratch, so a tampered
+// or stale preview buys nothing: the second pricing is the one that spends.
+func (s *ResellerService) PreviewBulk(user *model.User, req *BulkClientUpdateRequest) (BulkPreview, error) {
+	out := BulkPreview{}
+	if user == nil || req == nil || !user.IsReseller {
+		return out, nil
+	}
+	out.IsReseller, out.Op = true, req.Op
+	out.TotalTargets = len(req.Targets)
+
+	profile, err := s.ProfileFor(user.Id)
+	if err != nil {
+		return out, err
+	}
+	if err := bulkOpAllowed(*profile, req); err != nil {
+		return out, err
+	}
+	owned, err := s.OwnedEmails(user.Id)
+	if err != nil {
+		return out, err
+	}
+	// On a COPY of the targets: a preview that mutated the caller's request
+	// would change what the confirmed run then posts.
+	scoped := *req
+	scoped.Targets = append([]BulkClientTarget(nil), req.Targets...)
+	scopeBulkTargets(&scoped, owned)
+
+	out.AvailableBytes = AvailableBytes(*profile)
+
+	if scoped.Op != bulkOpAddTraffic && scoped.Op != bulkOpSubTraffic {
+		// Free ops always fit. Eligible still means something (scoping dropped
+		// what was not theirs), so it is reported rather than assumed.
+		out.Eligible = len(scoped.Targets)
+		out.CanProcess = out.Eligible
+		out.Affordable = true
+		out.ProcessEmails = bulkTargetEmails(scoped.Targets)
+		return out, nil
+	}
+
+	now := time.Now().Unix() * 1000
+	items, err := s.bulkPriceables(user.Id, &scoped, now)
+	if err != nil {
+		return out, err
+	}
+	// Sorted so the offer is STABLE. bulkPriceables walks inbounds and their
+	// settings blobs, and nothing guarantees that order twice running; the user
+	// must not confirm one set and have a different set applied.
+	sort.Slice(items, func(i, j int) bool { return items[i].email < items[j].email })
+	out.Eligible = len(items)
+
+	// Accumulated in order rather than divided out, because per-account cost is
+	// not uniform: a subTraffic refund is clamped at what each account has
+	// consumed, so the batch total is not the amount times the count.
+	var running int64
+	for _, it := range items {
+		q, qerr := Quote(QuoteInput{
+			Profile: *profile, OldTotal: it.oldTotal, NewTotal: it.newTotal,
+			OldCharged: it.charged, Consumed: it.consumed,
+			CurrentExpiry: it.expiry, NowMillis: now,
+		})
+		if qerr != nil {
+			return out, qerr
+		}
+		out.CostBytes += q.DeltaSpent
+		if profile.Unlimited || running+q.DeltaSpent <= out.AvailableBytes {
+			running += q.DeltaSpent
+			out.CanProcess++
+			out.ProcessEmails = append(out.ProcessEmails, it.email)
+		}
+	}
+	out.Affordable = out.CanProcess == out.Eligible
+	if short := out.CostBytes - out.AvailableBytes; short > 0 && !profile.Unlimited {
+		out.ShortBytes = short
+	}
+	if out.ProcessEmails == nil {
+		out.ProcessEmails = []string{} // marshal as [], not null: the UI iterates it
+	}
+	return out, nil
+}
+
+// bulkTargetEmails is the target list as plain emails, in order.
+func bulkTargetEmails(targets []BulkClientTarget) []string {
+	out := make([]string, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, t.Email)
+	}
+	return out
+}
+
+// ApplyBulkExpiry writes back the deadlines days-per-GB derived for a batch,
+// after the generic applier has moved the traffic.
+//
+// A second pass rather than a change to BulkUpdateClients: that function serves
+// every admin and knows nothing about resellers, and teaching it a per-account
+// expiry override for one role would put reseller policy in the middle of the
+// path every admin takes.
+//
+// Both places have to move together. The settings blob is what the panel renders
+// and what regenerates daemon config; client_traffics is what the expiry job and
+// the daemons' own accounting read. Writing one without the other leaves the
+// panel and the data plane disagreeing about when an account dies, so this runs
+// in a single transaction and reports failure rather than half-applying.
+func (s *ResellerService) ApplyBulkExpiry(t BulkTicket) error {
+	if !t.Active {
+		return nil
+	}
+	wanted := make(map[string]int64, len(t.Charges))
+	for _, c := range t.Charges {
+		if c.ForceExpiry {
+			wanted[emailKey(c.Email)] = c.ExpiryTime
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		var inbounds []*model.Inbound
+		emails := make([]string, 0, len(wanted))
+		for _, c := range t.Charges {
+			if c.ForceExpiry {
+				emails = append(emails, c.Email)
+			}
+		}
+		if err := tx.Model(&model.Inbound{}).
+			Joins("JOIN client_traffics ON client_traffics.inbound_id = inbounds.id").
+			Where("client_traffics.email IN (?)", emails).
+			Distinct().Find(&inbounds).Error; err != nil {
+			return err
+		}
+
+		for _, inbound := range inbounds {
+			settings := map[string]any{}
+			if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+				return err
+			}
+			clients, _ := settings["clients"].([]any)
+			touched := false
+			for _, raw := range clients {
+				cm, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				email, _ := cm["email"].(string)
+				exp, want := wanted[emailKey(email)]
+				if !want {
+					continue
+				}
+				cm["expiryTime"] = exp
+				cm["updated_at"] = time.Now().UnixMilli()
+				touched = true
+			}
+			if !touched {
+				continue
+			}
+			patched, err := json.Marshal(settings)
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&model.Inbound{}).Where("id = ?", inbound.Id).
+				Update("settings", string(patched)).Error; err != nil {
+				return err
+			}
+		}
+
+		for _, c := range t.Charges {
+			if !c.ForceExpiry {
+				continue
+			}
+			if err := tx.Model(&xray.ClientTraffic{}).Where("email = ?", c.Email).
+				Update("expiry_time", c.ExpiryTime).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// RollbackBulk undoes a reservation whose batch then failed to apply.
+func (s *ResellerService) RollbackBulk(t BulkTicket) error {
+	if !t.Active {
+		return nil
+	}
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		// Unguarded: undoing a batch is a correction, not a commitment, and a
+		// bulk deduct unwinds as a debit that the headroom check would refuse.
+		if err := restoreSpent(tx, t.UserId, -t.DeltaSpent); err != nil {
+			return err
+		}
+		return writeBulkCharges(tx, t, true)
+	})
+}
+
+func writeBulkCharges(tx *gorm.DB, t BulkTicket, restore bool) error {
+	for _, c := range t.Charges {
+		charged := c.NewCharged
+		if restore {
+			charged = c.PrevCharged
+		}
+		if err := tx.Model(&model.ResellerClient{}).Where("email = ?", c.Email).
+			Update("charged_bytes", charged).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// --- deletes --------------------------------------------------------------------
+
+// BulkUsageSnapshot records what each targeted account has moved all-time. Taken
+// BEFORE a delete, because the delete is what destroys the record.
+//
+// Read by inbound rather than by the emails themselves, so that a target whose
+// spelling differs in case from the stored row still finds its usage. Missing that
+// row would read as an account that consumed nothing, which is the expensive
+// direction to be wrong in.
+func (s *ResellerService) BulkUsageSnapshot(targets []BulkClientTarget) (map[string]int64, error) {
+	ids := make([]int, 0, len(targets))
+	seen := make(map[int]bool, len(targets))
+	for _, t := range targets {
+		if t.Email == "" || seen[t.InboundId] {
+			continue
+		}
+		seen[t.InboundId] = true
+		ids = append(ids, t.InboundId)
+	}
+	if len(ids) == 0 {
+		return map[string]int64{}, nil
+	}
+	var rows []xray.ClientTraffic
+	if err := database.GetDB().Model(&xray.ClientTraffic{}).
+		Where("inbound_id IN (?)", ids).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]int64, len(rows))
+	for _, ct := range rows {
+		out[emailKey(ct.Email)] = ct.AllTime
+	}
+	return out, nil
+}
+
+// RefundDeleted credits the unused part of a just-deleted account back to its
+// reseller and forgets it, measuring consumption against a snapshot taken before
+// the delete. A no-op for an account the house owns.
+//
+// A refund helper that looks the consumption up for itself cannot do this job,
+// and the reason is worth writing down because
+// it is invisible at the call site: it reads consumption out of client_traffics,
+// and a delete drops that row as PART of itself (InboundService.DelClientStat).
+// Run afterwards, it therefore sees an account that consumed nothing and hands the
+// whole charge back. Sell 10 GB, let the customer move all ten, delete the
+// account, collect 10 GB of balance.
+//
+// The ordering stays refund-after-delete for the usual reason: a
+// refund that never runs leaves balance an admin can hand back, where one that ran
+// ahead of a delete that then failed is balance paid out for an account still live
+// and still selling. Only the usage figure is carried across the delete.
+func (s *ResellerService) RefundDeleted(email string, allTimeAtDelete int64, known bool) error {
+	owner, err := s.ClientOwner(email)
+	if err != nil || owner == nil {
+		return err
+	}
+	// SECURITY: unknown consumption must WITHHOLD the refund, never assume zero.
+	//
+	// A missing snapshot arrives here as 0, which is indistinguishable from an
+	// account that genuinely moved nothing, and that reads as "everything is
+	// unused" and refunds the whole charge. The two failures are not
+	// symmetrical: withholding costs the reseller balance an admin can hand
+	// back, while granting hands out traffic nobody paid for and leaves no
+	// record of it. The ownership row still goes, so the account is forgotten
+	// either way.
+	if !known {
+		return database.GetDB().Where("email = ?", email).
+			Delete(&model.ResellerClient{}).Error
+	}
+	consumed := allTimeAtDelete - owner.AllTimeBase
+	if consumed < 0 {
+		consumed = 0
+	}
+	refund := owner.ChargedBytes - consumed
+	if refund < 0 {
+		refund = 0
+	}
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		if err := addSpent(tx, owner.UserId, -refund); err != nil {
+			return err
+		}
+		return tx.Where("email = ?", email).Delete(&model.ResellerClient{}).Error
+	})
+}
+
+// cloneClient copies a settings client shallowly, which is all applyBulkClientOp
+// needs: it reads and writes scalar keys only, so the nested values shared with
+// the original are never reached, let alone mutated.
+func cloneClient(cm map[string]any) map[string]any {
+	out := make(map[string]any, len(cm))
+	for k, v := range cm {
+		out[k] = v
+	}
+	return out
+}
+
+// emailKey normalizes an account identity for map lookup, the same way
+// OwnedEmails and sameEmail do.
+func emailKey(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}

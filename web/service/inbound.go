@@ -39,6 +39,13 @@ type CopyClientsResult struct {
 // granted to them: access is assigned, not inferred from who created the row, so an
 // admin with no grants correctly sees nothing.
 //
+// A reseller is the third branch, and the difference is what makes the role a role
+// rather than a permission bit: two admins granted one inbound see the same accounts
+// on it, while a reseller granted that same inbound sees only the accounts it sold.
+// The grant decides WHICH INBOUNDS, the ownership rows decide WHICH CLIENTS inside
+// them, and both questions have to be answered here because this is the only place
+// the page's payload is assembled.
+//
 // Takes the whole user rather than an id because the super-admin case is a different
 // query, and a signature taking only an id invites callers to forget that.
 func (s *InboundService) GetInboundsFor(user *model.User) ([]*model.Inbound, error) {
@@ -56,7 +63,140 @@ func (s *InboundService) GetInboundsFor(user *model.User) ([]*model.Inbound, err
 	if len(ids) == 0 {
 		return []*model.Inbound{}, nil
 	}
-	return s.getInboundsWhere(ids)
+	inbounds, err := s.getInboundsWhere(ids)
+	if err != nil {
+		return nil, err
+	}
+	if !user.IsReseller {
+		return inbounds, nil
+	}
+	// Fail closed, like every other ownership question in this panel: an OwnedEmails
+	// that errors must not fall through to the unfiltered list, which is every
+	// admin's clients on every inbound this reseller shares with them.
+	var resellerService ResellerService
+	owned, err := resellerService.OwnedEmails(user.Id)
+	if err != nil {
+		return nil, err
+	}
+	s.FilterInboundsForReseller(inbounds, owned)
+	return inbounds, nil
+}
+
+// emptyClientSettings is what an inbound's settings become when they cannot be read
+// well enough to filter: a valid blob the page renders as an inbound with no accounts.
+const emptyClientSettings = `{"clients": []}`
+
+// FilterInboundsForReseller strips every client a reseller did not create out of a
+// batch of inbounds, in place.
+//
+// ownedEmails is ResellerService.OwnedEmails: one lower-cased key per account the
+// reseller created. An empty map is a legitimate state, not a missing argument, and
+// correctly empties every client list: a reseller who has sold nothing sees the
+// inbounds they may sell on and no accounts at all.
+func (s *InboundService) FilterInboundsForReseller(inbounds []*model.Inbound, ownedEmails map[string]bool) {
+	for _, inbound := range inbounds {
+		s.FilterInboundForReseller(inbound, ownedEmails)
+	}
+}
+
+// FilterInboundForReseller is the single-inbound form, for the routes that hand back
+// one row (/get/:id) rather than the list.
+//
+// BOTH halves have to go, because either one alone still leaks the account. Settings
+// is what the Inbounds page parses client-side to build its table, so a client left
+// there is visible down to its credentials; ClientStats is the traffic and expiry the
+// same table joins onto it.
+func (s *InboundService) FilterInboundForReseller(inbound *model.Inbound, ownedEmails map[string]bool) {
+	if inbound == nil {
+		return
+	}
+	inbound.ClientStats = s.FilterClientTrafficsForReseller(inbound.ClientStats, ownedEmails)
+	filtered, err := filterSettingsClients(inbound.Settings, ownedEmails)
+	if err != nil {
+		// Settings we cannot parse are settings we cannot prove are safe to hand
+		// over. The inbound stays visible, since the grant is real, but empty.
+		logger.Warning("reseller scoping: unreadable settings on inbound", inbound.Id, ":", err)
+		inbound.Settings = emptyClientSettings
+		return
+	}
+	inbound.Settings = filtered
+}
+
+// FilterClientTrafficsForReseller narrows a panel-wide set of traffic rows to one
+// reseller's accounts. Returns a fresh slice rather than mutating the caller's.
+func (s *InboundService) FilterClientTrafficsForReseller(traffics []xray.ClientTraffic, ownedEmails map[string]bool) []xray.ClientTraffic {
+	kept := make([]xray.ClientTraffic, 0, len(traffics))
+	for _, traffic := range traffics {
+		if ResellerOwnsEmail(ownedEmails, traffic.Email) {
+			kept = append(kept, traffic)
+		}
+	}
+	return kept
+}
+
+// ResellerOwnsEmail tests one email against an OwnedEmails set.
+//
+// The set is lower-cased at the source and emails are the panel's case-insensitive
+// account identity (see sameEmail), so the folding lives here rather than at each of
+// the call sites: one that forgets it matches nothing, which fails closed but is
+// indistinguishable from a reseller who has sold nothing, and so would ship.
+func ResellerOwnsEmail(ownedEmails map[string]bool, email string) bool {
+	return ownedEmails[strings.ToLower(strings.TrimSpace(email))]
+}
+
+// filterSettingsClients removes every client not in ownedEmails from a settings blob
+// and leaves every other key alone.
+//
+// Decoded into json.RawMessage rather than into `any`: the blob carries protocol
+// settings this panel does not model (decryption, fallbacks, external proxy lists)
+// plus whatever a future Xray adds, and all of it has to come back out unchanged.
+// Raw values are copied verbatim, so the only thing lost is top-level key ORDER,
+// which no Go map can preserve, and only on a blob that actually had a client
+// removed.
+func filterSettingsClients(settings string, ownedEmails map[string]bool) (string, error) {
+	root := map[string]json.RawMessage{}
+	if err := json.Unmarshal([]byte(settings), &root); err != nil {
+		return "", err
+	}
+	raw, ok := root["clients"]
+	if !ok {
+		// A clients-less protocol (dokodemo-door, the relay inbounds). Nothing to
+		// strip, so nothing to churn either.
+		return settings, nil
+	}
+	var list []json.RawMessage
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return "", err
+	}
+	kept := make([]json.RawMessage, 0, len(list))
+	for _, item := range list {
+		var probe struct {
+			Email string `json:"email"`
+		}
+		// A client whose email will not decode cannot be shown to belong to this
+		// reseller, so it goes with the rest.
+		if err := json.Unmarshal(item, &probe); err != nil {
+			continue
+		}
+		if ResellerOwnsEmail(ownedEmails, probe.Email) {
+			kept = append(kept, item)
+		}
+	}
+	if len(kept) == len(list) {
+		return settings, nil
+	}
+	// kept is make()d, never nil: json writes a nil slice as null, and the page
+	// iterates this array, where [] is the reseller with no accounts here.
+	clients, err := json.Marshal(kept)
+	if err != nil {
+		return "", err
+	}
+	root["clients"] = clients
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 // getInboundsWhere loads inbounds by id, or all of them when ids is nil.
@@ -1325,6 +1465,21 @@ func (s *InboundService) nextAvailableCopiedEmail(originalEmail string, targetID
 }
 
 func (s *InboundService) CopyInboundClients(targetInboundID int, sourceInboundID int, clientEmails []string, flow string) (*CopyClientsResult, bool, error) {
+	return s.CopyInboundClientsScoped(targetInboundID, sourceInboundID, clientEmails, flow, nil)
+}
+
+// CopyInboundClientsScoped is the copy narrowed to a set of source accounts.
+//
+// A nil onlyEmails is the admin case. A non-nil one is a reseller's own accounts, and
+// it closes the hole in the clientEmails argument below: an EMPTY list means "copy
+// everything on the source", and a reseller reaches this route with PermCreateClient
+// plus access to an inbound it shares with an admin. One request with no emails would
+// otherwise clone every one of that admin's accounts.
+//
+// Note this only decides WHAT may be copied. Charging the copies to the reseller's
+// balance and recording ownership of them is the caller's job, since the ledger lives
+// a layer up.
+func (s *InboundService) CopyInboundClientsScoped(targetInboundID int, sourceInboundID int, clientEmails []string, flow string, onlyEmails map[string]bool) (*CopyClientsResult, bool, error) {
 	result := &CopyClientsResult{
 		Added:   []string{},
 		Skipped: []string{},
@@ -1375,6 +1530,9 @@ func (s *InboundService) CopyInboundClients(targetInboundID int, sourceInboundID
 	for _, sourceClient := range sourceClients {
 		originalEmail := strings.TrimSpace(sourceClient.Email)
 		if originalEmail == "" {
+			continue
+		}
+		if onlyEmails != nil && !ResellerOwnsEmail(onlyEmails, originalEmail) {
 			continue
 		}
 		if len(allowedEmails) > 0 {
@@ -3053,7 +3211,20 @@ func (s *InboundService) ResetInboundTraffic(id int) error {
 	return result.Error
 }
 
-func (s *InboundService) DelDepletedClients(id int) (err error) {
+func (s *InboundService) DelDepletedClients(id int) error {
+	_, err := s.DelDepletedClientsScoped(id, nil)
+	return err
+}
+
+// DelDepletedClientsScoped is the same sweep narrowed to a set of accounts, and
+// returns the emails it actually deleted so the caller can settle up for them.
+//
+// A nil onlyEmails is the admin case: every depleted client goes, exactly as
+// DelDepletedClients has always behaved. A non-nil set is a reseller's own accounts,
+// and it has to exist because the route this serves is gated on PermDeleteClient plus
+// access to the INBOUND. A reseller holds both on an inbound it shares with an admin,
+// so unscoped, one click deletes that admin's depleted accounts as well.
+func (s *InboundService) DelDepletedClientsScoped(id int, onlyEmails map[string]bool) (deleted []string, err error) {
 	db := database.GetDB()
 	tx := db.Begin()
 	defer func() {
@@ -3070,38 +3241,57 @@ func (s *InboundService) DelDepletedClients(id int) (err error) {
 	} else {
 		whereText += "= ?"
 	}
-
 	// Only consider truly depleted clients: expired OR traffic exhausted
+	depletedWhere := whereText + " and ((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?))"
+
 	now := time.Now().Unix() * 1000
 	depletedClients := []xray.ClientTraffic{}
 	err = db.Model(xray.ClientTraffic{}).
-		Where(whereText+" and ((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?))", id, now).
+		Where(depletedWhere, id, now).
 		Select("inbound_id, GROUP_CONCAT(email) as email").
 		Group("inbound_id").
 		Find(&depletedClients).Error
 	if err != nil {
-		return err
+		return nil, err
 	}
 
+	deleted = []string{}
 	for _, depletedClient := range depletedClients {
-		emails := strings.Split(depletedClient.Email, ",")
+		emails := []string{}
+		for _, email := range strings.Split(depletedClient.Email, ",") {
+			if onlyEmails == nil || ResellerOwnsEmail(onlyEmails, email) {
+				emails = append(emails, email)
+			}
+		}
+		// Every depleted account on this inbound belongs to someone else.
+		if len(emails) == 0 {
+			continue
+		}
 		oldInbound, err := s.GetInbound(depletedClient.InboundId)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		var oldSettings map[string]any
 		err = json.Unmarshal([]byte(oldInbound.Settings), &oldSettings)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		oldClients := oldSettings["clients"].([]any)
+		// Comma-ok on both asserts: a settings blob shaped unexpectedly is a bad row
+		// to skip, not a panic to take the whole request down with, and this path is
+		// now reachable by a role that does not own the inbound it is sweeping.
+		oldClients, _ := oldSettings["clients"].([]any)
 		var newClients []any
 		for _, client := range oldClients {
+			c, ok := client.(map[string]any)
+			if !ok {
+				newClients = append(newClients, client)
+				continue
+			}
+			cEmail, _ := c["email"].(string)
 			deplete := false
-			c := client.(map[string]any)
 			for _, email := range emails {
-				if email == c["email"].(string) {
+				if email == cEmail {
 					deplete = true
 					break
 				}
@@ -3110,32 +3300,45 @@ func (s *InboundService) DelDepletedClients(id int) (err error) {
 				newClients = append(newClients, client)
 			}
 		}
-		if len(newClients) > 0 {
-			oldSettings["clients"] = newClients
-
-			newSettings, err := json.MarshalIndent(oldSettings, "", "  ")
-			if err != nil {
-				return err
-			}
-
-			oldInbound.Settings = string(newSettings)
-			err = tx.Save(oldInbound).Error
-			if err != nil {
-				return err
-			}
-		} else {
-			// Delete inbound if no client remains
+		// Delete inbound if no client remains. Never on a scoped sweep: the reseller
+		// owns accounts, not the inbound, and emptying their last one must not take
+		// an object shared with the admin who does own it.
+		if len(newClients) == 0 && onlyEmails == nil {
 			s.DelInbound(depletedClient.InboundId)
+			deleted = append(deleted, emails...)
+			continue
 		}
+		if newClients == nil {
+			newClients = []any{}
+		}
+		oldSettings["clients"] = newClients
+
+		newSettings, err := json.MarshalIndent(oldSettings, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+
+		oldInbound.Settings = string(newSettings)
+		err = tx.Save(oldInbound).Error
+		if err != nil {
+			return nil, err
+		}
+		deleted = append(deleted, emails...)
 	}
 
-	// Delete stats only for truly depleted clients
-	err = tx.Where(whereText+" and ((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?))", id, now).Delete(xray.ClientTraffic{}).Error
+	// Delete stats only for truly depleted clients, and on a scoped sweep only for
+	// the ones just taken out of the settings: the predicate alone matches every
+	// admin's depleted accounts too.
+	if onlyEmails == nil {
+		err = tx.Where(depletedWhere, id, now).Delete(xray.ClientTraffic{}).Error
+	} else if len(deleted) > 0 {
+		err = tx.Where(depletedWhere, id, now).Where("email IN ?", deleted).Delete(xray.ClientTraffic{}).Error
+	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return deleted, nil
 }
 
 func (s *InboundService) GetClientTrafficTgBot(tgId int64) ([]*xray.ClientTraffic, error) {

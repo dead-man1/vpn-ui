@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/database/model"
@@ -54,6 +55,11 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	read := requirePerm(model.PermAccessInbounds)
 
 	g.GET("/list", read, a.getInbounds)
+	// The reseller's own balance, for the chip the inbounds page refreshes after
+	// every operation. Gated on the read bit rather than on the role: it answers
+	// "not a reseller" for everyone else, so the page needs no branch before
+	// calling it.
+	g.GET("/resellerBalance", read, a.resellerBalance)
 	g.GET("/get/:id", read, owns, a.getInbound)
 	g.GET("/getClientTraffics/:email", read, ownsClient, a.getClientTraffics)
 	// NOTE: this :id is a CLIENT id (a UUID, or a username for the VPN protocols),
@@ -73,6 +79,7 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/:id/delClient/:clientId", requirePerm(model.PermDeleteClient), owns, a.delInboundClient)
 	g.POST("/updateClient/:clientId", requirePerm(model.PermEditClient), a.updateInboundClient)
 	g.POST("/bulkUpdateClients", requirePerm(model.PermBulkOperation), a.bulkUpdateClients)
+	g.POST("/bulkPreview", requirePerm(model.PermBulkOperation), a.bulkPreview)
 	// ownsClient as well as owns: the service resolves this one by :email and ignores
 	// :id, so guarding only :id checks the wrong object.
 	g.POST("/:id/resetClientTraffic/:email", requirePerm(model.PermEditClient), owns, ownsClient, a.resetClientTraffic)
@@ -378,7 +385,40 @@ func (a *InboundController) getInbound(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.obtain"), err)
 		return
 	}
+	// /list goes through GetInboundsFor, which scopes a reseller down to their own
+	// accounts. This route does not, and it hands back the SAME row: the whole
+	// settings blob, every client on the inbound and their credentials. The `owns`
+	// middleware passes, because a reseller really does hold this inbound, so
+	// without this one call the role's central promise fails on a single GET.
+	if !a.filterInboundForCaller(c, inbound) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
+		return
+	}
 	jsonObj(c, inbound, nil)
+}
+
+// filterInboundForCaller narrows a single inbound to the clients the caller may
+// see, in place. Reports false when the answer cannot be worked out, which the
+// caller must treat as a refusal rather than as "nothing to filter": an
+// ownership question this panel cannot answer never resolves to allowed.
+//
+// A no-op for anyone who is not a reseller. An admin granted an inbound sees
+// every client on it, which is the existing behaviour and not something this
+// role changes.
+func (a *InboundController) filterInboundForCaller(c *gin.Context, inbound *model.Inbound) bool {
+	user := session.GetLoginUser(c)
+	if user == nil {
+		return false
+	}
+	if !user.IsReseller || inbound == nil {
+		return true
+	}
+	owned, err := resellerService.OwnedEmails(user.Id)
+	if err != nil {
+		return false
+	}
+	a.inboundService.FilterInboundForReseller(inbound, owned)
+	return true
 }
 
 // getClientTraffics retrieves client traffic information by email.
@@ -408,7 +448,25 @@ func (a *InboundController) getClientTrafficsById(c *gin.Context) {
 		jsonObj(c, []xray.ClientTraffic{}, nil)
 		return
 	}
-	if !user.IsSuperAdmin {
+	switch {
+	case user.IsSuperAdmin:
+	case user.IsReseller:
+		// Not the inbound filter below: a reseller holds the grant for the inbound
+		// they were assigned, so filtering by it returns the admin's accounts too.
+		// Ownership of the account is the only scope that means anything here.
+		emails, oerr := resellerService.OwnedEmails(user.Id)
+		if oerr != nil {
+			jsonObj(c, []xray.ClientTraffic{}, nil) // fail closed
+			return
+		}
+		owned := make([]xray.ClientTraffic, 0, len(clientTraffics))
+		for _, ct := range clientTraffics {
+			if emails[strings.ToLower(ct.Email)] {
+				owned = append(owned, ct)
+			}
+		}
+		clientTraffics = owned
+	default:
 		owned := make([]xray.ClientTraffic, 0, len(clientTraffics))
 		for _, ct := range clientTraffics {
 			ok, oerr := accessService.CanAccessInbound(ct.InboundId, user.Id)
@@ -526,10 +584,28 @@ func (a *InboundController) delInbound(c *gin.Context) {
 	isOpenVpn := oldInbound != nil && oldInbound.Protocol == model.OPENVPN
 	isOcserv := oldInbound != nil && oldInbound.Protocol == model.OPENCONNECT
 	isSstp := oldInbound != nil && oldInbound.Protocol == model.SSTP
+	// Every reseller-owned account on this inbound, and how much each has moved,
+	// captured while their traffic rows still exist. Deleting the inbound takes
+	// those rows with it, so a refund priced afterwards would treat every account
+	// as untouched and hand back the whole charge for all of them at once.
+	var resellerUsage map[string]int64
+	if owned, oerr := resellerService.OwnedEmailsOnInbound(id); oerr != nil {
+		logger.Warning("listing reseller accounts before an inbound delete: ", oerr)
+	} else if len(owned) > 0 {
+		if resellerUsage, oerr = resellerService.UsageSnapshot(owned); oerr != nil {
+			logger.Warning("reading traffic before an inbound delete: ", oerr)
+		}
+	}
 	needRestart, err := a.inboundService.DelInbound(id)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
+	}
+	// The mirror of the grant revocation DelInbound already does: drop every reseller
+	// ownership row for this inbound, refunding what those accounts had left. Left
+	// behind, the rows outlive the inbound and a recycled id inherits them.
+	if rerr := resellerService.DropInbound(id, resellerUsage); rerr != nil {
+		logger.Warning("dropping reseller ownership of a deleted inbound's accounts: ", rerr)
 	}
 	jsonMsgObj(c, I18nWeb(c, "pages.inbounds.toasts.inboundDeleteSuccess"), id, nil)
 	if isL2tp {
@@ -689,9 +765,25 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
 		return
 	}
+	// Prices the account against the reseller's balance, clamps the posted client to
+	// their limits, and RESERVES the bytes before the account exists. Inactive for an
+	// admin, who has no balance to reserve against.
+	//
+	// Reserve first, create second, on purpose: a failure between the two loses the
+	// reseller balance an admin can hand back, where the other order would hand out a
+	// live account with nothing charged for it.
+	ticket, err := resellerService.PrepareClientCreate(session.GetLoginUser(c), data)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
 
 	needRestart, err := a.inboundService.AddInboundClient(data)
 	if err != nil {
+		// The reservation paid for an account that never landed. Give it back.
+		if rerr := resellerService.Rollback(ticket); rerr != nil {
+			logger.Warning("rolling back a reseller charge whose client write failed: ", rerr)
+		}
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
 	}
@@ -731,6 +823,22 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 
 // copyInboundClients copies clients from source inbound to target inbound.
 func (a *InboundController) copyInboundClients(c *gin.Context) {
+	// An empty clientEmails copies the SOURCE inbound whole, admins' accounts
+	// included, and a named list is not filtered by owner either. Both inbounds can
+	// legitimately be ones the reseller was assigned, so no ownership check catches it.
+	//
+	// Refused rather than scoped, even though CopyInboundClientsScoped exists and
+	// would restrict the source: scoping is only half of it. Every copy is a NEW
+	// account carrying the source's quota, so an unpriced copy is free traffic,
+	// and one route call mints as many of them as the source has clients. The
+	// missing half is pricing N accounts against one balance atomically, which is
+	// a reservation loop this handler has no business growing.
+	//
+	// TODO: price the copies (a Quote per client, reserved as one transaction),
+	// then switch this to CopyInboundClientsScoped.
+	if denyForReseller(c, msgResellerNoInboundWide) {
+		return
+	}
 	targetID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
@@ -777,11 +885,32 @@ func (a *InboundController) delInboundClient(c *gin.Context) {
 	clientId := c.Param("clientId")
 
 	oldInbound, _ := a.inboundService.GetInbound(id)
+	// Resolved before the delete, while the client still exists, and used for two
+	// separate jobs: proving the caller may delete this account at all, and naming
+	// the ledger row to refund afterwards.
+	email := a.clientEmailOnInbound(oldInbound, clientId)
+	// deleteClient plus the inbound grant is everything this route checked, and a
+	// reseller holds both for an inbound they merely share, so the account-level
+	// question has to be asked here.
+	if !a.callerMayTouchClient(c, email) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
+		return
+	}
+
+	// Read while the traffic row still exists: the delete destroys it, and a
+	// refund priced afterwards would see no consumption and return the whole
+	// charge.
+	used, usedKnown := a.usageBeforeDelete(email)
 	needRestart, err := a.inboundService.DelInboundClient(id, clientId)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
 	}
+	// Refund AFTER the delete, the opposite order to a create, and for the same
+	// reason: a refund that never runs leaves balance an admin can hand back, where a
+	// refund that ran before a delete which then failed would be balance paid out for
+	// an account still live and still selling. A no-op for a house-owned account.
+	a.refundDeletedClient(email, used, usedKnown)
 	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.inboundClientDeleteSuccess"), nil)
 	if oldInbound != nil && oldInbound.Protocol == model.L2TP {
 		a.onL2tpChanged()
@@ -824,11 +953,34 @@ func (a *InboundController) updateInboundClient(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
 		return
 	}
-
-	needRestart, err := a.inboundService.UpdateInboundClient(inbound, clientId)
+	// Prices the edit and moves the balance by the delta. This also carries the
+	// ownership assertion for a reseller, which the grant check above cannot make:
+	// the inbound is shared, so holding it says nothing about who created THIS
+	// account. Inactive for an admin.
+	ticket, err := resellerService.PrepareClientUpdate(session.GetLoginUser(c), inbound, clientId)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
+	}
+
+	needRestart, err := a.inboundService.UpdateInboundClient(inbound, clientId)
+	if err != nil {
+		if rerr := resellerService.Rollback(ticket); rerr != nil {
+			logger.Warning("rolling back a reseller charge whose client write failed: ", rerr)
+		}
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	// The edit is allowed to rename the account, and the ledger is keyed on email, so
+	// a rename would orphan the ownership row: the reseller loses the account from
+	// their own view and the refund path could never find it again. Carried across
+	// after the write, since until then the old email is still the stored one.
+	if ticket.Active {
+		if newEmail := postedClientEmail(inbound); newEmail != "" && newEmail != ticket.Email {
+			if rerr := resellerService.RenameClient(ticket.Email, newEmail); rerr != nil {
+				logger.Warning("carrying reseller ownership across a client rename: ", rerr)
+			}
+		}
 	}
 	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.inboundClientUpdateSuccess"), nil)
 
@@ -868,6 +1020,41 @@ func (a *InboundController) updateInboundClient(c *gin.Context) {
 // disable) to many selected clients at once, then regenerates the touched subsystems
 // once each. The payload arrives as a JSON string in the form field "data" (the panel
 // axios interceptor form-encodes bodies).
+// bulkPreview prices a bulk operation without applying any part of it, so a
+// reseller who cannot afford the whole batch can be offered the part they can.
+//
+// Writes nothing, reserves nothing. What it returns is advice: the confirmed run
+// goes through bulkUpdateClients as normal and is priced again from scratch
+// there, so a stale or tampered preview cannot buy anything.
+func (a *InboundController) bulkPreview(c *gin.Context) {
+	var body struct {
+		Data string `form:"data" json:"data"`
+	}
+	if err := c.ShouldBind(&body); err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	var req service.BulkClientUpdateRequest
+	if err := json.Unmarshal([]byte(body.Data), &req); err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	ids := make([]int, 0, len(req.Targets))
+	for _, t := range req.Targets {
+		ids = append(ids, t.InboundId)
+	}
+	if !a.callerOwnsInbounds(c, ids) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
+		return
+	}
+	preview, err := resellerService.PreviewBulk(session.GetLoginUser(c), &req)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	jsonObj(c, preview, nil)
+}
+
 func (a *InboundController) bulkUpdateClients(c *gin.Context) {
 	var body struct {
 		Data string `form:"data" json:"data"`
@@ -891,10 +1078,48 @@ func (a *InboundController) bulkUpdateClients(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
 		return
 	}
-	result, touched, err := a.inboundService.BulkUpdateClients(req)
+	// Two jobs, and the scoping is the one that cannot be skipped: the targets are
+	// named by the BODY, and the check above only proves the caller reaches those
+	// inbounds, which a reseller shares with the admin who assigned them. PrepareBulk
+	// drops every target they do not own, then prices what is left and reserves it.
+	// Inactive for an admin, whose batch is neither scoped nor charged.
+	ticket, err := resellerService.PrepareBulk(session.GetLoginUser(c), &req)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
+	}
+	// What each target has consumed, read while the rows that say so still exist:
+	// a delete destroys them, and an account that reads as having consumed nothing
+	// refunds its whole charge.
+	var usage map[string]int64
+	if req.Op == "delete" {
+		var uerr error
+		if usage, uerr = resellerService.BulkUsageSnapshot(req.Targets); uerr != nil {
+			jsonMsg(c, I18nWeb(c, "somethingWentWrong"), uerr)
+			return
+		}
+	}
+	result, touched, err := a.inboundService.BulkUpdateClients(req)
+	if err != nil {
+		// The reservation paid for a batch that never landed. Give it back.
+		if rerr := resellerService.RollbackBulk(ticket); rerr != nil {
+			logger.Warning("rolling back a reseller bulk charge whose write failed: ", rerr)
+		}
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	// Deletes are refunded after the fact, like every other delete path: a refund
+	// that never runs leaves balance an admin can hand back, where one that ran
+	// ahead of a failed delete would be balance paid out for a live account.
+	if req.Op == "delete" {
+		a.refundBulkDeleted(req.Targets, usage)
+	}
+	// Under days-per-GB an account's deadline is a function of its traffic, and
+	// the applier above moves traffic alone. This writes the deadlines the quote
+	// derived, so a bulk top-up extends the accounts it just sold bytes to
+	// instead of silently leaving them to expire on the old date.
+	if aerr := resellerService.ApplyBulkExpiry(ticket); aerr != nil {
+		logger.Warning("applying derived expiry after a reseller bulk operation: ", aerr)
 	}
 	jsonObj(c, result, nil)
 
@@ -946,8 +1171,22 @@ func (a *InboundController) resetClientTraffic(c *gin.Context) {
 	}
 	email := c.Param("email")
 
+	// Allowed for a reseller, and never free. Zeroing the counters lets the account
+	// move its cleared bytes a second time against the same quota, so the reseller is
+	// buying that traffic again and their balance pays for it. Unpriced, this route is
+	// an unlimited-traffic button: sell 1 GB, reset, repeat. Inactive for an admin,
+	// whose resets cost nothing because no balance stands behind them.
+	ticket, err := resellerService.PrepareClientReset(session.GetLoginUser(c), email)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+
 	needRestart, err := a.inboundService.ResetClientTraffic(id, email)
 	if err != nil {
+		if rerr := resellerService.Rollback(ticket); rerr != nil {
+			logger.Warning("rolling back a reseller charge whose traffic reset failed: ", rerr)
+		}
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
 	}
@@ -969,6 +1208,13 @@ func (a *InboundController) resetClientTraffic(c *gin.Context) {
 
 // resetAllTraffics resets all traffic counters across all inbounds.
 func (a *InboundController) resetAllTraffics(c *gin.Context) {
+	// PermBulkOperation reaches this route now that resellers hold it, and "all" here
+	// means every inbound the caller can see, counters and all. There is no scope to
+	// narrow it to: the unit is the inbound, which a reseller shares, and the reset
+	// itself is a purchase they would not be charged for. Refused, not priced.
+	if denyForReseller(c, msgResellerNoInboundWide) {
+		return
+	}
 	// "All" means the caller's own inbounds. A super admin still resets everything.
 	user := session.GetLoginUser(c)
 	if user == nil {
@@ -1001,6 +1247,12 @@ func (a *InboundController) resetAllTraffics(c *gin.Context) {
 
 // resetAllClientTraffics resets traffic counters for all clients in a specific inbound.
 func (a *InboundController) resetAllClientTraffics(c *gin.Context) {
+	// Same as resetAllTraffics, one inbound narrower and no less unscoped: every
+	// client on the inbound includes the admin's and every other reseller's. The
+	// per-account route beside this one is the priced way to do it.
+	if denyForReseller(c, msgResellerNoInboundWide) {
+		return
+	}
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.inboundUpdateSuccess"), err)
@@ -1069,6 +1321,46 @@ func (a *InboundController) delDepletedClients(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.inboundUpdateSuccess"), err)
 		return
 	}
+
+	// "Every depleted client on this inbound" is defined over accounts a reseller
+	// does not own: deleteClient plus the inbound grant is all this route checks,
+	// and both hold for a reseller on an inbound they share with the admin and
+	// with other resellers. So the sweep is narrowed to their own accounts rather
+	// than refused, and each one it removes is refunded, exactly as a one-by-one
+	// delete would have been. A depleted account refunds nothing in practice, but
+	// the ledger row still has to go or a recycled email inherits it.
+	user := session.GetLoginUser(c)
+	if user != nil && user.IsReseller {
+		owned, oerr := resellerService.OwnedEmails(user.Id)
+		if oerr != nil {
+			jsonMsg(c, I18nWeb(c, "somethingWentWrong"), oerr)
+			return
+		}
+		// Snapshot every account this sweep could remove BEFORE it runs. These are
+		// depleted accounts, so their refunds should be nil; priced after the
+		// delete they would each return their whole charge instead.
+		ownedList := make([]string, 0, len(owned))
+		for e := range owned {
+			ownedList = append(ownedList, e)
+		}
+		usage, uerr := resellerService.UsageSnapshot(ownedList)
+		if uerr != nil {
+			jsonMsg(c, I18nWeb(c, "somethingWentWrong"), uerr)
+			return
+		}
+		deleted, derr := a.inboundService.DelDepletedClientsScoped(id, owned)
+		if derr != nil {
+			jsonMsg(c, I18nWeb(c, "somethingWentWrong"), derr)
+			return
+		}
+		for _, email := range deleted {
+			u, known := usage[strings.ToLower(strings.TrimSpace(email))]
+			a.refundDeletedClient(email, u, known)
+		}
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.delDepletedClientsSuccess"), nil)
+		return
+	}
+
 	err = a.inboundService.DelDepletedClients(id)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
@@ -1101,6 +1393,23 @@ func (a *InboundController) lastOnline(c *gin.Context) {
 		jsonObj(c, data, nil)
 		return
 	}
+	mine := make(map[string]int64, len(data))
+	if user.IsReseller {
+		// The grant map below would hand a reseller every account on the inbounds
+		// they were assigned, admins' included; only ownership scopes them.
+		emails, oerr := resellerService.OwnedEmails(user.Id)
+		if oerr != nil {
+			jsonObj(c, map[string]int64{}, nil)
+			return
+		}
+		for email, t := range data {
+			if emails[strings.ToLower(email)] {
+				mine[email] = t
+			}
+		}
+		jsonObj(c, mine, nil)
+		return
+	}
 	access, oerr := accessService.ClientEmailAccess()
 	if oerr != nil {
 		// Fail closed: an ownership lookup we cannot do must not default to
@@ -1108,7 +1417,6 @@ func (a *InboundController) lastOnline(c *gin.Context) {
 		jsonObj(c, map[string]int64{}, nil)
 		return
 	}
-	mine := make(map[string]int64, len(data))
 	for email, t := range data {
 		if access[email][user.Id] {
 			mine[email] = t
@@ -1118,7 +1426,9 @@ func (a *InboundController) lastOnline(c *gin.Context) {
 }
 
 // scopeEmails filters a panel-wide list of client emails down to the caller's own.
-// Super admins see everything; anyone else sees only clients on inbounds they own.
+// Super admins see everything, an admin sees the clients on inbounds they hold, and
+// a reseller sees only the accounts they created: the inbound they were assigned is
+// shared, so a grant-based filter would show them the admin's roster on it.
 // Fails CLOSED: if ownership cannot be resolved, nothing is returned.
 func (a *InboundController) scopeEmails(c *gin.Context, emails []string) []string {
 	user := session.GetLoginUser(c)
@@ -1128,11 +1438,23 @@ func (a *InboundController) scopeEmails(c *gin.Context, emails []string) []strin
 	if user.IsSuperAdmin {
 		return emails
 	}
+	mine := make([]string, 0, len(emails))
+	if user.IsReseller {
+		owned, err := resellerService.OwnedEmails(user.Id)
+		if err != nil {
+			return []string{}
+		}
+		for _, email := range emails {
+			if owned[strings.ToLower(email)] {
+				mine = append(mine, email)
+			}
+		}
+		return mine
+	}
 	access, err := accessService.ClientEmailAccess()
 	if err != nil {
 		return []string{}
 	}
-	mine := make([]string, 0, len(emails))
 	for _, email := range emails {
 		if access[email][user.Id] {
 			mine = append(mine, email)
@@ -1143,6 +1465,11 @@ func (a *InboundController) scopeEmails(c *gin.Context, emails []string) []strin
 
 // updateClientTraffic updates the traffic statistics for a client by email.
 func (a *InboundController) updateClientTraffic(c *gin.Context) {
+	// Writing the counters by hand is the same giveaway as resetting them, one field
+	// wider: see resetClientTraffic.
+	if denyForReseller(c, msgResellerNoTrafficWrite) {
+		return
+	}
 	email := c.Param("email")
 
 	// Define the request structure for traffic update
@@ -1386,6 +1713,13 @@ func (a *InboundController) getWgcConfigs(c *gin.Context) {
 		jsonMsg(c, "Invalid inbound ID", err)
 		return
 	}
+	// The account is a QUERY param, so no middleware sees it, and what comes back is
+	// that account's private keys. `owns` on :id is enough for an admin and not for a
+	// reseller, who shares the inbound with the admin whose accounts are on it.
+	if !a.callerMayTouchClient(c, c.Query("email")) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
+		return
+	}
 	// Mint/persist any missing server + device keypairs so the render has keys to use.
 	a.wgcService.ReconcileAllKeys()
 	inbound, err := a.inboundService.GetInbound(id)
@@ -1407,6 +1741,11 @@ func (a *InboundController) getAwgConfigs(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		jsonMsg(c, "Invalid inbound ID", err)
+		return
+	}
+	// See getWgcConfigs: the account is a query param and the payload is its keys.
+	if !a.callerMayTouchClient(c, c.Query("email")) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
 		return
 	}
 	a.awgService.ReconcileAllKeys()
@@ -1431,6 +1770,11 @@ func (a *InboundController) getSshConfigs(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		jsonMsg(c, "Invalid inbound ID", err)
+		return
+	}
+	// See getWgcConfigs: the account is a query param and the payload is its password.
+	if !a.callerMayTouchClient(c, c.Query("email")) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
 		return
 	}
 	if err := a.sshService.ReconcileHostKeys(); err != nil {
@@ -1475,11 +1819,22 @@ func (a *InboundController) delInboundClientByEmail(c *gin.Context) {
 	}
 
 	email := c.Param("email")
+	// This route carries `owns` on :id but no ownsClient, because for an admin the
+	// two are the same question. For a reseller they are not; see delInboundClient.
+	if !a.callerMayTouchClient(c, email) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
+		return
+	}
+
+	used, usedKnown := a.usageBeforeDelete(email)
 	needRestart, err := a.inboundService.DelInboundClientByEmail(inboundId, email)
 	if err != nil {
 		jsonMsg(c, "Failed to delete client by email", err)
 		return
 	}
+	// After the delete, never before; see delInboundClient. The consumption it is
+	// priced against had to be read before, for the same reason.
+	a.refundDeletedClient(email, used, usedKnown)
 
 	jsonMsg(c, "Client deleted successfully", nil)
 	if needRestart {
@@ -1492,6 +1847,165 @@ func (a *InboundController) delInboundClientByEmail(c *gin.Context) {
 // rather than a path param, so requireInboundAccess cannot see it.
 func (a *InboundController) callerOwnsInbound(c *gin.Context, inboundId int) bool {
 	return a.callerOwnsInbounds(c, []int{inboundId})
+}
+
+// postedClientEmail reads the account name out of a client-mutating request body.
+// Empty when the body does not carry exactly one client, which every one of those
+// routes does; more than one would mean a single charge paid for several accounts.
+func postedClientEmail(data *model.Inbound) string {
+	var settings struct {
+		Clients []struct {
+			Email string `json:"email"`
+		} `json:"clients"`
+	}
+	if err := json.Unmarshal([]byte(data.Settings), &settings); err != nil {
+		return ""
+	}
+	if len(settings.Clients) != 1 {
+		return ""
+	}
+	return settings.Clients[0].Email
+}
+
+// clientEmailOnInbound resolves a route's :clientId back to the account email that
+// both the ledger and every ownership check key on.
+//
+// The identity field is protocol-dependent (a UUID for vmess and vless, the
+// password for the PPP protocols, the email itself for shadowsocks, auth for
+// hysteria) and only the inbound service knows which one applies to a given
+// protocol. So this matches against all of them and trusts the answer only when
+// EXACTLY ONE client matches. That is not a shortcut: the service matches on one of
+// these same fields, so its match is always among these, and a unique match here is
+// therefore necessarily its match. Anything ambiguous or absent resolves to "",
+// which every caller reads as a refusal.
+func (a *InboundController) clientEmailOnInbound(inbound *model.Inbound, clientId string) string {
+	if inbound == nil || clientId == "" {
+		return ""
+	}
+	clients, err := a.inboundService.GetClients(inbound)
+	if err != nil {
+		return ""
+	}
+	found := ""
+	for _, cl := range clients {
+		if cl.ID != clientId && cl.Password != clientId && cl.Email != clientId && cl.Auth != clientId {
+			continue
+		}
+		if found != "" && found != cl.Email {
+			return "" // two clients answer to this id; refuse rather than guess
+		}
+		found = cl.Email
+	}
+	return found
+}
+
+// callerMayTouchClient is requireClientAccess's question for the routes whose target
+// is not an :email path param, and so cannot be answered by middleware.
+//
+// True for anyone who is not a reseller: an admin's claim on a client IS the inbound
+// grant, which the route table already checked. For a reseller the grant proves
+// nothing, because the inbound is shared with the admin who assigned it and with
+// every other reseller on it.
+func (a *InboundController) callerMayTouchClient(c *gin.Context, email string) bool {
+	user := session.GetLoginUser(c)
+	if user == nil {
+		return false
+	}
+	if !user.IsReseller {
+		return true
+	}
+	if email == "" {
+		return false
+	}
+	owns, err := resellerService.OwnsClientEmail(email, user.Id)
+	return err == nil && owns
+}
+
+// refundBulkDeleted credits back the accounts a bulk delete really removed.
+//
+// Not every target is one. The applier honours the skip toggles, and it always
+// RETAINS one client so an inbound is never emptied, so a target can come back
+// still live. Refunding one of those would hand a reseller balance for an account
+// that is still selling, which is why this asks the inbound what survived rather
+// than assuming the request got what it asked for.
+//
+// Run for admins too: an admin deleting a reseller's accounts refunds them, since
+// they did not choose it, and the refund is a no-op for house-owned ones.
+//
+// usage is the pre-delete consumption snapshot. It has to be passed in rather than
+// looked up here, because the delete has already destroyed what it measures; see
+// ResellerService.RefundDeleted.
+func (a *InboundController) refundBulkDeleted(targets []service.BulkClientTarget, usage map[string]int64) {
+	survivors := map[int]map[string]bool{}
+	for _, t := range targets {
+		if t.Email == "" {
+			continue
+		}
+		left, ok := survivors[t.InboundId]
+		if !ok {
+			inbound, err := a.inboundService.GetInbound(t.InboundId)
+			if err != nil || inbound == nil {
+				continue // cannot prove the account went, so it keeps its charge
+			}
+			clients, cerr := a.inboundService.GetClients(inbound)
+			if cerr != nil {
+				continue
+			}
+			left = make(map[string]bool, len(clients))
+			for _, cl := range clients {
+				left[strings.ToLower(strings.TrimSpace(cl.Email))] = true
+			}
+			survivors[t.InboundId] = left
+		}
+		key := strings.ToLower(strings.TrimSpace(t.Email))
+		if left[key] {
+			continue
+		}
+		u, known := usage[key]
+		if err := resellerService.RefundDeleted(t.Email, u, known); err != nil {
+			logger.Warning("refunding a reseller for a bulk-deleted account: ", err)
+		}
+	}
+}
+
+// resellerBalance reports what the caller has left to sell, so the page can show
+// it after every operation rather than only on load. Answers IsReseller false and
+// zeroes for an admin, which is not an error: they sell out of no balance.
+func (a *InboundController) resellerBalance(c *gin.Context) {
+	jsonObj(c, resellerService.BalanceFor(session.GetLoginUser(c)), nil)
+}
+
+// refundDeletedClient credits the unused part of a deleted account back to the
+// reseller who sold it and forgets it. A no-op for an account the house owns, so
+// every delete path can call it unconditionally.
+//
+// An admin deleting a reseller's account refunds them too: they did not choose it.
+func (a *InboundController) refundDeletedClient(email string, allTimeAtDelete int64, known bool) {
+	if email == "" {
+		return
+	}
+	if err := resellerService.RefundDeleted(email, allTimeAtDelete, known); err != nil {
+		logger.Warning("refunding a reseller for a deleted account: ", err)
+	}
+}
+
+// usageBeforeDelete captures how much an account has moved in its lifetime,
+// while the row that says so still exists.
+//
+// Deleting a client runs DelClientStat, which removes that row, so a refund
+// computed afterwards sees zero consumption and returns the WHOLE charge. Every
+// delete path therefore calls this first and carries the number across the
+// delete; a zero on failure is the safe direction, since it refunds nothing.
+func (a *InboundController) usageBeforeDelete(email string) (int64, bool) {
+	if email == "" {
+		return 0, false
+	}
+	used, known, err := resellerService.UsageOf(email)
+	if err != nil {
+		logger.Warning("reading traffic before a delete, refund will be withheld: ", err)
+		return 0, false
+	}
+	return used, known
 }
 
 func (a *InboundController) callerOwnsInbounds(c *gin.Context, inboundIds []int) bool {

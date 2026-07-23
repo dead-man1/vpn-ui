@@ -43,11 +43,19 @@
                 // This is presentation only: the routes themselves are gated by
                 // middleware, which is what actually enforces access.
                 tabs: [
+                    // The overview reports the whole server, so a reseller only gets
+                    // the entry when their profile carries the allowOverview toggle.
+                    // Everyone else keeps it unconditionally. Like the permission
+                    // gates below this is the courtesy and not the control: the page
+                    // itself redirects a reseller who lacks the toggle, which is what
+                    // actually keeps them out of it.
+                    {{ if or (not .reseller.isReseller) .reseller.allowOverview }}
                     {
                         key: '{{ .base_path }}panel/',
                         icon: 'dashboard',
                         title: '{{ i18n "menu.dashboard"}}'
                     },
+                    {{ end }}
                     {{ if .perms.accessInbounds }}
                     {
                         key: '{{ .base_path }}panel/inbounds',
@@ -81,6 +89,13 @@
                         key: '{{ .base_path }}panel/admins',
                         icon: 'team',
                         title: '{{ i18n "menu.admins"}}'
+                    },
+                    {{ end }}
+                    {{ if .perms.manageResellers }}
+                    {
+                        key: '{{ .base_path }}panel/resellers',
+                        icon: 'shop',
+                        title: '{{ i18n "menu.resellers"}}'
                     },
                     {{ end }}
                     {

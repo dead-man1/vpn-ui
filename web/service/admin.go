@@ -57,10 +57,15 @@ func toAdminView(u *model.User, inbounds int64, inboundIds []int) AdminView {
 
 // GetAdmins lists every admin, with how many inbounds each owns so the super admin
 // can see what a delete would strand.
+//
+// Resellers are EXCLUDED. They live in the same table but are managed on their own
+// page: listing one here would put it in a modal whose "Super Admin" tick promotes
+// it, which is an escalation and not a cosmetic leak.
 func (s *AdminService) GetAdmins() ([]AdminView, error) {
 	db := database.GetDB()
 	var users []*model.User
-	if err := db.Model(model.User{}).Order("id asc").Find(&users).Error; err != nil {
+	if err := db.Model(model.User{}).Where("is_reseller = ?", false).
+		Order("id asc").Find(&users).Error; err != nil {
 		return nil, err
 	}
 
@@ -213,6 +218,13 @@ func (s *AdminService) UpdateAdmin(id int, spec AdminSpec) error {
 		return err
 	}
 
+	// The Admins page must not reach a reseller. It is excluded from the list, but
+	// the id travels in the URL and this is the only thing between a crafted POST
+	// and a reseller being ticked into a super admin.
+	if existing.IsReseller {
+		return ErrAdminNotFound
+	}
+
 	spec.Username = normalizeUsername(spec.Username)
 	if err := spec.validate(); err != nil {
 		return err
@@ -284,6 +296,12 @@ func (s *AdminService) DeleteAdmin(id int) error {
 			return ErrAdminNotFound
 		}
 		return err
+	}
+	// Resellers are deleted from their own page, which also has to settle the
+	// balance and the accounts they own. Deleting one from here would leave both
+	// stranded.
+	if existing.IsReseller {
+		return ErrAdminNotFound
 	}
 	if existing.IsSuperAdmin {
 		last, err := s.isLastSuperAdmin(db, id)

@@ -93,6 +93,15 @@
           <dt class="bo-spec-key">Cores</dt>
           <dd class="bo-spec-val num">[[ CPUFormatter.cpuCoreFormat(status.cpuCores) ]]<span v-if="status.cpuSpeedMhz"> at [[ CPUFormatter.cpuSpeedFormat(status.cpuSpeedMhz) ]]</span></dd>
         </div>
+        <!-- Fitted memory, not the live usage the tile below graphs. The DDR
+             generation and clock come from SMBIOS and are simply absent on most
+             hypervisors, so this row shrinks to a bare capacity rather than
+             disappearing. -->
+        <div class="bo-spec-row" v-if="ramText">
+          <span class="bo-spec-ico bo-spec-ico--ram"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-ram"></use></svg></span>
+          <dt class="bo-spec-key">RAM</dt>
+          <dd class="bo-spec-val num">[[ ramText ]]</dd>
+        </div>
         <div class="bo-spec-row" v-if="status.kernel">
           <span class="bo-spec-ico bo-spec-ico--kernel"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-zap"></use></svg></span>
           <dt class="bo-spec-key">Kernel</dt>
@@ -1133,6 +1142,7 @@
       this.kernel = "";
       this.hostname = "";
       this.virt = { virtualized: false, system: "", kind: "" };
+      this.memHW = { totalBytes: 0, type: "", speedMTs: 0 };
       this.netIOByIface = [];
 
       this.xray = { state: 'stop', stateMsg: "", errorMsg: "", version: "", color: "" };
@@ -1151,6 +1161,7 @@
       this.kernel = data.kernel || "";
       this.hostname = data.hostname || "";
       this.virt = data.virt || { virtualized: false, system: "", kind: "" };
+      this.memHW = data.memHW || { totalBytes: 0, type: "", speedMTs: 0 };
       this.netIOByIface = data.netIOByIface || [];
       this.disk = new CurTotal(data.disk.current, data.disk.total);
       this.loads = data.loads.map(load => NumberFormatter.toFixed(load, 2));
@@ -1484,6 +1495,19 @@
         const os = [s.osName, s.osVersion].filter(Boolean).join(' ');
         const kern = s.kernel ? 'kernel ' + s.kernel : '';
         return [os || this.distroPretty, kern].filter(Boolean).join('  ·  ');
+      },
+      // "16.00 GB DDR4 at 3200 MT/s", dropping whatever the firmware would not
+      // name. Capacity prefers the SMBIOS module sum over MemTotal: it is the
+      // hardware fact this row is about, it is the number the operator bought,
+      // and it is what the DDR generation beside it describes. MemTotal is a few
+      // percent lower (the kernel excludes firmware-reserved regions) and stays
+      // the source for the Memory usage tile, which is a different question.
+      ramText() {
+        const hw = this.status.memHW || {};
+        const bytes = hw.totalBytes || (this.status.mem && this.status.mem.total) || 0;
+        if (!bytes) return '';
+        const speed = hw.speedMTs ? 'at ' + hw.speedMTs + ' MT/s' : '';
+        return [SizeFormatter.sizeFormat(bytes), hw.type, speed].filter(Boolean).join(' ');
       },
       // "Yes (KVM)" / "Yes" when the platform couldn't be named / "No".
       // The kind ("container") is worth surfacing because it changes what the

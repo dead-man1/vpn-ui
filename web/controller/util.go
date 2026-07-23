@@ -8,6 +8,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/entity"
+	"github.com/mhsanaei/3x-ui/v2/web/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
@@ -121,6 +122,12 @@ func html(c *gin.Context, name string, title string, data gin.H) {
 	// courtesy, not a control.
 	data["perms"] = templatePerms(c)
 	data["me"] = currentUserId(c)
+	// A reseller's own limits, for the pages they actually use. Delivered with the
+	// page rather than over XHR because the client modal has to know BEFORE first
+	// paint whether to render an expiry field at all: fetching it would flash a
+	// control the reseller is not allowed to have. Empty map for everyone else, so
+	// a template reads {{ if .reseller.isReseller }} without a nil check.
+	data["reseller"] = templateReseller(c)
 	// The caller's own 2FA state, for the security panel's switch. The SECRET is
 	// never shipped: the settings blob used to carry it, which handed every
 	// logged-in admin the shared factor.
@@ -158,6 +165,44 @@ func templatePerms(c *gin.Context) map[string]bool {
 	}
 	perms["superAdmin"] = user.IsSuperAdmin
 	return perms
+}
+
+// templateReseller is the caller's own reseller limits and balance, shaped for
+// templates. Empty (isReseller false) for an admin.
+//
+// Like templatePerms this drives what the UI SHOWS, never what it ALLOWS. Every
+// number here is re-derived server-side before a single byte is charged, so a
+// browser that lies about its own minimums buys nothing.
+func templateReseller(c *gin.Context) map[string]any {
+	out := map[string]any{"isReseller": false}
+	user := session.GetLoginUser(c)
+	if user == nil || !user.IsReseller {
+		return out
+	}
+	var svc service.ResellerService
+	p, err := svc.ProfileFor(user.Id)
+	if err != nil {
+		// A reseller with no profile row is a broken account, not a privileged
+		// one. Report the role with zeroed levers rather than failing the page:
+		// the server-side checks still refuse every write.
+		out["isReseller"] = true
+		return out
+	}
+	available := p.AllowanceBytes - p.SpentBytes
+	if available < 0 {
+		available = 0
+	}
+	out["isReseller"] = true
+	out["unlimited"] = p.Unlimited
+	out["allowanceBytes"] = p.AllowanceBytes
+	out["spentBytes"] = p.SpentBytes
+	out["availableBytes"] = available
+	out["daysPerGb"] = p.DaysPerGB
+	out["minCreateGb"] = p.MinCreateGB
+	out["minAddGb"] = p.MinAddGB
+	out["allowExternalProxy"] = p.AllowExternalProxy
+	out["allowOverview"] = p.AllowOverview
+	return out
 }
 
 // getContext adds version and other context data to the provided gin.H.

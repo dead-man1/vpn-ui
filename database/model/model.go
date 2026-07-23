@@ -73,8 +73,20 @@ type User struct {
 	// manage admins. Exactly one is seeded from the pre-existing first user.
 	IsSuperAdmin bool `json:"isSuperAdmin" gorm:"default:0"`
 
-	// Permissions is the capability bitmask; ignored for a super admin.
+	// Permissions is the capability bitmask; ignored for a super admin, and
+	// ignored for a reseller (whose mask is derived from the role, see Can).
 	Permissions Permission `json:"-" gorm:"default:0"`
+
+	// IsReseller marks an account that sells VPN accounts out of a traffic
+	// balance. It is a ROLE and not a permission bit because it changes which
+	// objects exist for the account rather than what it may do to them: a
+	// reseller sees only the clients it created, even on an inbound it shares
+	// with an admin. A mask cannot express that.
+	//
+	// Never true at the same time as IsSuperAdmin; ResellerService enforces it.
+	// The quota levers live in ResellerProfile, one row per reseller, so this
+	// table (read on EVERY request by session.loadLoginUser) stays narrow.
+	IsReseller bool `json:"isReseller" gorm:"default:0"`
 
 	// Enable gates login without deleting the account (and its owned inbounds).
 	Enable bool `json:"enable" form:"enable" gorm:"default:1"`
@@ -98,6 +110,83 @@ type InboundAccess struct {
 	Id        int `json:"id" gorm:"primaryKey;autoIncrement"`
 	UserId    int `json:"userId" gorm:"index:idx_access_user_inbound,unique,priority:1;index"`
 	InboundId int `json:"inboundId" gorm:"index:idx_access_user_inbound,unique,priority:2;index"`
+}
+
+// ResellerProfile holds one reseller's balance and the levers an admin sets on
+// them. Split from User because these fields are meaningless for every admin
+// row, and because the balance is written under transaction on every account
+// create/edit/delete: keeping those writes off the row that every request reads
+// is worth one join on the rare page that needs it.
+type ResellerProfile struct {
+	Id     int `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserId int `json:"userId" gorm:"uniqueIndex"`
+
+	// AllowanceBytes is the cumulative traffic an admin has granted. SpentBytes
+	// is what is currently committed to live accounts plus what past accounts
+	// burned before being deleted. Available = Allowance - Spent.
+	//
+	// BYTES, never GB. Client.TotalGB is a byte count despite its name (see
+	// web/assets/js/model/inbound.js _totalGB, which divides by ONE_GB purely
+	// for display), and a unit mismatch on this pair is free traffic.
+	AllowanceBytes int64 `json:"allowanceBytes" gorm:"default:0"`
+	SpentBytes     int64 `json:"spentBytes" gorm:"default:0"`
+	// Unlimited skips the balance CHECK but not the accrual: SpentBytes keeps
+	// climbing, so an admin who later sets a limit correctly accounts for what
+	// this reseller already sold. Stored explicitly rather than overloading
+	// AllowanceBytes==0, so that an admin who leaves the field blank while
+	// creating a reseller does not silently mint an unlimited one.
+	Unlimited bool `json:"unlimited" gorm:"default:0"`
+
+	// DaysPerGB > 0 FORCES an account's duration: expiry is GB * DaysPerGB, and
+	// the reseller gets no expiry field at all. 0 leaves the choice to them.
+	DaysPerGB int `json:"daysPerGb" gorm:"default:0"`
+	// MinCreateGB is the smallest account they may create, MinAddGB the smallest
+	// top-up in one edit. Whole GB, as an operator sets them; 0 means no floor.
+	MinCreateGB int `json:"minCreateGb" gorm:"default:0"`
+	MinAddGB    int `json:"minAddGb" gorm:"default:0"`
+
+	// AllowExternalProxy lets the configs and links this reseller generates carry
+	// the inbound's external-proxy endpoints. Off strips them.
+	AllowExternalProxy bool `json:"allowExternalProxy" gorm:"default:0"`
+
+	// AllowOverview lets this reseller open the panel overview. Off (the default)
+	// hides the nav entry entirely rather than greying it, and the page itself
+	// redirects: the overview is a HOST dashboard (kernel, CPU, disk, public IP)
+	// and none of it is a reseller's to see unless an operator says otherwise.
+	AllowOverview bool `json:"allowOverview" gorm:"default:0"`
+
+	// CreatedBy is the admin who owns this reseller. A non-super admin holding
+	// PermManageResellers sees and edits only their own: without this, one such
+	// admin could edit another's reseller balance or reassign their inbounds.
+	CreatedBy int `json:"createdBy" gorm:"index"`
+}
+
+// ResellerClient records that a reseller owns an account, and what that account
+// currently costs them. Ownership and charge are one row because they are 1:1
+// on the account, so two tables would only be two things to keep in sync.
+//
+// ABSENCE of a row means the house owns the account. Admins and super admins
+// have no balance, so there is nothing to charge and their paths need no ledger
+// awareness at all.
+type ResellerClient struct {
+	Id int `json:"id" gorm:"primaryKey;autoIncrement"`
+	// Email is the panel-wide account identity. xray.ClientTraffic.Email carries
+	// gorm:"unique", and AdminService.CanAccessClientEmail already keys on it, so
+	// this matches the seam that exists rather than inventing a second notion of
+	// "which client".
+	Email     string `json:"email" gorm:"uniqueIndex"`
+	InboundId int    `json:"inboundId" gorm:"index"`
+	UserId    int    `json:"userId" gorm:"index"`
+
+	// ChargedBytes is what this account currently holds against its reseller's
+	// balance: raised on create and top-up, lowered on deduct and delete.
+	ChargedBytes int64 `json:"chargedBytes" gorm:"default:0"`
+	// AllTimeBase is ClientTraffic.AllTime at the moment of the charge, so
+	// consumption is measured from the charge and not from the account's whole
+	// life. AllTime is used rather than Up+Down because it is monotonic across a
+	// traffic reset (see web/service/traffic_accounting_test.go), which is what
+	// stops a reset from turning consumed bytes back into a refundable balance.
+	AllTimeBase int64 `json:"allTimeBase" gorm:"default:0"`
 }
 
 // Inbound represents an Xray inbound configuration with traffic statistics and settings.

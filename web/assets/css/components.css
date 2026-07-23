@@ -722,6 +722,40 @@ body.dark .bo-theme-toggle .bo-i-moon { display:block; }
 .bo-spec-ico--kernel { color:var(--warn); }
 .bo-spec-ico--cpu { color:var(--info); }
 .bo-spec-ico--cores { color:var(--text-3); }
+.bo-spec-ico--ram { color:var(--text-3); }
+
+/* Resellers: one .bo-tile per account, laid out by auto-fill rather than by the
+   Overview's named grid areas. The Overview has a fixed cast of tiles it can
+   name; here the count is DATA, so the track list has to come from the content.
+   Everything inside a card is the Overview's own vocabulary (.bo-tile-head,
+   .bo-spec rows), so this section only owns the grid and the balance block. */
+.bo-cards { display:grid; grid-template-columns:1fr; gap:var(--gap-md); }
+@media (min-width:720px) {
+  .bo-cards { grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); }
+}
+.bo-rs-head {
+  display:flex; align-items:flex-start; justify-content:space-between;
+  gap:10px; margin-bottom:12px;
+}
+.bo-rs-name {
+  font-size:var(--fs-lg,15px); font-weight:var(--fw-bold);
+  color:var(--text); overflow-wrap:anywhere;
+}
+.bo-rs-sub { font-size:var(--fs-xs); color:var(--text-3); overflow-wrap:anywhere; }
+/* The balance is why this page exists, so it gets the size an operator reads
+   first. Tabular figures because these numbers sit in a column across cards and
+   ragged digits make them look misaligned even when they are not. */
+.bo-rs-bal {
+  border:1px solid var(--border); border-radius:var(--radius-lg,10px);
+  padding:10px 12px; background:var(--surface-2,transparent);
+}
+.bo-rs-bal-val {
+  font-size:22px; font-weight:var(--fw-bold); line-height:1.2;
+  font-variant-numeric:tabular-nums; overflow-wrap:anywhere;
+}
+.bo-rs-bal-val.bo-ok { color:var(--ok); }
+.bo-rs-bal-val.bo-warn { color:var(--warn); }
+.bo-rs-bal-label { font-size:var(--fs-xs); color:var(--text-3); margin-top:2px; }
 .bo-spec-ico--virt { color:var(--info); }
 .bo-spec-ico--loc { color:var(--ok); }
 .bo-spec-val.bo-muted { color:var(--text-3); font-weight:var(--fw-medium,500); }

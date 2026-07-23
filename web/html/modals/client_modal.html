@@ -79,6 +79,7 @@
                 );
             } else {
                 this.addClient(this.inbound, this.clients);
+                this.seedResellerQuota(this.clients[this.index]);
             }
             this.clientStats = this.dbInbound.clientStats.find(
                 (row) => row.email === this.clients[this.index].email,
@@ -89,6 +90,20 @@
         // web/service/inbound.go. Do not inline the switch here again.
         getClientId(protocol, client) {
             return getClientIdentity(protocol, client);
+        },
+        // A new account starts at totalGB 0, which means UNLIMITED, and a reseller
+        // selling out of a limited balance may not create one of those. The form's
+        // :min shows their floor but ant only clamps the MODEL on interaction, so an
+        // untouched field left the quota at 0 while displaying 1: the save was
+        // refused, and the derived duration beside it read 0 days because the days
+        // are a function of the gigabytes.
+        //
+        // Seeding the model, rather than the input, is what makes the two agree.
+        seedResellerQuota(client) {
+            if (!client || !RESELLER.isReseller || RESELLER.unlimited) return;
+            if (client.totalGB > 0) return;
+            const floorGb = Math.max(1, Number(RESELLER.minCreateGb) || 0);
+            client.totalGB = floorGb * SizeFormatter.ONE_GB;
         },
         addClient(inbound, clients) {
             switch (inbound.protocol) {
@@ -205,6 +220,22 @@
             },
             set delayedExpireDays(days) {
                 this.client.expiryTime = -86400000 * days;
+            },
+            // Whether this account's duration is a function of its traffic
+            // rather than something the operator picks. True only for a reseller
+            // on a days-per-GB plan, in which case the backend overwrites any
+            // posted expiry and the form hides the controls entirely.
+            get resellerForcedDays() {
+                return !!(RESELLER.isReseller && RESELLER.daysPerGb > 0);
+            },
+            // The derived duration, shown in place of the controls so the
+            // reseller can see what they are selling before they save.
+            get resellerForcedDaysText() {
+                const gb = this.client && this.client.totalGB > 0
+                    ? this.client.totalGB / SizeFormatter.ONE_GB
+                    : 0;
+                const days = NumberFormatter.toFixed(gb * RESELLER.daysPerGb, 1);
+                return days + ' ' + '{{ i18n "pages.client.expireDays" }}';
             },
         },
         methods: {

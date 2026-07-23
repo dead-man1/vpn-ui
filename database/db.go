@@ -34,6 +34,8 @@ func initModels() error {
 		&model.User{},
 		&model.Inbound{},
 		&model.InboundAccess{},
+		&model.ResellerProfile{},
+		&model.ResellerClient{},
 		&model.OutboundTraffics{},
 		&model.Setting{},
 		&model.InboundClientIps{},

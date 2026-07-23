@@ -227,15 +227,20 @@
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
-                    0 <span>{{ i18n "pages.inbounds.meansNoLimit" }}</span>
+                    <span v-if="!RESELLER.isReseller || RESELLER.unlimited">0 {{ i18n "pages.inbounds.meansNoLimit" }}</span>
+                    <span v-else>{{ i18n "pages.resellers.minCreateGbDesc" }}</span>
                 </template>
                 {{ i18n "pages.inbounds.totalFlow" }}
                 <a-icon type="question-circle"></a-icon>
             </a-tooltip>
         </template>
+        <!-- A reseller selling out of a limited balance may not create an
+             unlimited account, so their floor is their own minimum rather than
+             0. This is the message, not the control: ResellerService.Quote
+             refuses it again server-side. -->
         <a-input-number
             v-model.number="client._totalGB"
-            :min="0"
+            :min="RESELLER.isReseller && !RESELLER.unlimited ? Math.max(1, RESELLER.minCreateGb) : 0"
         ></a-input-number>
     </a-form-item>
     <a-form-item v-if="isEdit && clientStats" label='{{ i18n "usage" }}'>
@@ -250,6 +255,11 @@
             <template slot="title"
                 >{{ i18n "pages.inbounds.resetTraffic" }}</template
             >
+            <!-- Shown to a reseller too, but it is not free for them: zeroing
+                 the counters lets the account move those bytes again, so the
+                 reset is CHARGED to their balance (ResellerService
+                 PrepareClientReset). The route prices it and refuses when they
+                 cannot afford it, naming the shortfall. -->
             <a-icon
                 type="retweet"
                 @click="resetClientTraffic(client.email,clientStats.inboundId,$event.target)"
@@ -257,14 +267,21 @@
             ></a-icon>
         </a-tooltip>
     </a-form-item>
-    <a-form-item label='{{ i18n "pages.client.delayedStart" }}'>
+    <!-- Days-per-GB makes the duration a function of the traffic, so a reseller
+         on that plan gets no expiry control at all: the backend overwrites
+         whatever is posted (ResellerService.forcedExpiry). Showing the fields
+         would only invite an edit that silently does nothing. -->
+    <a-form-item v-if="resellerForcedDays" label='{{ i18n "pages.resellers.daysPerGb" }}'>
+        <a-tag color="blue">[[ resellerForcedDaysText ]]</a-tag>
+    </a-form-item>
+    <a-form-item v-if="!resellerForcedDays" label='{{ i18n "pages.client.delayedStart" }}'>
         <a-switch
             v-model="delayedStart"
             @click="client._expiryTime=0"
         ></a-switch>
     </a-form-item>
     <a-form-item
-        v-if="delayedStart"
+        v-if="delayedStart && !resellerForcedDays"
         label='{{ i18n "pages.client.expireDays" }}'
     >
         <a-input-number
@@ -272,7 +289,7 @@
             :min="0"
         ></a-input-number>
     </a-form-item>
-    <a-form-item v-else>
+    <a-form-item v-else-if="!resellerForcedDays">
         <template slot="label">
             <a-tooltip>
                 <template slot="title"

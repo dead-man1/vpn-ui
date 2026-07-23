@@ -63,7 +63,12 @@ type Status struct {
 	Kernel      string    `json:"kernel"`
 	Hostname    string    `json:"hostname"`
 	Virt        VirtInfo  `json:"virt"`
-	Mem         struct {
+	// MemHW is the memory FITTED to the machine (capacity, DDR generation,
+	// clock), read once from SMBIOS. Mem below is the live usage and moves every
+	// poll; these are two different numbers on purpose and the overview labels
+	// them as such.
+	MemHW MemHardware `json:"memHW"`
+	Mem   struct {
 		Current uint64 `json:"current"`
 		Total   uint64 `json:"total"`
 	} `json:"mem"`
@@ -191,6 +196,7 @@ type ServerService struct {
 	cachedKernel    string
 	cachedHostname  string
 	cachedVirt      VirtInfo
+	cachedMemHW     MemHardware
 }
 
 // AggregateCpuHistory returns up to maxPoints averaged buckets of size bucketSeconds over recent data.
@@ -440,12 +446,20 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 			s.cachedHostname = hn
 		}
 		s.cachedVirt = DetectVirtualization()
+		// SMBIOS describes the DIMMs in the physical machine. Inside a container
+		// those are the HOST's, while this guest's memory is a cgroup limit that
+		// has nothing to do with them, so the read is skipped and the overview
+		// falls back to MemTotal.
+		if s.cachedVirt.Kind != "container" {
+			s.cachedMemHW = DetectMemHardware()
+		}
 	}
 	status.OsName = s.cachedOsName
 	status.OsVersion = s.cachedOsVersion
 	status.Kernel = s.cachedKernel
 	status.Hostname = s.cachedHostname
 	status.Virt = s.cachedVirt
+	status.MemHW = s.cachedMemHW
 
 	// Memory stats
 	memInfo, err := mem.VirtualMemory()

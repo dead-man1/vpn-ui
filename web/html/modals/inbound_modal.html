@@ -267,6 +267,34 @@
             },
         },
         computed: {
+            // form/client is shared with the client modal, and it reads these two
+            // by name. It reaches this modal through the protocol forms
+            // (vmess / vless / trojan / shadowsocks / hysteria all include it for
+            // the inbound's first client), so without them defined HERE the
+            // render throws ReferenceError and the whole Add Inbound modal never
+            // mounts. A render-time throw takes the modal with it, which is why
+            // the symptom was a button that silently did nothing.
+            //
+            // Same meaning as in client_modal: true only for a reseller on a
+            // days-per-GB plan, where the backend overwrites any posted expiry
+            // (ResellerService.forcedExpiry) so the controls are hidden.
+            resellerForcedDays() {
+                return !!(RESELLER.isReseller && RESELLER.daysPerGb > 0);
+            },
+            // The derived duration for the client being added. This modal has no
+            // single `client` field (the form renders inside a v-for over the
+            // inbound's clients), so read the first one, which is the only one
+            // the add form ever shows.
+            resellerForcedDaysText() {
+                const ib = inModal.inbound;
+                const list = ib ? ib.clients : null;
+                const first = list && list.length > 0 ? list[0] : null;
+                const gb = first && first.totalGB > 0
+                    ? first.totalGB / SizeFormatter.ONE_GB
+                    : 0;
+                const days = NumberFormatter.toFixed(gb * RESELLER.daysPerGb, 1);
+                return days + ' ' + '{{ i18n "pages.client.expireDays" }}';
+            },
             ovpnAeadCiphers() {
                 return Inbound.OpenvpnSettings.CIPHERS_AEAD;
             },
@@ -297,6 +325,21 @@
             modalFormValid() {
                 const ib = inModal.inbound;
                 if (!ib) return true;
+                // xhttp is the one transport whose settings can be individually
+                // valid and still combine into something the core throws out
+                // wholesale (a host header, a half-disabled padding range, an
+                // uplink placement or method the mode does not allow, both xmux
+                // strategies at once, downloadSettings under stream-one, or
+                // free-form downloadSettings JSON that does not parse). Every one
+                // of those costs the entire inbound: xray refuses to start rather
+                // than ignore the key, so the panel would save happily and the
+                // service would never come up. hasCoreConfigProblem() is the
+                // single gate; the form itself says which rule was hit.
+                const stream = ib.stream;
+                if (stream && stream.network === "xhttp" && stream.xhttp
+                    && stream.xhttp.hasCoreConfigProblem()) {
+                    return false;
+                }
                 const okPort = p => Number.isInteger(p) && p >= 1 && p <= 65535;
                 if (ib.protocol === "openvpn") {
                     const s = ib.settings || {};
